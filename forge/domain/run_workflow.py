@@ -531,14 +531,14 @@ class _Checker:
         outputs = dict(declaration.outputs)
         manifest = program.manifest
         if isinstance(manifest, WorkflowManifest) and manifest.program is not None:
-            outputs.update(_report_ports(manifest.program, every_optional=False))
+            outputs.update(report_ports(manifest.program, every_optional=False))
         held = declaration.inputs.get(PROGRAMS)
         for name, each in programs.items():
             for output, port in ((held.outputs or {}) if held is not None else {}).items():
                 outputs[f"{name}.{output}"] = port
             read = each.manifest.program if isinstance(each.manifest, WorkflowManifest) else None
             if read is not None:
-                for report, port in _report_ports(read, every_optional=True).items():
+                for report, port in report_ports(read, every_optional=True).items():
                     outputs[f"{name}.{report}"] = port
         return outputs
 
@@ -1011,7 +1011,7 @@ class _Checker:
         )
 
 
-def _report_ports(manifest: ProgramManifest, *, every_optional: bool) -> dict[str, Port]:
+def report_ports(manifest: ProgramManifest, *, every_optional: bool) -> dict[str, Port]:
     """Each report of `manifest` as the output it becomes; every one
     optional where the step is accepted whatever the program says.
     """
@@ -1077,4 +1077,5 @@ __all__ = [
     "WorkflowManifest",
     "check_run_workflow",
     "manifest_paths",
+    "report_ports",
 ]

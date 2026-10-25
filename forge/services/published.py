@@ -54,7 +54,7 @@ from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.publications import Publication
 from forge.domain.run_plan import RunPlan
-from forge.domain.run_task import file_time
+from forge.domain.run_task import RUNS_PATH, Run, RunsFile, file_time
 from forge.domain.showing import generation_of
 from forge.domain.submissions import Field, fields_of, run_fields_of
 from forge.domain.yaml_models import InvalidDefinition
@@ -224,6 +224,32 @@ class TaskForm:
 FORM_KEPT = timedelta(hours=1)
 """How long this process keeps a publication's form: a publication never
 changes, so the time only bounds what is held."""
+
+
+@dataclass(frozen=True, slots=True)
+class RunsHeld:
+    """A run task's latest publication as its entrants' results read it:
+    its runs in the task's order, and every file it holds.
+    """
+
+    runs: tuple[Run, ...]
+    files: frozenset[str]
+
+
+async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
+    """The runs and files of a run task's latest publication, read once,
+    since a publication never changes. A publication's runs file always
+    reads, as its save wrote it, so one that does not fails loudly.
+    """
+    version = published.publication.version
+
+    async def read() -> RunsHeld:
+        found = await ctx.forge.content.read_file(PLATFORM, published.id, RUNS_PATH, at=version)
+        listed = await ctx.forge.content.list_files(PLATFORM, published.id, at=version)
+        return RunsHeld(RunsFile.from_bytes(found.content).runs, frozenset(listed.tokens))
+
+    key = f"published.runs.{published.id}.{version}"
+    return await ctx.memo.remembered(key, FORM_KEPT, read)
 
 
 async def form(ctx: Context, published: PublishedTask) -> TaskForm:

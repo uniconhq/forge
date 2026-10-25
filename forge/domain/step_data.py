@@ -65,6 +65,8 @@ JOB_VERSION = 1
 """The job shape the door answers, runner's `job.schema.json`."""
 CONTRACT_VERSION = 6
 """The primitive contract every run task's step speaks."""
+RESULT_VERSION = 6
+"""The result a run task's pipeline makes, `result.schema.json`'s version 6."""
 NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 """One segment of a path the job places a file at."""
 UPLOAD_PATH = re.compile(r"outputs\.json|out(/(?!\.\.?(/|$))[^/\x00-\x1f\x7f]+)+")
@@ -463,7 +465,7 @@ def result_of(
     ]
     once_reports, once_texts = _reports(plan, found, once_items)
     return {
-        "schema_version": 6,
+        "schema_version": RESULT_VERSION,
         "runs": runs,
         "once": {"reports": once_reports, "texts": once_texts},
         "staff": staff,

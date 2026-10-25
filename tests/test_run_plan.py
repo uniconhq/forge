@@ -449,6 +449,40 @@ def test_tour_gives_each_run_its_own_part(primitives: dict[str, PrimitiveDeclara
     assert plan.files_read(held(plan, "check", "early")).entrant == {("route", 1), ("route", 2)}
 
 
+def test_a_step_given_the_tasks_manifest_writes_every_report_of_its_files(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    workflow = TOUR.replace("  best: number\n", "  best: number\n  manifest: file\n").replace(
+        "${{ workflow.checker/program.yaml }}", "${{ inputs.manifest }}"
+    )
+    task = (
+        TOUR_TASK.replace("inputs: [input, route]", "inputs: [input, route, manifest]")
+        .replace("entrant]", "entrant, check/one.yaml]", 1)
+        .replace("[parts/2.in, entrant]", "[parts/2.in, entrant, check/two.yaml]")
+    )
+    reports = b"reports:\n  length: {at_least: 0}\n  score: {at_least: 0, at_most: 1}\n"
+    plan = ok(
+        planned(
+            primitives,
+            task,
+            workflow,
+            {**TOUR_FILES, "workflow.yaml": workflow.encode()},
+            TOUR_PATHS | {"check/one.yaml", "check/two.yaml"},
+            manifests={
+                "check/one.yaml": reports + b"  moves: {type: text, optional: true}\n",
+                "check/two.yaml": reports + b"  turns: {at_least: 0}\n",
+            },
+        )
+    )
+
+    # The checker writes what its file declares, so each report is an output
+    # of the step, one some file leaves out optional.
+    outputs = plan.steps["check"].outputs
+    assert (outputs["length"], outputs["score"]) == ("number", "number")
+    assert (outputs["moves?"], outputs["turns?"]) == ("text", "number")
+    assert "turns" not in outputs
+
+
 # Step classes
 
 

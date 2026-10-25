@@ -802,10 +802,36 @@ def test_manifests_that_disagree_on_a_columns_type_are_refused(
     )
 
     assert (
-        "judge/program.yaml reports moves as a number and judge/text.yaml as text, but moves "
-        "is one column of every run. Give it one type in every file."
+        "judge/program.yaml reports moves as a number and judge/text.yaml as text, but step "
+        "game writes moves as one output of every run. Give it one type in every file."
     ) in [problem["message"] for problem in found.problems]
     assert found.task is None
+
+
+def test_manifests_that_disagree_on_a_report_the_workflow_does_not_read_are_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    task = JUDGED_TASK.replace("  judge_manifest: judge/program.yaml\n", "").replace(
+        "scoring:",
+        "repeat:\n  - inputs: [judge_manifest]\n    tuples:\n"
+        "      - [judge/program.yaml]\n      - [judge/text.yaml]\nscoring:",
+    )
+    found = check(
+        primitives,
+        task,
+        JUDGED,
+        {"workflow.yaml": JUDGED.encode()},
+        JUDGED_PATHS | {"judge/text.yaml"},
+        manifests={
+            "judge/program.yaml": JUDGE_MANIFEST + b"  note: {}\n",
+            "judge/text.yaml": JUDGE_MANIFEST + b"  note: {type: text}\n",
+        },
+    )
+
+    assert [problem["message"] for problem in found.problems] == [
+        "judge/program.yaml reports note as a number and judge/text.yaml as text, but step "
+        "game writes note as one output of every run. Give it one type in every file."
+    ]
 
 
 def test_a_manifest_cannot_be_the_entrants(primitives: dict[str, PrimitiveDeclaration]) -> None:

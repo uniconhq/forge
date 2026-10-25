@@ -48,7 +48,7 @@ from typing import Any
 from forge.domain import exact_json
 from forge.domain.blocks.catalogue import ALL
 from forge.domain.blocks.check import ValuesCheck, check_names, check_values, same_value
-from forge.domain.content import names_path, path_problem
+from forge.domain.content import named_by, names_path, path_problem
 from forge.domain.definitions import (
     ENTRANT,
     TASK_FILE,
@@ -75,6 +75,7 @@ from forge.domain.run_workflow import (
     ResolvedReport,
     ResolvedStep,
     RunWorkflowCheck,
+    report_ports,
 )
 from forge.domain.types import Type
 from forge.domain.workflow_definition import (
@@ -228,8 +229,9 @@ class RunTask:
     """A run task as its save checked it: its runs in order, each group's
     runs by id, `all` among them, what each value reads, `show`, the
     entrant's inputs, the settings the task gives once, the columns
-    self-reported with the entrant inputs that make them so, and the id of
-    every key it has had.
+    self-reported with the entrant inputs that make them so, the id of
+    every key it has had, and each step's outputs a manifest the task gives
+    declares (`_Binder.manifest_outputs`).
     """
 
     runs: tuple[Run, ...]
@@ -240,6 +242,7 @@ class RunTask:
     settings: Mapping[str, object]
     self_reported: Mapping[str, frozenset[str]]
     ids: Mapping[str, str] = field(default_factory=dict)
+    manifest_outputs: Mapping[str, Mapping[str, Port]] = field(default_factory=dict)
 
     def shown(self, *, released: bool = False) -> list[str]:
         """The entries shown during the contest: `now`'s, and `on_release`'s
@@ -377,6 +380,91 @@ def _under_sooner(entry: str, time: str, show: ShowTimes) -> str | None:
                     f"{entry} is shown then too. Remove it here, or list {folder} later."
                 )
     return None
+
+
+def holds(picked: Mapping[str, object], key: Mapping[str, object]) -> bool:
+    """Whether a group picking runs by `picked`, each repeated input's value
+    or list of values, holds the run with `key`: one of each input's values
+    is the run's, as a number by its amount (`same_value`).
+    """
+    return all(
+        key.get(name) is not None
+        and any(
+            same_value(key[name], value)
+            for value in (given if isinstance(given, list) else [given])
+        )
+        for name, given in picked.items()
+    )
+
+
+SHOWN_RUN = ("verdict", "passed", "reports")
+"""What an entrant sees of a run's result beside its place and key: its
+verdict, `passed`, and the numbers its steps reported. Its texts, label and
+message are references to stored outputs, which no entrant's route reads
+yet (open 114)."""
+
+
+def runs_shown(
+    scoring: Scoring,
+    runs: Sequence[Run],
+    results: Mapping[str, Mapping[str, Any]],
+    files: Collection[str],
+    *,
+    revealed: bool,
+) -> list[dict[str, Any]]:
+    """The runs of a grading its entrant is shown now (9.4), from `scoring`,
+    the task's as entrants read it, `runs`, its runs in the task's order,
+    `results`, the grading's runs by id, and `files`, every file of the
+    task. Only a group `show` lists shows runs: each listed under `now`,
+    and under `after_close` once `revealed`, in the order listed, `all`
+    among them. `on_release` shows nothing until a release, which Unicon
+    has no action for yet, and a value shows no run, whatever it reads.
+    Each run of a listed group with a result is shown with the group's
+    name, its place in the group from 1 ("Test 3"), never its id, which
+    counts every run of the task; its key, a file or folder it names left
+    out unless `show` shows it now; and `SHOWN_RUN`. A run in two listed
+    groups is shown in each.
+    """
+    times = ("now", "after_close") if revealed else ("now",)
+    listed = [entry for time in times for entry in scoring.show.lists()[time]]
+    shown: list[dict[str, Any]] = []
+    for group in dict.fromkeys(listed):
+        if group == ALL:
+            held = list(runs)
+        elif group in scoring.groups:
+            held = [run for run in runs if holds(scoring.groups[group], run.key)]
+        else:
+            continue
+        for place, run in enumerate(held, start=1):
+            result = results.get(run.id)
+            if result is None:
+                continue
+            key = {
+                name: value
+                for name, value in _key_json(run.key).items()
+                if _file_shown(scoring, value, files, times)
+            }
+            shown.append(
+                {
+                    "group": group,
+                    "place": place,
+                    "key": key,
+                    **{name: result[name] for name in SHOWN_RUN if name in result},
+                }
+            )
+    return shown
+
+
+def _file_shown(
+    scoring: Scoring, value: object, files: Collection[str], times: Sequence[str]
+) -> bool:
+    """Whether a run's key may name `value`: it names no file or folder of
+    the task, or `show` shows each file it names at one of `times`.
+    """
+    if not isinstance(value, str):
+        return True
+    named = named_by(files, value)
+    return not named or all(file_time(scoring, path) in times for path in named)
 
 
 def shown_times(show: ShowTimes) -> dict[str, str]:
@@ -524,6 +612,7 @@ def check_run_task(
     binder.show()
     binder.limits(runs)
     binder.manifests(runs, manifests)
+    binder.manifest_types(manifests)
     marks = binder.self_reported()
     if previous is not None and submitted:
         binder.entrant_kept(previous)
@@ -539,6 +628,7 @@ def check_run_task(
         binder.settings,
         marks,
         binder.ids,
+        binder.manifest_outputs(manifests),
     )
     early = task.early()
     task = RunTask(
@@ -550,6 +640,7 @@ def check_run_task(
         task.settings,
         task.self_reported,
         task.ids,
+        task.manifest_outputs,
     )
     return RunTaskCheck([], task)
 
@@ -796,14 +887,7 @@ class _Binder:
                 wanted[key] = values
             if len(wanted) != len(picks):
                 continue
-            held = tuple(
-                run.id
-                for run in runs
-                if all(
-                    any(same_value(run.key[key], value) for value in values)
-                    for key, values in wanted.items()
-                )
-            )
+            held = tuple(run.id for run in runs if holds(wanted, run.key))
             if not held and runs:
                 self.refuse(at, "This group holds no run: no run has all of these values.")
             found[name] = held
@@ -885,27 +969,18 @@ class _Binder:
         return columns
 
     def _deferred_port(self, report: ResolvedReport, manifests: Mapping[str, bytes]) -> Port | None:
-        """The type a report of a manifest the task gives has, in every file
-        the task fills it with that reads; refused where two of those files
-        disagree, since one column holds the report of every run.
+        """The type a report of a manifest the task gives has, in the first
+        file the task fills it with that reads and reports it; two files that
+        disagree are refused at `manifest_types`.
         """
         program = report.made_by
         if program is None or not isinstance(program.manifest, InputManifest):
             return None
-        name = program.manifest.input
         types: dict[str, str] = {}
-        for path in self._filled_with(name):
+        for path in self._filled_with(program.manifest.input):
             read = _read_manifest(path, manifests, program)
             if read is not None and report.output in read.reports:
                 types.setdefault(read.reports[report.output].type, path)
-        if len(types) > 1:
-            (one, first), (other, second) = sorted(types.items(), key=lambda each: each[1])[:2]
-            self.refuse(
-                self.where.get(name, ("inputs", name)),
-                f"{first} reports {report.output} as {a_type(Type(one))} and {second} as "
-                f"{a_type(Type(other))}, but "
-                f"{report.name} is one column of every run. Give it one type in every file.",
-            )
         if not types:
             return None
         return Port.model_validate({"type": min(types, key=lambda each: types[each])})
@@ -1144,7 +1219,7 @@ class _Binder:
                         f"{deferred.path}.",
                     )
                     continue
-                optional = report.optional or bool(step.programs)
+                optional = report.optional or deferred.program is not None
                 if deferred.port is None:
                     if deferred.unit and report.type != "number":
                         self.refuse(
@@ -1167,6 +1242,62 @@ class _Binder:
                         f"and the workflow gives it at {deferred.path} to a port that must have "
                         "it.",
                     )
+
+    def manifest_types(self, manifests: Mapping[str, bytes]) -> None:
+        """Every report of the files the task fills one manifest with has one
+        type in all of them, whether or not the workflow reads it: the step
+        declares each report once, as one output of every run.
+        """
+        for step in self.checked.steps.values():
+            for program in [step.program, *step.programs.values()]:
+                if not isinstance(program.manifest, InputManifest):
+                    continue
+                name = program.manifest.input
+                types: dict[str, dict[str, str]] = {}
+                for path in self._filled_with(name):
+                    read = _read_manifest(path, manifests, program)
+                    for report, each in (read.reports if read is not None else {}).items():
+                        types.setdefault(report, {}).setdefault(each.type, path)
+                for report, seen in sorted(types.items()):
+                    if len(seen) < 2:
+                        continue
+                    (one, first), (other, second) = sorted(seen.items(), key=lambda x: x[1])[:2]
+                    self.refuse(
+                        self.where.get(name, ("inputs", name)),
+                        f"{first} reports {report} as {a_type(Type(one))} and {second} as "
+                        f"{a_type(Type(other))}, but step {step.id} writes {report} as one "
+                        "output of every run. Give it one type in every file.",
+                    )
+
+    def manifest_outputs(self, manifests: Mapping[str, bytes]) -> dict[str, dict[str, Port]]:
+        """Each step's outputs that a manifest the task gives declares, keyed
+        as the step writes them, `<program>.<report>` for one of its
+        programs: every report of every file the task fills the manifest
+        with, of the one type `manifest_types` holds them to. A report is
+        optional where the file says so or one of those files leaves it
+        out, and every report of one of the step's programs, whose step is
+        accepted whatever the program says, as a manifest of the workflow's
+        makes them (`run_workflow._outputs`); the step's own program's are
+        not.
+        """
+        found: dict[str, dict[str, Port]] = {}
+        for step in self.checked.steps.values():
+            for name, program in [(None, step.program), *step.programs.items()]:
+                if not isinstance(program.manifest, InputManifest):
+                    continue
+                read = [
+                    _read_manifest(path, manifests, program)
+                    for path in self._filled_with(program.manifest.input)
+                ]
+                files = [each for each in read if each is not None]
+                for each in files:
+                    ports = report_ports(each, every_optional=name is not None)
+                    for report, port in ports.items():
+                        if not all(report in other.reports for other in files):
+                            port = port.model_copy(update={"optional": True})
+                        key = f"{name}.{report}" if name is not None else report
+                        found.setdefault(step.id, {}).setdefault(key, port)
+        return found
 
     def _unread(
         self, at: Path, path: str, manifests: Mapping[str, bytes], program: Program

@@ -108,6 +108,7 @@ from forge.db.tables import Upload as UploadRow
 from forge.db.tables.gradings import FRONT
 from forge.domain import exact_json
 from forge.domain import submissions as rules
+from forge.domain.blocks.catalogue import ALL
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Conflict,
@@ -131,9 +132,17 @@ from forge.domain.meanings import ValueMeaning, shown_meanings
 from forge.domain.names import WorkspaceOwner
 from forge.domain.release import due_of, late_days
 from forge.domain.roles import Role, contest_id_of, task_scope
+from forge.domain.run_task import SHOWN_RUN, runs_shown
 from forge.domain.scoring import Points
 from forge.domain.sessions import Session
-from forge.domain.showing import GroupShown, SubmissionState, filled_in, shown, told
+from forge.domain.showing import (
+    GroupShown,
+    SubmissionState,
+    filled_in,
+    shown,
+    told,
+)
+from forge.domain.step_data import RESULT_VERSION
 from forge.domain.submissions import Submitted, SubmittedInput, UploadedFile
 from forge.domain.uploads import (
     POINTER_MAX,
@@ -183,7 +192,8 @@ class Result:
     the grading's own `GradingStatus`. Once done, `meanings` lists every
     value the workflow reports, in its order, with the title and unit a
     page names it by and how it folds, a value a sealed step holds back
-    left out until the reveal.
+    left out until the reveal. A run task's grading has no groups or
+    values yet: `runs` holds each run shown to its entrant (`_runs`).
     """
 
     id: uuid.UUID
@@ -199,6 +209,7 @@ class Result:
     folded: Mapping[str, Fraction] = field(default_factory=dict)
     limit: int | None = None
     meanings: tuple[ValueMeaning, ...] = ()
+    runs: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -895,6 +906,8 @@ async def _result(
         return Result(row.id, row.attempt, state, None, None, (), {}, limit=row.submission_limit)
     if status is not GradingStatus.DONE or row.result is None:
         return Result(row.id, row.attempt, state, None, None, (), {})
+    if row.result.get("schema_version") == RESULT_VERSION:
+        return await _runs(ctx, scorer.current, row, state, reveal_at, everything=everything)
     graded = await scorer.graded(PublicationId(row.publication_id))
     if graded is None:
         return Result(row.id, row.attempt, state, None, None, (), {})
@@ -935,6 +948,53 @@ async def _result(
             graded.meanings, graded.sealed.values, revealed=revealed or everything
         ),
     )
+
+
+async def _runs(
+    ctx: Context,
+    current: PublishedTask,
+    row: Grading,
+    state: SubmissionState | GradingStatus,
+    reveal_at: datetime | None,
+    *,
+    everything: bool,
+) -> Result:
+    """A run task's grading as its entrant reads it, from both its rows
+    (11.3): the early row's runs and the late row's latest attempt's once
+    it is done, filtered by what the task's latest publication shows now
+    (`runs_shown`, 9.4), so a group moved to `now` shows its runs even
+    where they ran late. Before the reveal the late row is told to no
+    entrant; after it, while that attempt has no result, the grading is
+    told as where it stands, `grading` or `delayed`. Organisers read every
+    run of both rows, each as the group `all` with its id and whole key,
+    and where each row stands in the gradings routes. The values a task's
+    scoring makes from the runs are stage 5's.
+    """
+    runs = list(row.result["runs"] if row.result else ())
+    late = await ctx.db.scalar(
+        select(Grading).where(Grading.early_id == row.id).order_by(Grading.attempt.desc()).limit(1)
+    )
+    revealed = reveal_at is not None and ctx.now >= reveal_at
+    if late is not None:
+        if late.status == GradingStatus.DONE and late.result is not None:
+            runs += late.result["runs"]
+        elif revealed and not everything:
+            state = told(gradings.status_of(ctx, late))
+    held = await published.runs_held(ctx, current)
+    results = {run["id"]: run for run in runs}
+    scoring = current.definition.scoring
+    assert scoring is not None, "a run task's definition always has scoring"
+    if everything:
+        order = {run.id: place for place, run in enumerate(held.runs)}
+        ranked = sorted(runs, key=lambda run: order.get(run["id"], len(order)))
+        shown = [
+            {"group": ALL, "place": place, "id": run["id"], "key": run["key"]}
+            | {name: run[name] for name in SHOWN_RUN if name in run}
+            for place, run in enumerate(ranked, start=1)
+        ]
+    else:
+        shown = runs_shown(scoring, held.runs, results, held.files, revealed=revealed)
+    return Result(row.id, row.attempt, state, None, None, (), {}, runs=tuple(shown))
 
 
 async def _own(

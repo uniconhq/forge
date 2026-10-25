@@ -22,7 +22,7 @@ while its row starts, and only for the variables it was started with.
 
 import json
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -31,6 +31,7 @@ from sqlalchemy import select, text, update
 from forge.adapters.ci.fake import dispatch_of, pipeline_variables
 from forge.db.tables import Grading, GradingStep, StepOutput
 from forge.db.tables import Upload as UploadRow
+from forge.db.tables.entrants import Entrant
 from forge.domain.errors import CiRequestRefused, Misconfigured
 from forge.domain.grading import (
     BOXED_SHAPE,
@@ -41,6 +42,7 @@ from forge.domain.grading import (
 )
 from forge.domain.identity import PLATFORM, AsOrgAccount
 from forge.domain.ids import OrgId, RunId
+from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.run_plan import PipelineKind
 from forge.domain.showing import SubmissionState
@@ -254,6 +256,142 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     assert await _report(setup, late.id, "late") is GradingStatus.DONE
     assert _verdicts(await _row(setup, late.id)) == [("r3", "accepted"), ("r4", "accepted")]
     assert await _seen(setup, session, islands) == [(1, SubmissionState.GRADED)]
+
+
+async def _grading(setup: Setup, session: Any, islands: Any) -> submissions.Result:
+    [found] = await submissions.mine(setup, session, islands.task)
+    assert found.grading is not None
+    return found.grading
+
+
+def _runs_seen(grading: submissions.Result) -> list[tuple[str, int, str]]:
+    return [(run["group"], run["place"], run["verdict"]) for run in grading.runs]
+
+
+BEFORE_CLOSE = datetime(2026, 9, 26, 14, 50, tzinfo=UTC)
+AFTER_CLOSE = datetime(2026, 9, 26, 15, 5, tzinfo=UTC)
+
+
+async def _graded_both(setup: Setup, acme: Acme, text: str = TASKS["islands"][0]) -> Any:
+    """islands as `text` has it, one submission graded early and late
+    before the close; the entrant's session."""
+    islands = await _checked(setup, acme, text)
+    session = await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    await _early(setup, acme, early.id)
+    [late] = await _rows(setup, "late")
+    await _step(setup, acme, late.id, "late", "solution", _batch())
+    await _step(setup, acme, late.id, "late", "compare", _batch(score=True))
+    assert await _report(setup, late.id, "late") is GradingStatus.DONE
+    return islands, session
+
+
+async def test_the_entrant_reads_the_runs_of_the_groups_shown_now_and_after_the_reveal(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme)
+    session = await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    await _early(setup, acme, early.id)
+    [late] = await _rows(setup, "late")
+
+    grading = await _grading(setup, session, islands)
+    assert grading.status == SubmissionState.GRADED
+    assert _runs_seen(grading) == [("sample_tests", 1, "accepted"), ("sample_tests", 2, "accepted")]
+    assert set(grading.runs[0]) == {"group", "place", "key", "verdict", "passed", "reports"}
+    assert grading.runs[0]["key"] == {"input": "samples/1.in", "answer": "samples/1.ans"}
+
+    clock.set(AFTER_CLOSE)
+    grading = await _grading(setup, session, islands)
+    assert grading.status == SubmissionState.GRADING
+    assert _runs_seen(grading) == [
+        ("sample_tests", 1, "accepted"),
+        ("sample_tests", 2, "accepted"),
+        ("all", 1, "accepted"),
+        ("all", 2, "accepted"),
+    ]
+
+    await _step(setup, acme, late.id, "late", "solution", _batch())
+    await _step(setup, acme, late.id, "late", "compare", _batch(score=True))
+    assert await _report(setup, late.id, "late") is GradingStatus.DONE
+    grading = await _grading(setup, session, islands)
+    assert grading.status == SubmissionState.GRADED
+    assert _runs_seen(grading) == [
+        ("sample_tests", 1, "accepted"),
+        ("sample_tests", 2, "accepted"),
+        ("all", 1, "accepted"),
+        ("all", 2, "accepted"),
+        ("all", 3, "accepted"),
+        ("all", 4, "accepted"),
+    ]
+    # No entry of show lists tests/, so a run's key never names its files.
+    assert [run["key"] for run in grading.runs[4:]] == [{}, {}]
+
+
+VALUES_ONLY = (
+    TASKS["islands"][0]
+    .replace(
+        "now: [sample_score, sample_time, sample_tests, samples/]", "now: [sample_score, samples/]"
+    )
+    .replace(
+        "after_close: [st1, st2, total, all]",
+        "after_close: [total]\n    on_release: [st1_tests, st2_tests]",
+    )
+)
+"""islands showing values alone, and groups only on a release."""
+
+
+async def test_a_value_shown_shows_no_run_and_a_group_on_release_none_before_a_release(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, session = await _graded_both(setup, acme, VALUES_ONLY)
+    assert (await _grading(setup, session, islands)).runs == ()
+    clock.set(AFTER_CLOSE)
+    assert (await _grading(setup, session, islands)).runs == ()
+
+
+async def test_a_group_moved_to_now_shows_its_runs_where_they_ran_late(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, session = await _graded_both(setup, acme)
+    text = TASKS["islands"][0].replace(
+        "now: [sample_score, sample_time, sample_tests, samples/]",
+        "now: [sample_score, sample_time, sample_tests, st2_tests, samples/, tests/4.in]",
+    )
+    await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
+    await setup.settle()
+
+    grading = await _grading(setup, session, islands)
+    assert _runs_seen(grading) == [
+        ("sample_tests", 1, "accepted"),
+        ("sample_tests", 2, "accepted"),
+        ("st2_tests", 1, "accepted"),
+        ("st2_tests", 2, "accepted"),
+    ]
+    # tests/4.in is shown now and tests/3.in is not, so only one key names its file.
+    assert [run["key"] for run in grading.runs[2:]] == [{}, {"input": "tests/4.in"}]
+
+
+async def test_organisers_read_every_run_of_both_rows_with_its_id(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, _ = await _graded_both(setup, acme, VALUES_ONLY)
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    async with setup.unit_of_work() as ctx:
+        entrant = await ctx.db.scalar(select(Entrant.id))
+    assert entrant is not None
+    graded = await submissions.organised(setup, manager, islands.task, EntrantOwner(entrant), 1)
+    assert graded.grading is not None
+    assert [(run["id"], run["place"]) for run in graded.grading.runs] == [
+        ("r1", 1),
+        ("r2", 2),
+        ("r3", 3),
+        ("r4", 4),
+    ]
 
 
 async def test_an_early_compile_error_gives_every_late_run_its_verdict_and_no_late_pipeline(

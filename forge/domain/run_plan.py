@@ -1241,7 +1241,10 @@ class _Planner:
                 "boxes": (len(resolved.programs) or 1) if boxed in BOXED else None,
                 "outputs": {
                     f"{name}?" if port.optional else name: port.type.value
-                    for name, port in resolved.outputs.items()
+                    for name, port in {
+                        **resolved.outputs,
+                        **self.task.manifest_outputs.get(step.id, {}),
+                    }.items()
                 },
                 "folders": tuple(
                     sorted(
