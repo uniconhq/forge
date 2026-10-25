@@ -310,12 +310,10 @@ def test_a_step_that_gave_nothing_is_a_system_error_but_a_stop_before_it_is_not(
     stopped = _early(compile=_found("compile_error", log="error"), solution_r1=None)
 
     assert missing["error"] == "The step compare gave nothing for the run r1."
-    assert [
-        run["verdict"] for run in result_of(islands, "early", frozenset(), stopped)["runs"]
-    ] == [
-        "compile_error",
-        "compile_error",
-    ]
+    result = result_of(islands, "early", frozenset(), stopped)
+    assert [run["verdict"] for run in result["runs"]] == ["compile_error", "compile_error"]
+    # Which the compiled fact reads.
+    assert result["once"]["outcomes"] == {"compile": "compile_error"}
 
 
 def test_staff_texts_are_kept_once_per_item_this_pipeline_did(islands: RunPlan) -> None:
@@ -330,7 +328,8 @@ def test_staff_texts_are_kept_once_per_item_this_pipeline_did(islands: RunPlan) 
         "staff_message",
     )
     late = result_of(islands, "late", frozenset(), {})
-    assert late["staff"] == [] and late["once"] == {"reports": {}, "texts": {}}
+    assert late["staff"] == []
+    assert late["once"] == {"reports": {}, "texts": {}, "outcomes": {}}
 
 
 def test_a_64_kb_text_on_a_thousand_runs_stays_under_the_cap(islands: RunPlan) -> None:

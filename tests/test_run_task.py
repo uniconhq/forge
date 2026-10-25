@@ -389,6 +389,9 @@ def test_cartpole_marks_what_the_entrants_weights_could_set(
     }
     assert task.self_reported_values() == {"reward", "windy"}
     assert task.runs_file().self_reported == task.self_reported
+    # The save keeps the values it checked, which a result marks.
+    read = RunsFile.from_bytes(task.runs_file().to_bytes())
+    assert read.self_reported_values == {"reward", "windy"}
 
 
 def test_tour_asks_for_one_route_per_part(primitives: dict[str, PrimitiveDeclaration]) -> None:

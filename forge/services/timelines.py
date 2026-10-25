@@ -13,8 +13,9 @@ gradings, one per submission, at the moment it was taken:
 
 - C1 across files: every entry of `tasks` names a task of the contest.
   `worth`, and `due` with `late_per_day`, are refused on a task whose latest
-  publication gives no points. A task with no publication yet is not
-  judged, since its first save says what it gives.
+  publication gives no points, but a run task may have a `due`, which its
+  values read as `seconds_late`, and not a `late_per_day`. A task with no
+  publication yet is not judged, since its first save says what it gives.
 - C2, for what happened: a task released under the settings saved before,
   its contest published and past its start and its `release_at` passed,
   withdrawn since or not, does not move its release later, nor lose its
@@ -395,7 +396,10 @@ def _dropped(
 async def _points(
     ctx: Context, after: ContestDefinition, tasks: Mapping[str, TaskId]
 ) -> list[Problem]:
-    """C1 across files: no `worth` or `due` on a task that gives no points."""
+    """C1 across files: no `worth` on a task that gives no points, and no
+    `due` either unless it is a run task, whose values may read
+    `seconds_late`; no `late_per_day` on a run task, which takes no share
+    of points."""
     problems: list[Problem] = []
     for index, entry in enumerate(after.tasks):
         if entry.worth is None and entry.due is None:
@@ -412,13 +416,23 @@ async def _points(
                     "empty, and rank it by a value instead.",
                 )
             )
-        if entry.due is not None:
+        if entry.due is not None and not found.definition.runs:
             problems.append(
                 Problem(
                     path=f"tasks[{index}].due",
                     message=(
                         f"{entry.id} gives no points, so a due time would change nothing. Give it "
                         "a closing time instead."
+                    ),
+                )
+            )
+        if entry.late_per_day is not None and found.definition.runs:
+            problems.append(
+                Problem(
+                    path=f"tasks[{index}].late_per_day",
+                    message=(
+                        f"{entry.id} gives no points to take a share of. Leave this empty, and "
+                        "give the task a value that reads seconds_late instead."
                     ),
                 )
             )

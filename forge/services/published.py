@@ -36,6 +36,7 @@ from sqlalchemy import select
 
 from forge.db.tables import Grading
 from forge.db.tables.gradings import PASSED, SAVE
+from forge.domain.blocks.evaluate import Column
 from forge.domain.content import check_path
 from forge.domain.definitions import (
     CONTEST_FILE,
@@ -55,6 +56,7 @@ from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.publications import Publication
 from forge.domain.run_plan import RunPlan
+from forge.domain.run_results import compilers
 from forge.domain.run_task import RUNS_PATH, Run, RunsFile, file_time
 from forge.domain.showing import generation_of
 from forge.domain.submissions import Field, fields_of, run_fields_of
@@ -236,27 +238,55 @@ changes, so the time only bounds what is held."""
 @dataclass(frozen=True, slots=True)
 class RunsHeld:
     """A run task's latest publication as its entrants' results read it:
-    its runs in the task's order, and every file it holds.
+    its runs in the task's order, every file it holds, each report's
+    column as its plan gives it, the steps whose compile error `compiled`
+    reads (`run_results.compilers`), and the values that read a column the
+    entrant could set, as its save checked them (#504).
     """
 
     runs: tuple[Run, ...]
     files: frozenset[str]
+    columns: Mapping[str, Column] = field(default_factory=dict)
+    compiling: frozenset[str] = frozenset()
+    self_reported: frozenset[str] = frozenset()
 
 
 async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
-    """The runs and files of a run task's latest publication, read once,
-    since a publication never changes. A publication's runs file always
-    reads, as its save wrote it, so one that does not fails loudly.
+    """The runs, files and plan of a run task's latest publication, read
+    once, since a publication never changes. A publication's runs file and
+    plan always read, as its save wrote them, so one that does not fails
+    loudly.
     """
     version = published.publication.version
 
     async def read() -> RunsHeld:
         found = await ctx.forge.content.read_file(PLATFORM, published.id, RUNS_PATH, at=version)
+        planned = await ctx.forge.content.read_file(PLATFORM, published.id, PLAN_PATH, at=version)
         listed = await ctx.forge.content.list_files(PLATFORM, published.id, at=version)
-        return RunsHeld(RunsFile.from_bytes(found.content).runs, frozenset(listed.tokens))
+        runs = RunsFile.from_bytes(found.content)
+        plan = RunPlan.from_bytes(planned.content)
+        return RunsHeld(
+            runs.runs,
+            frozenset(listed.tokens),
+            {name: entry.column() for name, entry in plan.reports.items()},
+            compilers(plan),
+            runs.self_reported_values,
+        )
 
     key = f"published.runs.{published.id}.{version}"
     return await ctx.memo.remembered(key, FORM_KEPT, read)
+
+
+async def runs_at(ctx: Context, task: TaskId, version: VersionId) -> tuple[Run, ...]:
+    """The runs of a run task's publication at `version`, each saying
+    whether its plan runs it early, read once, since a publication never
+    changes."""
+
+    async def read() -> tuple[Run, ...]:
+        found = await ctx.forge.content.read_file(PLATFORM, task, RUNS_PATH, at=version)
+        return RunsFile.from_bytes(found.content).runs
+
+    return await ctx.memo.remembered(f"published.runs_at.{task}.{version}", FORM_KEPT, read)
 
 
 async def form(ctx: Context, published: PublishedTask) -> TaskForm:

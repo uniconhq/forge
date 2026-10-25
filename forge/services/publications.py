@@ -1215,7 +1215,8 @@ async def _contest_points(
     """Check 10's last part: a task that gives no points is refused while
     its contest's entry for it gives it a `worth` or a `due`, naming the
     contest's line, since every save of the contest would be refused there
-    from then on.
+    from then on; a run task may have a `due`, which its values read as
+    `seconds_late`, but not a `late_per_day`.
     """
     if definition.gives_points:
         return []
@@ -1230,8 +1231,10 @@ async def _contest_points(
         said = []
         if entry.worth is not None:
             said.append(f"gives it a worth of {spelled(entry.worth)}")
-        if entry.due is not None:
+        if entry.due is not None and not definition.runs:
             said.append("gives it a due time")
+        if entry.late_per_day is not None and definition.runs:
+            said.append("takes a share of its points for each late day")
         if definition.runs:
             problems.extend(
                 Problem(

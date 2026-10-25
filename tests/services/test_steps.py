@@ -383,6 +383,7 @@ async def test_islands_is_graded_through_the_door_step_by_step(
     assert result["once"] == {
         "reports": {},
         "texts": {"log": {"output": str(log.id), "name": "log"}},
+        "outcomes": {"compile": "accepted"},
     }
     assert result["runs"][0]["message"]["name"] == "message"
     assert len(await _stored(setup, grading_id=row)) == 5
@@ -411,7 +412,7 @@ async def test_a_late_grading_does_only_the_late_runs_reading_the_early_compile(
         ("r3", "accepted"),
         ("r4", "accepted"),
     ]
-    assert result["once"] == {"reports": {}, "texts": {}}
+    assert result["once"] == {"reports": {}, "texts": {}, "outcomes": {}}
 
 
 async def test_a_run_an_earlier_step_did_not_accept_is_left_out(

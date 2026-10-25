@@ -48,7 +48,7 @@ from typing import Any
 from forge.domain import exact_json
 from forge.domain.blocks.catalogue import ALL
 from forge.domain.blocks.check import ValuesCheck, check_names, check_values, same_value
-from forge.domain.content import named_by, names_path, path_problem
+from forge.domain.content import names_path, path_problem
 from forge.domain.definitions import (
     ENTRANT,
     TASK_FILE,
@@ -163,8 +163,10 @@ class EntrantInput:
 class RunsFile:
     """`plans/runs.json`: the id of every key the task has had, its runs as
     the version saved them, its entrant inputs' types and parts, the
-    columns self-reported with the entrant inputs that make them so, and
-    whether a value shown `now` reads `compiled`.
+    columns self-reported with the entrant inputs that make them so,
+    whether a value shown `now` reads `compiled`, and the values that read
+    a self-reported column, directly or through others, as the save
+    checked them (`RunTask.self_reported_values`), which a result marks.
     """
 
     ids: Mapping[str, str]
@@ -172,12 +174,13 @@ class RunsFile:
     entrant: Mapping[str, tuple[Type, int | None]]
     self_reported: Mapping[str, frozenset[str]]
     compile_early: bool
+    self_reported_values: frozenset[str] = frozenset()
 
     def to_bytes(self) -> bytes:
         document = {
             "ids": dict(sorted(self.ids.items())),
             "runs": [
-                {"id": run.id, "key": _key_json(run.key), "early": run.early} for run in self.runs
+                {"id": run.id, "key": key_json(run.key), "early": run.early} for run in self.runs
             ],
             "entrant": {
                 name: {"type": kind.value, "parts": parts}
@@ -187,6 +190,7 @@ class RunsFile:
                 name: sorted(inputs) for name, inputs in sorted(self.self_reported.items())
             },
             "compile_early": self.compile_early,
+            "self_reported_values": sorted(self.self_reported_values),
         }
         return (exact_json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
 
@@ -214,6 +218,7 @@ class RunsFile:
                     for name, inputs in document["self_reported"].items()
                 },
                 _flag(document["compile_early"]),
+                frozenset(_text(each) for each in document.get("self_reported_values", ())),
             )
         except (KeyError, TypeError, AttributeError, ValueError) as error:
             raise ValueError(f"{RUNS_PATH} does not read: {error}") from None
@@ -290,6 +295,7 @@ class RunTask:
             {name: (each.type, each.parts) for name, each in self.entrant.items()},
             self.self_reported,
             self.compile_early(),
+            self.self_reported_values(),
         )
 
 
@@ -344,7 +350,7 @@ def canonical(key: Mapping[str, object]) -> str:
         name: Decimal(spelled(value)) if is_number(value) and not isinstance(value, bool) else value
         for name, value in key.items()
     }
-    return exact_json.dumps(_key_json(amounts), sort_keys=True)
+    return exact_json.dumps(key_json(amounts), sort_keys=True)
 
 
 def show_names(scoring: Scoring) -> set[str]:
@@ -395,77 +401,6 @@ def holds(picked: Mapping[str, object], key: Mapping[str, object]) -> bool:
         )
         for name, given in picked.items()
     )
-
-
-SHOWN_RUN = ("verdict", "passed", "reports")
-"""What an entrant sees of a run's result beside its place and key: its
-verdict, `passed`, and the numbers its steps reported. Its texts, label and
-message are references to stored outputs, which no entrant's route reads
-yet: a reused output may be another entrant's of the same org, so such a
-route shows only the named output, nothing else of its grading."""
-
-
-def runs_shown(
-    scoring: Scoring,
-    runs: Sequence[Run],
-    results: Mapping[str, Mapping[str, Any]],
-    files: Collection[str],
-    *,
-    revealed: bool,
-) -> list[dict[str, Any]]:
-    """The runs of a grading its entrant is shown now (9.4), from `scoring`,
-    the task's as entrants read it, `runs`, its runs in the task's order,
-    `results`, the grading's runs by id, and `files`, every file of the
-    task. Only a group `show` lists shows runs: each listed under `now`,
-    and under `after_close` once `revealed`, in the order listed, `all`
-    among them. `on_release` shows nothing until a release, which Unicon
-    has no action for yet, and a value shows no run, whatever it reads.
-    Each run of a listed group with a result is shown with the group's
-    name, its place in the group from 1 ("Test 3"), never its id, which
-    counts every run of the task; its key, a file or folder it names left
-    out unless `show` shows it now; and `SHOWN_RUN`. A run in two listed
-    groups is shown in each.
-    """
-    times = ("now", "after_close") if revealed else ("now",)
-    listed = [entry for time in times for entry in scoring.show.lists()[time]]
-    shown: list[dict[str, Any]] = []
-    for group in dict.fromkeys(listed):
-        if group == ALL:
-            held = list(runs)
-        elif group in scoring.groups:
-            held = [run for run in runs if holds(scoring.groups[group], run.key)]
-        else:
-            continue
-        for place, run in enumerate(held, start=1):
-            result = results.get(run.id)
-            if result is None:
-                continue
-            key = {
-                name: value
-                for name, value in _key_json(run.key).items()
-                if _file_shown(scoring, value, files, times)
-            }
-            shown.append(
-                {
-                    "group": group,
-                    "place": place,
-                    "key": key,
-                    **{name: result[name] for name in SHOWN_RUN if name in result},
-                }
-            )
-    return shown
-
-
-def _file_shown(
-    scoring: Scoring, value: object, files: Collection[str], times: Sequence[str]
-) -> bool:
-    """Whether a run's key may name `value`: it names no file or folder of
-    the task, or `show` shows each file it names at one of `times`.
-    """
-    if not isinstance(value, str):
-        return True
-    named = named_by(files, value)
-    return not named or all(file_time(scoring, path) in times for path in named)
 
 
 def shown_times(show: ShowTimes) -> dict[str, str]:
@@ -1462,7 +1397,7 @@ def _value_words(value: object) -> str:
     return str(value) if isinstance(value, Part) else spelled(value)
 
 
-def _key_json(key: Mapping[str, object]) -> dict[str, object]:
+def key_json(key: Mapping[str, object]) -> dict[str, object]:
     return {
         name: {"part": value.number} if isinstance(value, Part) else value
         for name, value in key.items()
@@ -1514,6 +1449,8 @@ __all__ = [
     "check_run_task",
     "file_time",
     "hidden_again",
+    "holds",
+    "key_json",
     "manifest_files",
     "show_names",
     "shown_times",

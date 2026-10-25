@@ -22,6 +22,12 @@ extension on the task, is late by the number of started days of 86,400
 seconds since, which the scoring turns into points. A task reveals, showing
 what was held back, once it has closed for every row, the longest extension
 on it included.
+
+A run task's values read two facts of time instead (SIMPLER-CORE.md 9.2),
+each worked out on every read, never stored, so a changed due or
+extension changes only the values that read them: `seconds_late`, how far
+a submission is after the row's due, and `seconds`, how far it is after
+the contest's start, each an exact number of seconds and 0 before.
 """
 
 import math
@@ -29,6 +35,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
+from fractions import Fraction
 
 from forge.domain.definitions import ContestDefinition, ContestTask, ContestVisibility, State
 
@@ -134,6 +141,28 @@ def late_days(due: datetime | None, at: datetime) -> int:
     if due is None or at <= due:
         return 0
     return math.ceil((at - due) / DAY)
+
+
+def seconds_late(due: datetime | None, at: datetime) -> Fraction:
+    """How many seconds a submission made `at` is after `due`, exactly: 0
+    on time or with no due.
+    """
+    return _seconds_after(due, at) if due is not None else Fraction(0)
+
+
+def seconds(start: datetime, at: datetime) -> Fraction:
+    """How many seconds a submission made `at` is after the contest's
+    `start`, exactly: 0 before it.
+    """
+    return _seconds_after(start, at)
+
+
+def _seconds_after(moment: datetime, at: datetime) -> Fraction:
+    """The seconds from `moment` to `at`, to the microsecond, 0 when `at`
+    is not after it."""
+    if at <= moment:
+        return Fraction(0)
+    return Fraction((at - moment) // timedelta(microseconds=1), 1_000_000)
 
 
 def in_words(moment: datetime) -> str:

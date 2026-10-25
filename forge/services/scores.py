@@ -1,5 +1,6 @@
 """Scoring a task's gradings on read (`forge.domain.scoring`), the same way
-for a contestant's own submissions and for the boards.
+for a contestant's own submissions and for the boards; and a run task's
+values, worked out on every read from both its rows (`run_scored`).
 
 A grading is scored with the publication it ran under as `showing.under`
 says: its own tests and sealed facts, and the latest `test_groups`,
@@ -35,7 +36,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from forge.db.tables import Grading
-from forge.db.tables.gradings import FRONT
+from forge.db.tables.gradings import FRONT, LATE
 from forge.domain.blocks.numbers import Better
 from forge.domain.boards import State
 from forge.domain.definitions import (
@@ -51,16 +52,21 @@ from forge.domain.ids import PublicationId
 from forge.domain.plans import PLAN_PATH, Plan
 from forge.domain.release import Extension, due_of, late_days
 from forge.domain.roles import contest_id_of, task_scope
+from forge.domain.run_results import RunGrading, Worked, facts_of, run_grading, worked_out
+from forge.domain.run_task import Run
 from forge.domain.scoring import ONE, Scored, best_of, late_factor, rule_weight, score
 from forge.domain.showing import Graded, under
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
 from forge.services import gradings, published, timelines
-from forge.services.published import PublishedTask
+from forge.services.published import PublishedTask, RunsHeld
 
 log = get_logger(__name__)
 
+FINISHED_WITH_RESULT = (GradingStatus.DONE, GradingStatus.SYSTEM_ERROR)
+"""Where a run task's row stands when its result is read: done, or failed
+with the runs it gave, its faulted ones waiting for staff."""
 GRADED_KEPT = published.FORM_KEPT
 """How long this process keeps what a past publication scores its gradings
 with: a publication never changes, so the time only bounds what is held."""
@@ -291,3 +297,106 @@ class Scorer:
 
         key = f"scores.graded.{current.id}.{publication}"
         return await ctx.memo.remembered(key, GRADED_KEPT, read)
+
+
+@dataclass(frozen=True, slots=True)
+class RunScored:
+    """A run task's grading worked out on read: the live publication's runs
+    and plan, the grading from both its rows and from its early row alone,
+    and the values reading a column the entrant could set.
+    """
+
+    held: RunsHeld
+    whole: Worked
+    early: Worked
+    self_reported: frozenset[str]
+
+
+async def late_of(ctx: Context, early: Grading) -> Grading | None:
+    """The attempt of the late row that follows the early row `early` that
+    counts, as `counted` takes an early row's: the latest that finished
+    with a result, so a staff retry still to run takes nothing away, or,
+    while none has, the latest; none while there is none."""
+    attempts = (
+        await ctx.db.scalars(
+            select(Grading).where(
+                Grading.submission_id == early.submission_id,
+                Grading.pipeline == LATE,
+                Grading.early_id == early.id,
+            )
+        )
+    ).all()
+    return counted(attempts) if attempts else None
+
+
+async def run_scored(
+    ctx: Context,
+    current: PublishedTask,
+    settings: ContestDefinition,
+    extension: Extension,
+    early: Grading,
+    late: Grading | None,
+) -> RunScored:
+    """The values of a run task's submission (SIMPLER-CORE.md 9.2): the live
+    publication's `scoring` over the runs of its early row, done or failed
+    with a result, and of its late row's attempt that counts, `late`, once
+    that is done or failed with a result, matched by run id, with the facts
+    of the row's due, its extension included, and the contest's start; and
+    the same from the early row alone, which is all an entrant reads until
+    the reveal (`run_showing`). A run neither row holds waits only when its
+    row's own plan put it in a pipeline still to give it: the early row's
+    while that row failed, the late row's while that row is queued, running
+    or failed, or not made since the early row failed. Any other, such as
+    one a later save added, never ran (`run_results`). Worked out on every
+    read, never stored (stage 5 section 6, item 1).
+    """
+    scoring = current.definition.scoring
+    assert scoring is not None, "a run task's definition always has scoring"
+    held = await published.runs_held(ctx, current)
+    early_failed = early.status != GradingStatus.DONE
+    late_result = None
+    late_waits = early_failed
+    planned = await _planned(ctx, current, early, held)
+    late_planned = planned
+    if late is not None:
+        status = gradings.status_of(ctx, late)
+        if late.result is not None and status in FINISHED_WITH_RESULT:
+            late_result = late.result
+        late_waits = status not in (
+            GradingStatus.DONE,
+            GradingStatus.CANCELLED,
+            GradingStatus.OVER_LIMIT,
+        )
+        late_planned = await _planned(ctx, current, late, held)
+    waits_early = {run.id for run in planned if run.early} if early_failed else set()
+    waits_late = {run.id for run in late_planned if not run.early} if late_waits else set()
+    entry = settings.entry(current.name)
+    due = due_of(settings, entry, extension) if entry is not None else None
+
+    def work(grading: RunGrading) -> Worked:
+        facts = facts_of(due, settings.start, early.submitted_at, grading.compiled)
+        return Worked(grading, worked_out(scoring, held.runs, grading, facts, held.columns), facts)
+
+    whole = run_grading(
+        held.runs,
+        early.result,
+        late_result,
+        waiting=waits_early | waits_late,
+        compiling=held.compiling,
+    )
+    alone = run_grading(
+        held.runs, early.result, None, waiting=waits_early, compiling=held.compiling
+    )
+    return RunScored(held, work(whole), work(alone), held.self_reported)
+
+
+async def _planned(
+    ctx: Context, current: PublishedTask, row: Grading, held: RunsHeld
+) -> tuple[Run, ...]:
+    """The runs of the publication `row` grades against, each saying whether
+    its plan runs it early; the live publication's when that one is gone."""
+    found = next((each for each in current.publications if each.id == row.publication_id), None)
+    if found is None:
+        log.warning("scores.publication_gone", task=current.id, publication=row.publication_id)
+        return held.runs
+    return await published.runs_at(ctx, current.id, found.version)

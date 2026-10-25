@@ -38,7 +38,8 @@ every text, a text report, `label`, `message`, `staff_message`, and the
 `extras` folder, is named by the stored output that holds it and its
 name, `{"output": <id>, "name": <name>}`, so a 64 KB text on each of a
 thousand runs leaves the result small. Reports of steps done once go in
-`once` on the grading whose pipeline ran the step.
+`once` on the grading whose pipeline ran the step, with the outcome each
+of those steps returned, which the `compiled` fact reads.
 """
 
 import hashlib
@@ -60,6 +61,7 @@ from forge.domain.run_plan import (
     RunPlan,
     RunStep,
 )
+from forge.domain.run_workflow import STAFF_OUTPUTS
 
 JOB_VERSION = 1
 """The job shape the door answers, runner's `job.schema.json`."""
@@ -99,7 +101,6 @@ OUTCOMES = frozenset(
     }
 )
 TEXT_OUTPUTS = ("label", "message")
-STAFF_OUTPUTS = ("staff_message", "extras")
 REPORT_STEP = "report"
 """The step Unicon adds to every grading's pipeline, which tells the door
 the pipeline has ended (`workflow_definition.PIPELINE_STEPS`)."""
@@ -464,10 +465,15 @@ def result_of(
         (step, None) for step in order if plan.steps[step].once and holds(plan, kind, step, None)
     ]
     once_reports, once_texts = _reports(plan, found, once_items)
+    outcomes = {
+        step: got.outputs["outcome"]
+        for step, _ in once_items
+        if isinstance(got := found.get((step, None)), Found)
+    }
     return {
         "schema_version": RESULT_VERSION,
         "runs": runs,
-        "once": {"reports": once_reports, "texts": once_texts},
+        "once": {"reports": once_reports, "texts": once_texts, "outcomes": outcomes},
         "staff": staff,
         "error": error,
         "run_log": None,

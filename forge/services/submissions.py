@@ -79,7 +79,13 @@ the inputs a submission was made with, and `download` the door to one of
 its files: where the proxy reads it from the forge and streams it to the
 person, so its bytes, two gigabytes or two, never pass through the
 platform. A run's log names every test, hidden ones too, so it is the
-organisers' alone.
+organisers' alone. A run task's result is read through
+`forge.domain.run_showing`, its values worked out on read
+(`scores.run_scored`). A text it shows is read one at a time, only
+while the result shows it to that reader: an entrant's by where it is
+shown (`read_text`), never by the stored output that holds it, whose id is
+another entrant's too and says when it was made; organisers' by that
+output (`read_organised_text`).
 
 Organisers who observe the task read any row's submission the same way
 (`organised`, TASK-FORMAT.md section 1.7): the same attempt, scored by the
@@ -103,12 +109,11 @@ from typing import Any
 
 from sqlalchemy import func, select, text
 
-from forge.db.tables import Grading
+from forge.db.tables import Grading, StepOutput
 from forge.db.tables import Upload as UploadRow
-from forge.db.tables.gradings import FRONT, LATE
-from forge.domain import exact_json
+from forge.db.tables.gradings import FRONT
+from forge.domain import exact_json, run_showing
 from forge.domain import submissions as rules
-from forge.domain.blocks.catalogue import ALL
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import (
     Conflict,
@@ -130,9 +135,9 @@ from forge.domain.identity import AsUser
 from forge.domain.ids import PublicationId, SubmissionId, TaskId, WorkspaceId
 from forge.domain.meanings import ValueMeaning, shown_meanings
 from forge.domain.names import WorkspaceOwner
-from forge.domain.release import due_of, late_days
+from forge.domain.release import Extension, due_of, late_days
 from forge.domain.roles import Role, contest_id_of, task_scope
-from forge.domain.run_task import SHOWN_RUN, runs_shown
+from forge.domain.run_showing import TextAt, ValueShown
 from forge.domain.scoring import Points
 from forge.domain.sessions import Session
 from forge.domain.showing import (
@@ -167,6 +172,7 @@ SUBMIT_LOCK = 0x5355424D
 """The first key of every lock on a workspace's submits of a task, the second
 being the workspace and task hashed by Postgres."""
 NO_SUCH_SUBMISSION = "There is no such submission."
+NO_SUCH_TEXT = "There is no such text."
 FORGE_UNAVAILABLE = "The server did not answer. Try again in a moment."
 FORGE_MISCONFIGURED = "Unicon is not set up right, so this cannot be done. Tell whoever runs it."
 FORGE_REFUSED = "The submission could not be saved. Submit again, or tell the organisers."
@@ -192,11 +198,17 @@ class Result:
     the grading's own `GradingStatus`. Once done, `meanings` lists every
     value the workflow reports, in its order, with the title and unit a
     page names it by and how it folds, a value a sealed step holds back
-    left out until the reveal. A run task's grading has no groups or
-    values yet: `runs` holds each run shown to its entrant (`_runs`), and
-    `reveal_at`, until then, when the task reveals, when what its entrant
-    reads changes with no grading's change to say so, so a page open on it
-    reads it again then, as at a classic group's `shown_at`.
+    left out until the reveal. A run task's grading has no groups and
+    no `values`: `run_values` holds each value of its scoring shown to its
+    reader, `runs` each run shown, by group, `once` what its steps done
+    once reported, the compile log among them, and `compiled`, once a run
+    is shown, and, to organisers alone, `facts`
+    (`forge.domain.run_showing`), an entrant's texts there with no output
+    named, `texts_at` where each is shown and what holds it, for
+    `read_text` and never served; and `reveal_at`, until then, when the
+    task reveals, when what its entrant reads changes with no grading's
+    change to say so, so a page open on it reads it again then, as at a
+    classic group's `shown_at`.
     """
 
     id: uuid.UUID
@@ -214,6 +226,11 @@ class Result:
     meanings: tuple[ValueMeaning, ...] = ()
     runs: tuple[Mapping[str, Any], ...] = ()
     reveal_at: datetime | None = None
+    run_values: tuple[ValueShown, ...] = ()
+    once: Mapping[str, Any] = field(default_factory=dict)
+    compiled: int | None = None
+    facts: Mapping[str, Fraction] = field(default_factory=dict)
+    texts_at: Mapping[TextAt, tuple[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -788,6 +805,60 @@ async def organised(
     return read[0]
 
 
+@action
+async def read_text(ctx: Context, session: Session, task: TaskId, number: int, at: TextAt) -> str:
+    """A text the signed-in person's own submission of the task shows them
+    now, by where it shows it (`TextAt`): the stored output that holds it
+    is found here and never told them. `NotFound` for a place that shows
+    no text now, and for a submission that is not theirs.
+    """
+    person = await submitters.person(ctx, session, task)
+    workspace = person.workspace
+    found = await _read(ctx, Reading.of(person, workspace), number) if workspace is not None else []
+    if not found:
+        raise NotFound(NO_SUCH_SUBMISSION)
+    grading = found[0].grading
+    held = grading.texts_at.get(at) if grading is not None else None
+    if held is None:
+        raise NotFound(NO_SUCH_TEXT)
+    return await _text(ctx, *held)
+
+
+@action
+async def read_organised_text(
+    ctx: Context,
+    organiser: Organiser,
+    task: TaskId,
+    owner: WorkspaceOwner,
+    number: int,
+    output: str,
+    name: str,
+) -> str:
+    """A text the submission numbered `number` of the entrant `owner` names,
+    as organisers read it (`organised`), by the stored output that holds it
+    and that output's name. `NotFound` for one it does not name.
+    """
+    grading = (await organised(ctx, organiser, task, owner, number)).grading
+    if grading is None or (output, name) not in run_showing.texts(grading.runs, grading.once):
+        raise NotFound(NO_SUCH_TEXT)
+    return await _text(ctx, output, name)
+
+
+async def _text(ctx: Context, output: str, name: str) -> str:
+    """The text of the name `name` that the stored output `output` holds,
+    and nothing else of it, since it may be another entrant's of the same
+    org (stage 4 open 114).
+    """
+    try:
+        held = await ctx.db.get(StepOutput, uuid.UUID(output))
+    except ValueError:
+        held = None
+    found = held.outputs.get(name) if held is not None else None
+    if not isinstance(found, str):
+        raise NotFound(NO_SUCH_TEXT)
+    return found
+
+
 @dataclass(frozen=True, slots=True)
 class Reading:
     """Whose submissions of a task are read: the task as its latest
@@ -881,6 +952,8 @@ async def _submission(
         status,
         reveal_at,
         factor,
+        settings,
+        extension,
         everything=everything,
     )
     return Submission(reading.task, number, at, late, result)
@@ -893,25 +966,35 @@ async def _result(
     status: GradingStatus,
     reveal_at: datetime | None,
     factor: Fraction,
+    settings: ContestDefinition,
+    extension: Extension,
     *,
     everything: bool = False,
 ) -> Result:
     """The grading as its contestant may see it now, with the publication it
     ran under, scored. A run in `system_error` is told as delayed, with
     nothing of it shown, and one staff cancelled as cancelled, with the
-    sentence they gave. With `everything`, as organisers read it: where it
-    stands in its own words, and shown as after the reveal, each group's
-    `shown_at` kept from what its contestant is shown now.
+    sentence they gave; but a run task's row that failed with the runs it
+    gave is read as one done, its faulted runs waiting, still told as
+    delayed. With `everything`, as organisers read it: where it stands in
+    its own words, and shown as after the reveal, each group's `shown_at`
+    kept from what its contestant is shown now.
     """
     state: SubmissionState | GradingStatus = status if everything else told(status)
+    if (
+        row.result is not None
+        and row.result.get("schema_version") == RESULT_VERSION
+        and status in scores.FINISHED_WITH_RESULT
+    ):
+        return await _runs(
+            ctx, scorer.current, row, state, reveal_at, settings, extension, everything=everything
+        )
     if status is GradingStatus.CANCELLED:
         return Result(row.id, row.attempt, state, None, None, (), {}, row.cancel_reason)
     if status is GradingStatus.OVER_LIMIT:
         return Result(row.id, row.attempt, state, None, None, (), {}, limit=row.submission_limit)
     if status is not GradingStatus.DONE or row.result is None:
         return Result(row.id, row.attempt, state, None, None, (), {})
-    if row.result.get("schema_version") == RESULT_VERSION:
-        return await _runs(ctx, scorer.current, row, state, reveal_at, everything=everything)
     graded = await scorer.graded(PublicationId(row.publication_id))
     if graded is None:
         return Result(row.id, row.attempt, state, None, None, (), {})
@@ -960,59 +1043,64 @@ async def _runs(
     row: Grading,
     state: SubmissionState | GradingStatus,
     reveal_at: datetime | None,
+    settings: ContestDefinition,
+    extension: Extension,
     *,
     everything: bool,
 ) -> Result:
-    """A run task's grading as its entrant reads it, from both its rows
-    (11.3): the early row's runs and the late row's latest attempt's once
-    it is done, filtered by what the task's latest publication shows now
-    (`runs_shown`, 9.4), so a group moved to `now` shows its runs even
-    where they ran late. Before the reveal the late row is told to no
+    """A run task's grading as its reader sees it now, from both its rows
+    (11.3): its values worked out on read (`scores.run_scored`) and shown
+    by what the task's latest publication shows now
+    (`run_showing.shown`, 9.4), so a group moved to `now` shows its runs
+    even where they ran late. Before the reveal the late row is told to no
     entrant; after it, while that attempt has no result, the grading is
-    told as where it stands, `grading` or `delayed`; and with no early run,
-    it is told as `submitted` until the reveal. Organisers read every
-    run of both rows, each as the group `all` with its id and whole key,
-    and where each row stands in the gradings routes. The values a task's
-    scoring makes from the runs are stage 5's.
+    told as where it stands, `grading` or `delayed`; and a task with
+    nothing shown during the contest is told as `submitted` until the
+    reveal. Organisers read every value and every run of both rows at
+    once, and where each row stands in the gradings routes.
     """
-    runs = list(row.result["runs"] if row.result else ())
-    # By the submission's late line, which its unique index orders by
-    # attempt, then the early row it follows.
-    late = await ctx.db.scalar(
-        select(Grading)
-        .where(
-            Grading.submission_id == row.submission_id,
-            Grading.pipeline == LATE,
-            Grading.early_id == row.id,
-        )
-        .order_by(Grading.attempt.desc())
-        .limit(1)
-    )
+    late = await scores.late_of(ctx, row)
+    scored = await scores.run_scored(ctx, current, settings, extension, row, late)
     revealed = reveal_at is not None and ctx.now >= reveal_at
-    if not runs and not revealed and not everything:
-        state = SubmissionState.SUBMITTED
-    if late is not None:
-        if late.status == GradingStatus.DONE and late.result is not None:
-            runs += late.result["runs"]
-        elif revealed and not everything:
-            state = told(gradings.status_of(ctx, late))
-    held = await published.runs_held(ctx, current)
-    results = {run["id"]: run for run in runs}
     scoring = current.definition.scoring
     assert scoring is not None, "a run task's definition always has scoring"
-    if everything:
-        order = {run.id: place for place, run in enumerate(held.runs)}
-        ranked = sorted(runs, key=lambda run: order.get(run["id"], len(order)))
-        shown = [
-            {"group": ALL, "place": place, "id": run["id"], "key": run["key"]}
-            | {name: run[name] for name in SHOWN_RUN if name in run}
-            for place, run in enumerate(ranked, start=1)
-        ]
-    else:
-        shown = runs_shown(scoring, held.runs, results, held.files, revealed=revealed)
+    seen = run_showing.shown(
+        scoring,
+        scored.held.runs,
+        scored.held.files,
+        scored.whole,
+        scored.early,
+        scored.self_reported,
+        revealed=revealed,
+        everything=everything,
+    )
+    runs, once = seen.runs, seen.once
+    texts_at: dict[run_showing.TextAt, tuple[str, str]] = {}
+    if not everything:
+        texts_at = run_showing.addresses(runs, once)
+        runs, once = run_showing.bare(runs, once)
+        if seen.later and state is SubmissionState.GRADED:
+            state = SubmissionState.SUBMITTED
+        if late is not None and revealed and state is SubmissionState.GRADED:
+            status = gradings.status_of(ctx, late)
+            if status is not GradingStatus.DONE:
+                state = told(status)
     coming = reveal_at if reveal_at is not None and not revealed and not everything else None
     return Result(
-        row.id, row.attempt, state, None, None, (), {}, runs=tuple(shown), reveal_at=coming
+        row.id,
+        row.attempt,
+        state,
+        None,
+        None,
+        (),
+        {},
+        runs=runs,
+        reveal_at=coming,
+        run_values=seen.values,
+        once=once,
+        compiled=seen.compiled,
+        facts=seen.facts,
+        texts_at=texts_at,
     )
 
 
