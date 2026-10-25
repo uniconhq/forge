@@ -397,9 +397,16 @@ def wall_seconds(plan: Plan) -> int:
     for each container and one for the run. A save refuses a plan for which
     this is more than `WALL_CEILING`.
     """
-    steps = sum(step.limits.time_ms for step in plan.steps) / 1000
-    margin = BASE_WALL + STEP_OVERHEAD * len(plan.steps)
-    return max(1, math.ceil(steps + margin.total_seconds()))
+    return wall_of([step.limits.time_ms for step in plan.steps])
+
+
+def wall_of(time_ms: Collection[int]) -> int:
+    """How long a run of containers with these time limits may take, in
+    seconds: the limits summed, with a margin for each container and one for
+    the run. A run task's plan works it out per pipeline.
+    """
+    margin = BASE_WALL + STEP_OVERHEAD * len(time_ms)
+    return max(1, math.ceil(sum(time_ms) / 1000 + margin.total_seconds()))
 
 
 def run_deadline(fetched_at: datetime, wall: int) -> datetime:

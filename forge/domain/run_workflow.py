@@ -120,12 +120,14 @@ class WorkflowFiles:
     """The files of a workflow at the commit a version names: every path,
     and the content of each one wired into a manifest port
     (`manifest_paths`), but those over `MAX_MANIFEST`, which are `oversized`
-    and never read.
+    and never read; and the size in bytes of each the forge gave one for,
+    an upload's its pointer's.
     """
 
     paths: frozenset[str]
     manifests: Mapping[str, bytes] = field(default_factory=dict)
     oversized: frozenset[str] = frozenset()
+    sizes: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

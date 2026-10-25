@@ -642,6 +642,11 @@ def _run_report(value: object) -> str | RunReport:
 
 _RunReportEntry = Annotated[str | RunReport, PlainValidator(_run_report)]
 
+PIPELINE_STEPS = ("clone", "report")
+"""The names of the steps Unicon adds to a grading's pipelines beside the
+workflow's own, which a run workflow's step ids may not take, since a step
+of the plan is named by its id: `clone`, which checks the submission out,
+and `report`, which tells the forge the pipeline has ended."""
 SELF_REPORTED = "self_reported"
 """The port a primitive is told on that the program it runs given a manifest
 runs the entrant's code, which Unicon sets from the task, never a workflow."""
@@ -681,6 +686,12 @@ class RunWorkflow(Model):
                 f"A workflow can use at most {MAX_USES} different primitive versions. Use fewer.",
             )
         for index, step in enumerate(self.steps):
+            if step.id in PIPELINE_STEPS:
+                problems.add(
+                    ("steps", index, "id"),
+                    f"{step.id} is the name of a step Unicon adds to every grading beside the "
+                    "workflow's own, so a workflow step cannot take it. Choose another id.",
+                )
             if SELF_REPORTED in step.with_:
                 problems.add(("steps", index, "with", SELF_REPORTED), SELF_REPORTED_GIVEN)
         for name in self.reports:

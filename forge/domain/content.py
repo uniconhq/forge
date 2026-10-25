@@ -20,7 +20,7 @@ when some file is under it.
 """
 
 import uuid
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -97,6 +97,18 @@ def has_path(paths: Collection[str], path: str) -> bool:
     if path.endswith("/"):
         return any(name.startswith(path) for name in paths)
     return path in paths
+
+
+def names_path(entry: str, path: str) -> bool:
+    """Whether `entry` names the file at `path`: it is that path, or a
+    folder, ending in `/`, that the file is under.
+    """
+    return entry == path or (entry.endswith("/") and path.startswith(entry))
+
+
+def named_by(paths: Iterable[str], entry: str) -> set[str]:
+    """The paths among `paths` that `entry` names, by `names_path`."""
+    return {path for path in paths if names_path(entry, path)}
 
 
 class ConflictToken(str):

@@ -249,6 +249,7 @@ class FakeContent:
         return FileSet(
             version=VersionId(at if at is not None else repo.head),
             tokens={path: token_of(content) for path, content in files.items()},
+            sizes={path: len(content) for path, content in files.items()},
         )
 
     async def list_tree(

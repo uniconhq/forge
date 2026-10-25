@@ -96,7 +96,7 @@ steps in order, and refuses before anything is written.
 import builtins
 import hashlib
 import json
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
@@ -112,6 +112,7 @@ from forge.domain.content import (
     WrittenEdit,
     check_path,
     has_path,
+    named_by,
 )
 from forge.domain.definitions import (
     ADMIN_ONLY_FILES,
@@ -166,6 +167,13 @@ from forge.domain.roles import (
     holds,
     task_scope,
 )
+from forge.domain.run_plan import (
+    FileFact,
+    RunPlan,
+    files_named,
+    plan_runs,
+    run_plan_changes,
+)
 from forge.domain.run_task import (
     RUNS_PATH,
     RunsFile,
@@ -178,7 +186,7 @@ from forge.domain.run_task import (
     self_reported_question,
     shown_under,
 )
-from forge.domain.run_workflow import check_run_workflow
+from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.save_effect import ReadChanges, SaveEffect, as_extra, effect_of
 from forge.domain.uploads import (
     ATTRIBUTES_FILE,
@@ -186,6 +194,7 @@ from forge.domain.uploads import (
     pointer_text,
     read_pointer,
     refuse_pointer,
+    upload_info,
 )
 from forge.domain.workflow_definition import (
     WORKFLOW_FILE,
@@ -266,9 +275,9 @@ class Draft:
 @dataclass(frozen=True, slots=True)
 class Checked:
     """What checking a state found: the task's settings and its compiled
-    plan, or for a run task its runs (`run_task`), when it is valid, and
-    every problem when it is not, with which workflow each workflow name it
-    uses is, by the forge's own id for it.
+    plan, or for a run task its runs (`run_task`) and its plan (`run_plan`),
+    when it is valid, and every problem when it is not, with which workflow
+    each workflow name it uses is, by the forge's own id for it.
     """
 
     definition: TaskDefinition | None
@@ -276,13 +285,18 @@ class Checked:
     errors: tuple[Problem, ...]
     workflows: Mapping[str, str] = field(default_factory=dict)
     run_task: RunTask | None = None
+    run_plan: RunPlan | None = None
 
     def plan_files(self) -> dict[str, bytes]:
-        """What a save of the valid state writes under `plans/`: the plan, or
-        a run task's runs file.
+        """What a save of the valid state writes under `plans/`: the plan, and
+        for a run task its runs file.
         """
         if self.run_task is not None:
-            return {RUNS_PATH: self.run_task.runs_file().to_bytes()}
+            assert self.run_plan is not None
+            return {
+                RUNS_PATH: self.run_task.runs_file().to_bytes(),
+                PLAN_PATH: self.run_plan.to_bytes(),
+            }
         assert self.compiled is not None
         return {PLAN_PATH: self.compiled.plan.to_bytes()}
 
@@ -338,16 +352,21 @@ async def save(
         before, published_files = await _published_snapshot(ctx, as_, task, latest)
         differ = await _differing(ctx, as_, task, head, written, published_files)
         if checked.run_task is not None:
-            # A run task grades nothing yet, so nothing it changes is graded
-            # again; its runs file says whether its runs moved.
+            # A run task grades nothing yet, so what its plan changes is said
+            # and graded again by no one; its plan and runs file say whether
+            # anything moved.
             previous = _runs_file(before.plans.get(RUNS_PATH))
+            after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
+            changed = run_plan_changes(before, after)
             scoring = checked.definition.scoring if checked.definition is not None else None
             read = ReadChanges(
                 statement=STATEMENT_FILE in differ,
                 public=scoring is not None
                 and any(file_time(scoring, path) is not None for path in differ),
             )
-            anew = bool(differ) or before.plans.get(RUNS_PATH) != checked.plan_files()[RUNS_PATH]
+            anew = bool(differ) or any(
+                before.plans.get(path) != content for path, content in checked.plan_files().items()
+            )
         else:
             after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
             changed = grading_changes(before, after)
@@ -380,7 +399,13 @@ async def save(
     touched = {*written, *plans}
     if version != head.version and await _landed_under(ctx, as_, task, head, version, touched):
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
-    notes = checked.compiled.notes if checked.compiled is not None else ()
+    notes = (
+        checked.compiled.notes
+        if checked.compiled is not None
+        else checked.run_plan.notes
+        if checked.run_plan is not None
+        else ()
+    )
     if latest is not None and version == latest.version and not worded:
         effect = await _effect(
             ctx, task, checked.definition, latest, (), 0, ReadChanges(), checked.compiled
@@ -400,12 +425,12 @@ async def save(
             checked.compiled.meanings,
         )
         if checked.compiled is not None
-        else write_note(False, (), checked.workflows)
+        else write_note(bool(changed), changed, checked.workflows)
     )
     publication = await ctx.forge.workspaces.publish(task, version, note)
     number = await _number_of(ctx, task, publication)
     regraded = 0
-    if changed:
+    if _regrades(changed, checked):
         regraded = (
             await gradings.regrade(
                 ctx,
@@ -432,6 +457,14 @@ async def save(
         user_id=organiser.user.id,
     )
     return Published(publication, number, bool(changed), changed, notes, regraded, effect)
+
+
+def _regrades(changed: tuple[str, ...], checked: Checked) -> bool:
+    """Whether the save grades the task's submissions again: when what it
+    grades changed, but never for a run task, whose store decides what runs
+    again by key (SIMPLER-CORE.md 11.6).
+    """
+    return bool(changed) and checked.run_task is None
 
 
 async def _ask(
@@ -464,7 +497,7 @@ async def _ask(
         return
     regrades = (
         await gradings.to_regrade(ctx, task, limit=checked.definition.submissions.max)
-        if changed
+        if _regrades(changed, checked)
         else 0
     )
     effect = await _effect(
@@ -611,7 +644,9 @@ async def _check_runs(
     the task against it (`check_run_task`), each manifest the task gives
     read from the saved state, the ids of its runs kept from the latest
     publication's runs file; then what was shown is not hidden again, and
-    the contest's entry and boards ask nothing a run task cannot give yet.
+    the contest's entry and boards ask nothing a run task cannot give yet;
+    then its plan (`plan_runs`, SIMPLER-CORE.md 11), pinned to that commit,
+    with the size and hash of every file a step is given.
     """
     primitives, unresolved = await _primitives(ctx, as_, definition, workflow)
     if unresolved:
@@ -660,7 +695,103 @@ async def _check_runs(
     refused = await _boards(ctx, task, definition, None)
     if refused:
         return Checked(definition, None, tuple(refused), pins)
-    return Checked(definition, None, (), pins, found.task)
+    named = files_named(workflow, found.task)
+    planned = plan_runs(
+        definition,
+        workflow,
+        resolved,
+        found.task,
+        ref=str(ref),
+        workflow_id=str(read.workflow),
+        commit=str(read.at),
+        task_files=await _task_facts(ctx, as_, task, head, written, present, named.task),
+        workflow_files=await _workflow_facts(ctx, as_, read, files, named.workflow),
+        machine=PLATFORM_MACHINE,
+    )
+    if planned.plan is None:
+        return Checked(definition, None, tuple(planned.problems), pins)
+    return Checked(definition, None, (), pins, found.task, planned.plan)
+
+
+async def _task_facts(
+    ctx: Context,
+    as_: Identity,
+    task: TaskId,
+    head: FileSet,
+    written: Mapping[str, WrittenEdit],
+    present: set[str],
+    named: Iterable[str],
+) -> dict[str, FileFact]:
+    """The size and hash of each task file `named` names, a folder's files
+    each by itself, an upload's own: a file the save writes from what it
+    writes, and the head's read in batches of at most `FACTS_BATCH` bytes,
+    so the plan pins every file a step is given by its content.
+    """
+    paths = sorted({path for entry in named for path in named_by(present, entry)})
+    facts: dict[str, FileFact] = {}
+    unread: builtins.list[str] = []
+    for path in paths:
+        if path not in written:
+            unread.append(path)
+        elif (content := written[path].content) is not None:
+            facts[path] = _fact_of(content)
+    for batch in _batches(unread, head.sizes):
+        blobs = await ctx.forge.content.read_blobs(as_, task, {head.tokens[path] for path in batch})
+        for path in batch:
+            content = blobs.get(head.tokens[path])
+            if content is None:
+                content = await _content(ctx, as_, task, path, head, written)
+            if content is not None:
+                facts[path] = _fact_of(content)
+    return facts
+
+
+FACTS_BATCH = 32 * 1024 * 1024
+"""The most bytes of task files the save reads in one batch to hash them."""
+
+
+def _batches(paths: Sequence[str], sizes: Mapping[str, int]) -> Iterator[builtins.list[str]]:
+    """`paths` in order, in batches of at most `FACTS_BATCH` bytes by
+    `sizes`, a file larger than that or of no known size in a batch alone.
+    """
+    batch: builtins.list[str] = []
+    held = 0
+    for path in paths:
+        size = sizes.get(path, FACTS_BATCH)
+        if batch and held + size > FACTS_BATCH:
+            yield batch
+            batch, held = [], 0
+        batch.append(path)
+        held += size
+    if batch:
+        yield batch
+
+
+async def _workflow_facts(
+    ctx: Context, as_: Identity, read: _Found, files: WorkflowFiles, named: Iterable[str]
+) -> dict[str, FileFact]:
+    """The size and hash of each workflow file `named` names at the commit
+    the workflow was read at, as `_task_facts` gives a task file's, each
+    read but the manifests the check already holds.
+    """
+    facts: dict[str, FileFact] = {}
+    for path in sorted({path for entry in named for path in named_by(files.paths, entry)}):
+        content = files.manifests.get(path)
+        if content is None:
+            found = await ctx.forge.workflows.read_workflow_at(as_, read.workflow, read.at, path)
+            content = found.content
+        facts[path] = _fact_of(content)
+    return facts
+
+
+def _fact_of(content: bytes) -> FileFact:
+    """A file's size and SHA-256: an upload's own, from its pointer, and
+    any other file's of its content.
+    """
+    info = upload_info(content)
+    if info is not None:
+        return FileFact(size=info.size, sha256=info.digest)
+    return FileFact(size=len(content), sha256=hashlib.sha256(content).hexdigest())
 
 
 RUNS_UNREAD = (
@@ -1207,8 +1338,9 @@ async def _published_snapshot(
     }
     named: tuple[str, ...] = ()
     if PLAN_PATH in plans:
+        reader = RunPlan if RUNS_PATH in plans else Plan
         try:
-            named = Plan.from_bytes(plans[PLAN_PATH]).task_paths()
+            named = reader.from_bytes(plans[PLAN_PATH]).task_paths()
         except ValueError:
             named = ()
     data = {path: str(token) for each in named for path, token in _under(files, each).items()}
@@ -1239,8 +1371,8 @@ async def _saved_snapshot(
     otherwise by a digest of its content that no token equals; one it
     removes is not there, so the comparison names it removed.
     """
-    assert checked.compiled is not None
-    plan = checked.compiled.plan
+    plan = checked.run_plan or (checked.compiled.plan if checked.compiled is not None else None)
+    assert plan is not None
     data: dict[str, str] = {}
     for named in plan.task_paths():
         for path, token in _under(head, named).items():

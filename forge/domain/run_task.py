@@ -48,7 +48,7 @@ from typing import Any
 from forge.domain import exact_json
 from forge.domain.blocks.catalogue import ALL
 from forge.domain.blocks.check import ValuesCheck, check_names, check_values, same_value
-from forge.domain.content import path_problem
+from forge.domain.content import names_path, path_problem
 from forge.domain.definitions import (
     ENTRANT,
     TASK_FILE,
@@ -357,11 +357,7 @@ def file_time(scoring: Scoring, path: str) -> str | None:
     """
     names = show_names(scoring)
     for time, entries in scoring.show.lists().items():
-        if any(
-            entry not in names
-            and (entry == path or (entry.endswith("/") and path.startswith(entry)))
-            for entry in entries
-        ):
+        if any(entry not in names and names_path(entry, path) for entry in entries):
             return time
     return None
 
@@ -408,12 +404,7 @@ def shown_under(scoring: Scoring, paths: Collection[str]) -> Shown:
     for path in paths:
         for time, entries in scoring.show.lists().items():
             entry = next(
-                (
-                    entry
-                    for entry in entries
-                    if entry not in names
-                    and (entry == path or (entry.endswith("/") and path.startswith(entry)))
-                ),
+                (entry for entry in entries if entry not in names and names_path(entry, path)),
                 None,
             )
             if entry is not None:

@@ -1,7 +1,8 @@
-"""A run task's save (SIMPLER-CORE.md 8 and 9): the islands, cartpole and
-tour tasks publish their runs file, with no plan, and their runs and early
-runs as written, every workflow file read at the one commit its version
-stood at; a runs file that does not read refuses the save; a key of the
+"""A run task's save (SIMPLER-CORE.md 8, 9 and 11): the islands, cartpole
+and tour tasks publish their runs file and their plan, version 6, pinned to
+the one commit the workflow's version stood at, every workflow file read
+there; a save again says what its plan changed and grades nothing again; a
+runs file that does not read refuses the save; a key of the
 other format is refused naming the format, a stray one by the format of
 the workflow named, and a task keeps its format once anyone has
 submitted; a self-reported report asks once, and the save is refused
@@ -11,6 +12,7 @@ reveal's from its instant and a release's not yet; the contest gives a
 run task no worth, due or board; and nobody submits to one yet.
 """
 
+import hashlib
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -21,12 +23,22 @@ from forge.domain.content import Edit
 from forge.domain.errors import ConfirmationRequired, InvalidInputs, NotFound
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
+from forge.domain.plans import PLAN_PATH
+from forge.domain.run_plan import FileFact, RunPlan
 from forge.domain.run_task import RUNS_PATH, RunsFile
 from forge.domain.submissions import SubmittedInput
 from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import contest_home, files, landing, publications, submissions, uploads
+from forge.services import (
+    contest_home,
+    files,
+    gradings,
+    landing,
+    publications,
+    submissions,
+    uploads,
+)
 from forge.services.publications import Draft, Published
 from forge.testing import PLACEHOLDER_DIGEST, FakeClock, register_entrant
 from tests.conftest import sibling
@@ -127,6 +139,10 @@ def _runs_file(acme: Acme) -> RunsFile:
     return RunsFile.from_bytes(acme.fake.state.repos[("acme", "spring.sum.task")].files[RUNS_PATH])
 
 
+def _plan(acme: Acme) -> RunPlan:
+    return RunPlan.from_bytes(acme.fake.state.repos[("acme", "spring.sum.task")].files[PLAN_PATH])
+
+
 def _errors(result: Published | Draft) -> list[tuple[str, str]]:
     assert isinstance(result, Draft), result
     return [(error["path"], error["message"]) for error in result.errors]
@@ -140,7 +156,7 @@ def _errors(result: Published | Draft) -> list[tuple[str, str]]:
         ("tour", ["r1", "r2"], {"r1", "r2"}),
     ],
 )
-async def test_the_three_tasks_publish_their_runs_and_no_plan(
+async def test_the_three_tasks_publish_their_runs_and_plan(
     setup: Setup, acme: Acme, sum_task: TaskId, which: str, ids: list[str], early: set[str]
 ) -> None:
     result = await _published(setup, acme, sum_task, which)
@@ -151,18 +167,29 @@ async def test_the_three_tasks_publish_their_runs_and_no_plan(
         (),
         0,
     )
-    held = acme.fake.state.repos[("acme", "spring.sum.task")].files
-    assert "plans/plan.json" not in held
     runs = _runs_file(acme)
     assert [run.id for run in runs.runs] == ids
     assert {run.id for run in runs.runs if run.early} == early
+    plan = _plan(acme)
+    assert [(run.id, run.early) for run in plan.runs] == [(run.id, run.early) for run in runs.runs]
     # Each save resolves the version once, as the organiser, and reads
-    # every file at that commit.
+    # every file at that commit, which the plan pins.
     calls = acme.fake.calls_to("workflow_version")
     assert calls and {call.identity for call in calls} == {acme.ada.identity}
     commit = acme.fake.state.repos[("unicon", f"{which}.workflow")].versions["v1"]
+    assert (plan.workflow.ref, plan.workflow.commit) == (f"unicon/{which}@v1", commit)
     reads = [*acme.fake.calls_to("read_workflow_at"), *acme.fake.calls_to("workflow_files")]
     assert reads and {read.arguments["at"] for read in reads} == {commit}
+    # Every file a step is given is pinned by its hash too.
+    saved = acme.fake.state.repos[("acme", "spring.sum.task")].files
+    held = TASKS[which][1]
+    assert plan.workflow.files
+    assert {path: fact.sha256 for path, fact in plan.workflow.files.items()} == {
+        path: hashlib.sha256(held[path]).hexdigest() for path in plan.workflow.files
+    }
+    assert {path: fact.sha256 for path, fact in plan.task_files.items()} == {
+        path: hashlib.sha256(saved[path]).hexdigest() for path in plan.task_files
+    }
 
 
 async def test_a_saved_again_task_keeps_its_run_ids_and_publishes_only_what_is_new(
@@ -181,6 +208,16 @@ async def test_a_saved_again_task_keeps_its_run_ids_and_publishes_only_what_is_n
 
     assert isinstance(unchanged, Published) and unchanged.number == 1
     assert isinstance(added, Published) and added.number == 2
+    assert (added.grading_changed, added.changes, added.regraded) == (
+        True,
+        ("The run r3 was added.", "The file parts/3.in was added."),
+        0,
+    )
+    assert _plan(acme).task_files["parts/3.in"] == FileFact(
+        size=len(b"3 cities\n"), sha256=hashlib.sha256(b"3 cities\n").hexdigest()
+    )
+    # The files the save does not write are read in one batch to hash them.
+    assert any(len(call.arguments["tokens"]) == 2 for call in acme.fake.calls_to("read_blobs"))
     assert [(run.id, run.key["input"]) for run in _runs_file(acme).runs] == [
         ("r1", "parts/1.in"),
         ("r2", "parts/2.in"),
@@ -489,3 +526,28 @@ async def test_nobody_submits_to_a_run_task_yet(setup: Setup, acme: Acme, sum_ta
         )
     page = await contest_home.task(setup, bob, sum_task)
     assert page.inputs == ()
+
+
+async def test_asking_before_a_save_promises_no_regrade_of_a_run_task(
+    setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _published(setup, acme, sum_task, "tour", RUNNING.format(visibility="everyone"))
+    text = TASKS["tour"][0].replace(
+        "      - [parts/2.in, entrant]\n",
+        "      - [parts/2.in, entrant]\n      - [parts/3.in, entrant]\n",
+    )
+
+    async def five(*_: object, **__: object) -> int:
+        return 5
+
+    monkeypatch.setattr(gradings, "to_regrade", five)
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _save(
+            setup, acme, sum_task, {"task.yaml": text.encode(), "parts/3.in": b"3 cities\n"}
+        )
+
+    assert asked.value.extra["changes"] == [
+        "The run r3 was added.",
+        "The file parts/3.in was added.",
+    ]
+    assert asked.value.extra["regrades"] == 0

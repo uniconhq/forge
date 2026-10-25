@@ -34,6 +34,7 @@ from forge.domain.scoring import Better
 from forge.domain.types import Type
 from forge.domain.workflow_combine import combinable
 from forge.domain.workflow_definition import (
+    PIPELINE_STEPS,
     SELF_REPORTED_GIVEN,
     BadReference,
     Reference,
@@ -295,6 +296,20 @@ def test_a_workflow_wiring_self_reported_is_refused() -> None:
 
     assert refused(given) == [
         {"path": "steps[3].with.self_reported", "message": SELF_REPORTED_GIVEN}
+    ]
+
+
+@pytest.mark.parametrize("name", PIPELINE_STEPS)
+def test_a_step_cannot_take_the_name_of_a_step_unicon_adds(name: str) -> None:
+    given = document(CLASSIC_V3)
+    step(given, "diff")["id"] = name
+
+    assert refused(given) == [
+        {
+            "path": "steps[2].id",
+            "message": f"{name} is the name of a step Unicon adds to every grading beside the "
+            "workflow's own, so a workflow step cannot take it. Choose another id.",
+        }
     ]
 
 
