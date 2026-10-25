@@ -49,14 +49,12 @@ from forge.domain.blocks.board_check import BoardColumn, BoardsCheck, check_boar
 from forge.domain.blocks.catalogue import (
     CATALOGUE,
     ENTERED,
-    EXEC,
     FACTS,
-    NUMBERS,
     PICKS,
     RESULTS,
     SKIP,
 )
-from forge.domain.blocks.check import Found, form_of, leaf_of
+from forge.domain.blocks.check import Found, direct_reads, form_of, leaf_of
 from forge.domain.blocks.evaluate import using
 from forge.domain.definitions import ContestDefinition, ContestTask
 from forge.domain.release import in_words
@@ -382,7 +380,7 @@ class _Walk:
             f"The leaderboard {self.title} works {value} of {task} out again with best_each in "
             f"its column {self.column}"
         )
-        direct, odd = _direct(scored.values[value])
+        direct, odd = direct_reads(scored.values[value])
         if odd is not None:
             self.refuse(
                 (*at, "value"),
@@ -432,41 +430,6 @@ def _best_each_reads(node: Mapping[str, object]) -> set[tuple[str, str]]:
     task = str(source.get("results"))
     names = {str(named.get("name")), *(directions if isinstance(directions, dict) else ())}
     return {(task, str(name)) for name in names}
-
-
-def _direct(tree: object) -> tuple[set[str], str | None]:
-    """The values a task's value's tree reads directly, and the first thing
-    it reads directly that is not another value or a number, in words, if
-    any: a fact, a group's runs, a program or a mark."""
-    found: set[str] = set()
-    waiting = [tree]
-    while waiting:
-        node = waiting.pop()
-        if isinstance(node, list):
-            waiting.extend(node)
-            continue
-        if not isinstance(node, dict):
-            continue
-        if "block" not in node:
-            leaf = leaf_of(node)
-            if leaf is not None and leaf[0] == "value":
-                found.add(str(leaf[1]))
-            elif leaf is not None and leaf[0] == "fact":
-                return found, f"the fact {leaf[1]}"
-            else:
-                return found, "a group's runs"
-            continue
-        name = str(node["block"])
-        block = CATALOGUE.get(name)
-        form = form_of(block, node) if block is not None else None
-        if name == EXEC:
-            return found, "a program's number, through exec"
-        if name == ENTERED:
-            return found, "a mark staff enter, through entered"
-        if form is None or form.given != NUMBERS:
-            return found, f"a group's runs, through {name}"
-        waiting.extend(given for key, given in node.items() if key != "block")
-    return found, None
 
 
 def _facts() -> str:

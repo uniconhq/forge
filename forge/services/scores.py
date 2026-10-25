@@ -256,8 +256,9 @@ async def run_scored(
     out, one reading a mark among them: an entrant's page gives no marks
     while what the boards' cells counted holds them back (`submissions`).
     A program waits while its row is to give it, and for staff once its
-    row ended with a fault and no number for it. Worked out on every read,
-    never stored (stage 5 section 6, item 1).
+    row ended with a fault and no number for it; `compiled` waits while the
+    row whose plan holds its compile is to give it. Worked out on every
+    read, never stored (stage 5 section 6, item 1).
     """
     scoring = current.definition.scoring
     assert scoring is not None, "a run task's definition always has scoring"
@@ -265,8 +266,8 @@ async def run_scored(
     early_failed = early.status != GradingStatus.DONE
     late_result = None
     late_waits = early_failed
-    planned, programs = await _planned(ctx, current, early, held)
-    late_planned, late_programs = planned, programs
+    planned, programs, compiles = await _planned(ctx, current, early, held)
+    late_planned, late_programs, late_compiles = planned, programs, compiles
     if late is not None:
         status = gradings.status_of(ctx, late)
         if late.result is not None and status in FINISHED_WITH_RESULT:
@@ -276,7 +277,7 @@ async def run_scored(
             GradingStatus.CANCELLED,
             GradingStatus.OVER_LIMIT,
         )
-        late_planned, late_programs = await _planned(ctx, current, late, held)
+        late_planned, late_programs, late_compiles = await _planned(ctx, current, late, held)
     waits_early = {run for run, first in planned.items() if first} if early_failed else set()
     waits_late = {run for run, first in late_planned.items() if not first} if late_waits else set()
     # A program waits while its row is still to give it, and, once its row
@@ -285,6 +286,11 @@ async def run_scored(
     late_named = {name for name, first in late_programs.items() if not first}
     programs_early = early_named if early_failed else set(unreported(early.result, early_named))
     programs_late = late_named if late_waits else set(unreported(late_result, late_named))
+    # So does a compile `compiled` reads, while its row is still to give it.
+    early_compiling = {step for step, first in compiles.items() if first}
+    late_compiling = {step for step, first in late_compiles.items() if not first}
+    compiles_early = early_compiling if early_failed else set()
+    compiles_late = late_compiling if late_waits else set()
     entry = settings.entry(current.name)
     due = due_of(settings, entry, extension) if entry is not None else None
     if marks is None:
@@ -303,9 +309,10 @@ async def run_scored(
             waiting=waits_early | waits_late,
             compiling=held.compiling,
             programs_waiting=programs_early | programs_late,
+            compiling_waiting=compiles_early | compiles_late,
         )
     )
-    if late_result is None and not waits_late and not programs_late:
+    if late_result is None and not waits_late and not programs_late and not compiles_late:
         # The early row alone is all there is, so it works out the same.
         return RunScored(held, whole, lambda: whole, held.self_reported)
     kept: list[Worked] = []
@@ -321,6 +328,7 @@ async def run_scored(
                         waiting=waits_early,
                         compiling=held.compiling,
                         programs_waiting=programs_early,
+                        compiling_waiting=compiles_early,
                     )
                 )
             )
@@ -331,20 +339,24 @@ async def run_scored(
 
 async def _planned(
     ctx: Context, current: PublishedTask, row: Grading, held: RunsHeld
-) -> tuple[dict[str, bool], dict[str, bool]]:
+) -> tuple[dict[str, bool], dict[str, bool], dict[str, bool]]:
     """Each run of the publication `row` grades against, by id, with whether
-    its plan runs it early in the split `row` was made with, and each value
-    whose program it runs, with whether early; the live publication's runs
-    when that one is gone, and no program."""
+    its plan runs it early in the split `row` was made with, each value
+    whose program it runs, and each step it runs that `compiled` reads,
+    each with whether early; the live publication's runs when that one is
+    gone, and no program or step."""
     found = next((each for each in current.publications if each.id == row.publication_id), None)
     if found is None:
         log.warning("scores.publication_gone", task=current.id, publication=row.publication_id)
-        return {run.id: run.early for run in held.runs}, {}
+        return {run.id: run.early for run in held.runs}, {}, {}
     plan = (await published.plan_at(ctx, current.id, found.version)).for_split(row.released_split)
     programs: dict[str, bool] = {}
+    compiles: dict[str, bool] = {}
     for kind in ("early", "late"):
         for each in plan.pipeline(kind):
             value = plan.steps[each.step].value
             if value is not None and value.report is not None:
                 programs[value.name] = kind == "early"
-    return {run.id: run.early for run in plan.runs}, programs
+            if each.step in held.compiling:
+                compiles[each.step] = kind == "early"
+    return {run.id: run.early for run in plan.runs}, programs, compiles

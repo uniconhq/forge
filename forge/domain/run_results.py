@@ -21,7 +21,10 @@ dropped is kept apart (`dropped`), for organisers.
 The facts (`facts_of`): `seconds_late` and `seconds`
 (`forge.domain.release`), and `compiled`, 0 when a step done once that is
 not tainted returned `compile_error`, which the plan's steps and each
-row's `once` outcomes say, else 1. Nothing here is stored: a value is
+row's `once` outcomes say, else 1. As a run does, `compiled` **waits**
+while such a step has no outcome in either row and its row's own plan put
+it in a pipeline still to give it (`compiling_waiting`), so nothing reads
+it as 1 before its compile has run. Nothing here is stored: a value is
 worked out on every read.
 
 A check's runs are worked out the same way, from what its copies of the
@@ -63,9 +66,10 @@ class RunGrading:
     of the live publication a row holds, as that row's result has it, by
     id; the ids the early row holds; every run as a fold reads it; what the
     steps done once reported and returned, the early row's and the late
-    row's; the `compiled` fact; each run a row holds that the live
-    publication no longer has, by id; the number each value's program
-    reported, by the value's name; and the values whose program waits.
+    row's; the `compiled` fact, none while it waits; each run a row holds
+    that the live publication no longer has, by id; the number each value's
+    program reported, by the value's name; and the values whose program
+    waits.
     """
 
     results: Mapping[str, Mapping[str, Any]]
@@ -73,7 +77,7 @@ class RunGrading:
     read: Mapping[str, RunResult]
     once_early: Mapping[str, Any]
     once_late: Mapping[str, Any]
-    compiled: int
+    compiled: int | None
     dropped: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     programs: Mapping[str, Fraction] = field(default_factory=dict)
     programs_waiting: frozenset[str] = frozenset()
@@ -108,12 +112,15 @@ def run_grading(
     waiting: Collection[str],
     compiling: Collection[str],
     programs_waiting: Collection[str] = (),
+    compiling_waiting: Collection[str] = (),
 ) -> RunGrading:
     """The grading of the live publication's `runs` from its early row's
     result and its late row's, none for a row with none; `waiting` the runs
     that wait when neither row holds them; `compiling` the steps `compiled`
     reads; `programs_waiting` the values whose program neither row gives,
-    while a row whose plan runs it is still to give it.
+    while a row whose plan runs it is still to give it; and
+    `compiling_waiting` those of `compiling` that wait, the same way, when
+    neither row gives their outcome.
     """
     live = {run.id for run in runs}
     early_runs = {str(run["id"]): run for run in (early or {}).get("runs", ())}
@@ -139,18 +146,16 @@ def run_grading(
             found = exact(number)
             if found is not None:
                 programs[str(name)] = found
-    stopped = any(
-        (once.get("outcomes") or {}).get(step) == COMPILE_ERROR
-        for once in (once_early, once_late)
-        for step in compiling
-    )
+    outcomes = [once.get("outcomes") or {} for once in (once_early, once_late)]
+    stopped = any(found.get(step) == COMPILE_ERROR for found in outcomes for step in compiling)
+    coming = any(all(step not in found for found in outcomes) for step in compiling_waiting)
     return RunGrading(
         {name: entry for name, entry in held.items() if name in live},
         frozenset(name for name in early_runs if name in live),
         read,
         once_early,
         once_late,
-        0 if stopped else 1,
+        0 if stopped else None if coming else 1,
         {name: entry for name, entry in held.items() if name not in live},
         programs,
         frozenset(name for name in programs_waiting if name not in programs),
@@ -158,14 +163,14 @@ def run_grading(
 
 
 def facts_of(
-    due: datetime | None, start: datetime, at: datetime, compiled: int
+    due: datetime | None, start: datetime, at: datetime, compiled: int | None
 ) -> dict[str, Fraction]:
     """The facts of a submission made `at`, against the row's `due` and the
-    contest's `start`, with `compiled`."""
+    contest's `start`, with `compiled`, left out while it waits."""
     return {
         "seconds_late": seconds_late(due, at),
         "seconds": seconds(start, at),
-        "compiled": Fraction(compiled),
+        **({"compiled": Fraction(compiled)} if compiled is not None else {}),
     }
 
 
@@ -180,7 +185,7 @@ def worked_out(
     """Each of the scoring's values over the grading, its groups' runs in
     the task's order, `all` among them, `columns` each report's bounds as
     the live plan gives them, and `entered` the mark entered for each value
-    of the submission.
+    of the submission; a value reading `compiled` waits while it does.
     """
     groups = {ALL: [grading.read[run.id] for run in runs]}
     for name, picked in scoring.groups.items():
@@ -193,6 +198,7 @@ def worked_out(
         entered=entered,
         programs=grading.programs,
         programs_waiting=grading.programs_waiting,
+        facts_waiting=("compiled",) if grading.compiled is None else (),
     )
 
 
@@ -212,6 +218,7 @@ def check_failing(
     6 item 9) and `compiled` from the check's own steps done once; none when
     it got all of it."""
     grading = run_grading(runs, result, None, waiting=(), compiling=compiling)
+    assert grading.compiled is not None, "nothing of a check waits"
     found: list[str] = []
     verdict = expect.get(VERDICT)
     if isinstance(verdict, str):

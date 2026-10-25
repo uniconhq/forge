@@ -492,6 +492,41 @@ async def test_an_entry_on_a_submission_chosen_by_a_hidden_value_shows_only_with
     assert (oldest["review"], newest["review"]) == (7, None)
 
 
+async def test_a_longer_extension_on_another_row_keeps_a_mark_back_until_the_reveal(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(datetime(2026, 9, 26, 13, 0, tzinfo=UTC))
+    islands = await _checked(setup, acme, REVIEWED, BEST)
+    session, owner = await _entrant(setup, acme, 20)
+    await _entrant(setup, acme, 21, timedelta(minutes=10))
+    await _submitted(setup, acme, clock, islands, session)
+    await _submitted(setup, acme, clock, islands, session, WRONG_LATE)
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    await entries.enter(setup, manager, islands.task, owner, 1, "review", "7")
+    # Closed for entrant20, not yet for entrant21: the task has not
+    # revealed, so the cell choosing by total stays hidden, and so does
+    # the mark on the submission it chose, though the page reads
+    # entrant20's row alone.
+    clock.set(AFTER_CLOSE)
+
+    [board] = await boards.seen(setup, session, SPRING)
+    newest, oldest = [
+        _values(each.grading)
+        for each in await submissions.mine(setup, session, islands.task)
+        if each.grading
+    ]
+    assert board.rows[0].cells[0].hidden
+    assert (oldest["review"], newest["review"]) == (None, None)
+
+    clock.set(AFTER_CLOSE + timedelta(minutes=10))
+    newest, oldest = [
+        _values(each.grading)
+        for each in await submissions.mine(setup, session, islands.task)
+        if each.grading
+    ]
+    assert (oldest["review"], newest["review"]) == (7, None)
+
+
 async def test_an_entry_a_cell_never_shown_counted_stays_hidden_after_the_reveal(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:

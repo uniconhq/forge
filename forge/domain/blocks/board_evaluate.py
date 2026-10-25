@@ -22,12 +22,19 @@ task's submissions oldest first, every number an exact fraction.
   `or`, `not`, `r.v` and `sum_best`; `if` reads only the branch its test
   takes, a submission's results as its test true when there is one and a
   missing number giving missing; `otherwise` gives its second input when
-  its first is missing or none.
+  its first is missing or none, and a missing pick it gives stays missing;
+  but it gives its first as it is, with no number, when that read anything
+  hidden, or a value still waiting of a submission a block around it is
+  looking at, as a task's `otherwise` waits (item 128), so that block
+  leaves the submission out, never both counting it and saying it waits.
+  A first left with no number by leaving out submissions still waiting,
+  as a pick passing over them, still gives the second.
 - **`best_each`** takes the best of each value the task's value reads
   directly over the results, each in its direction, the oldest on a tie,
   and works the value out again from them with the task's own tree; it is
-  missing when that tree reads anything but those values and numbers, or
-  a direction is not given, which the save refuses across files
+  missing when that tree reads anything but those values and numbers
+  through blocks over numbers (`check.direct_reads`), or a direction is
+  not given, which the save refuses across files by the same rule
   (`forge.domain.board_checks`), so only a task's version still to be
   checked could give it.
 - **Waiting.** A value of a submission still being worked out, or waiting
@@ -58,8 +65,8 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 
 from forge.domain.blocks.board_check import BoardColumn, BoardsCheck, column_at
-from forge.domain.blocks.catalogue import ASC, CATALOGUE, NUMBERS, PICKS, SKIP
-from forge.domain.blocks.check import form_of, leaf_of
+from forge.domain.blocks.catalogue import ASC, CATALOGUE, PICKS, SKIP
+from forge.domain.blocks.check import direct_reads, form_of, leaf_of
 from forge.domain.blocks.evaluate import over_numbers
 from forge.domain.blocks.numbers import exact
 from forge.domain.definitions import Leaderboard
@@ -99,7 +106,8 @@ class Cell:
     missing: bool = False
 
     def having(self, *others: Cell) -> Cell:
-        """This, with what `others` counted, left out and read added."""
+        """This, with what `others` counted, left out and read added, and
+        still missing when it was."""
         return Cell(
             self.number,
             self.picked,
@@ -107,6 +115,7 @@ class Cell:
             self.counted.union(*(other.counted for other in others)),
             self.waiting.union(*(other.waiting for other in others)),
             self.hidden or any(other.hidden for other in others),
+            self.missing,
         )
 
     @property
@@ -228,7 +237,8 @@ class _Row:
         inputs = given if isinstance(given, list) else [given]
         if block.name == "otherwise":
             first = self.node(inputs[0], scope, through, hides)
-            if not first.nothing:
+            looked_at = {(task, each.number) for task, each in scope.values()}
+            if not first.nothing or first.hidden or first.waiting & looked_at:
                 return first
             return self.node(inputs[1], scope, through, hides).having(first)
         got = [self.node(each, scope) for each in inputs]
@@ -388,10 +398,12 @@ class _Row:
         assert isinstance(named, dict) and isinstance(directions, dict)
         value = str(named["name"])
         own = self.trees.get(task, {}).get(value)
-        reads = _plain_reads(own)
+        reads, odd = direct_reads(own)
         # It reads the value and each it reads directly, of every submission.
-        hidden = any(name in each.hidden for each in listed for name in {value, *(reads or ())})
-        if own is None or reads is None or not reads <= set(directions):
+        hidden = any(
+            name in each.hidden for each in listed for name in {value, *(() if odd else reads)}
+        )
+        if own is None or odd is not None or not reads <= set(directions):
             return Cell(hidden=hidden)
         missing = tree.get("missing")
         waiting: set[SubmissionAt] = set()
@@ -457,34 +469,6 @@ def _read(picked: tuple[str, Submitted], name: str) -> Cell:
     if name in submitted.waiting:
         return Cell(waiting=frozenset({(task, submitted.number)}))
     return Cell(submitted.numbers.get(name))
-
-
-def _plain_reads(tree: object) -> set[str] | None:
-    """The values a task's value's tree reads, when it reads nothing but
-    values and numbers through blocks over numbers; none otherwise."""
-    found: set[str] = set()
-    waiting = [tree]
-    while waiting:
-        node = waiting.pop()
-        if isinstance(node, list):
-            waiting.extend(node)
-            continue
-        if not isinstance(node, dict):
-            if exact(node) is None:
-                return None
-            continue
-        if "block" not in node:
-            leaf = leaf_of(node)
-            if leaf is None or leaf[0] != "value" or not isinstance(leaf[1], str):
-                return None
-            found.add(leaf[1])
-            continue
-        block = CATALOGUE.get(str(node["block"]))
-        form = form_of(block, node) if block is not None else None
-        if form is None or form.given != NUMBERS or block is None or block.name == "entered":
-            return None
-        waiting.extend(given for key, given in node.items() if key != "block")
-    return found
 
 
 def _again(tree: object, bests: Mapping[str, Fraction | None]) -> Fraction | None:

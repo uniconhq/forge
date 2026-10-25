@@ -9,7 +9,9 @@ entrant may leave to its form's default may be left out, and takes it.
 scoring's values named, or both. Each is checked at the save
 (`check_checks`): an input the entrant does not give, a path the task does
 not hold, a value of the wrong type, and a value or verdict that does not
-exist are refused, each at its path in `task.yaml`.
+exist are refused, each at its path in `task.yaml`, as is a value that
+reads a mark staff enter, directly or through other values, since a
+check's made-up submission never has one.
 
 The save grades a check through copies of the steps graded per submission
 (`copy_of`), given the check's files and values where the entrant's would
@@ -30,6 +32,8 @@ from fractions import Fraction
 from typing import Protocol
 
 from forge.domain import exact_json
+from forge.domain.blocks.catalogue import ENTERED
+from forge.domain.blocks.evaluate import using
 from forge.domain.blocks.numbers import exact
 from forge.domain.content import has_path, names_path
 from forge.domain.definitions import Check, Form, TaskDefinition
@@ -107,13 +111,14 @@ def check_checks(
     checks: Sequence[Check],
     entrant: Mapping[str, EntrantGiven],
     paths: Collection[str],
-    values: Collection[str],
+    values: Mapping[str, object],
 ) -> tuple[list[Problem], tuple[TaskCheck, ...]]:
     """Every problem with a task's `checks` against its `entrant` inputs,
-    the task's files `paths` and its scoring's `values`, and each check as
-    read when there is none."""
+    the task's files `paths` and its scoring's `values`, each tree by its
+    name, and each check as read when there is none."""
     problems: list[Problem] = []
     found: list[TaskCheck] = []
+    marked = using(values, ENTERED) if checks else frozenset()
     for index, check in enumerate(checks):
         at: Path = ("checks", index)
         before = len(problems)
@@ -145,7 +150,7 @@ def check_checks(
                 problems.append(Problem(path=path_text((*at, "submit", name)), message=read))
             else:
                 given[name] = read
-        verdict, numbers = _expected(check.expect, values, at, problems)
+        verdict, numbers = _expected(check.expect, values, marked, at, problems)
         if len(problems) == before:
             found.append(TaskCheck(index + 1, given, verdict, numbers))
     return problems, tuple(found)
@@ -209,9 +214,14 @@ def _one(raw: object, wanted: EntrantGiven, paths: Collection[str]) -> tuple[obj
 
 
 def _expected(
-    expect: Mapping[str, object], values: Collection[str], at: Path, problems: list[Problem]
+    expect: Mapping[str, object],
+    values: Collection[str],
+    marked: Collection[str],
+    at: Path,
+    problems: list[Problem],
 ) -> tuple[str | None, dict[str, Fraction]]:
-    """The verdict and the numbers a check expects, each problem added."""
+    """The verdict and the numbers a check expects, each problem added,
+    `marked` the values reading a mark staff enter."""
     verdict: str | None = None
     numbers: dict[str, Fraction] = {}
     for name, raw in expect.items():
@@ -235,6 +245,16 @@ def _expected(
                     message=f"There is no value {name} in the task's scoring, so a check "
                     f"cannot expect it. Its values are {listed}, and verdict names the "
                     "verdict every run must get.",
+                )
+            )
+            continue
+        if name in marked:
+            problems.append(
+                Problem(
+                    path=where,
+                    message=f"{name} reads a mark staff enter, directly or through other "
+                    "values, and a check's made-up submission is never marked, so a check "
+                    "cannot expect it. Expect a value that reads no mark.",
                 )
             )
             continue

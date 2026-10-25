@@ -33,8 +33,9 @@ any board reads through it, which its picks read as well (guarantee 5);
 alone, which hide its picks where held back (stage 5 section 6, item 98).
 
 Each column's tree is at most `MOST_NODES` nodes and `MOST_DEPTH` deep,
-as a task's value is, and a board has at most `MOST_COLUMNS` columns,
-since every read of a board works out each column for each row.
+as a task's value is, a board has at most `MOST_COLUMNS` columns, and a
+contest at most `MOST_LEADERBOARDS` boards, since every read of a board
+works out each column for each row.
 """
 
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -65,6 +66,8 @@ from forge.domain.yaml_models import Path, is_number
 
 MOST_COLUMNS = 100
 """The most columns one board has."""
+MOST_LEADERBOARDS = 20
+"""The most boards a contest has."""
 
 BoardColumn = tuple[str, str]
 """A column by its board's key and its name."""
@@ -182,6 +185,16 @@ def spelled(name: str) -> str:
 
 def check_boards(boards: Mapping[str, Leaderboard], tasks: Sequence[str]) -> BoardsCheck:
     """Check a contest's `boards`, by key, against its `tasks`, by id."""
+    if len(boards) > MOST_LEADERBOARDS:
+        return BoardsCheck(
+            [
+                (
+                    ("leaderboards",),
+                    f"This contest has {len(boards)} leaderboards. A contest has at most "
+                    f"{MOST_LEADERBOARDS}, so working them out stays quick.",
+                )
+            ]
+        )
     problems: Found = []
     problems += _contest_names(boards, tasks)
     kinds = _kinds(boards)
@@ -871,6 +884,7 @@ def _order(
 
 __all__ = [
     "MOST_COLUMNS",
+    "MOST_LEADERBOARDS",
     "BoardColumn",
     "BoardsCheck",
     "ColumnShape",

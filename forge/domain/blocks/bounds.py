@@ -15,16 +15,20 @@ Bounds are carried where every part has one and are none otherwise:
   over a task's results by the task's `submissions.max`, none without
   one, a `missing` number widening them; a `where`, or a `missing: skip`,
   may leave out all but one;
-- a pick's value is the value's bounds, `best_each` its value's, and `if`
-  and `otherwise` the widest of their branches; `sum_best` the sum of the
-  `k` greatest least and most bounds.
+- a pick's value is the value's bounds, `best_each` its value's, worked
+  out again from the bounds of each value it reads widened by its
+  `missing` number when it has one, and `if` and `otherwise` the widest of
+  their branches; `sum_best` the sum of the `k` greatest least and most
+  bounds.
 
 None for `seconds`, `seconds_late`, an `exec` block, whose program's
 declared bounds the plan does not keep, and a group with no runs. A bound
 past `MOST_BITS` is none, as such a number is.
 
-The trees are walked by recursion: the save keeps each at most
-`check.MOST_DEPTH` deep.
+Each tree is walked by recursion, the save keeping it at most
+`check.MOST_DEPTH` deep; the values are walked one after another, each
+after those it reads (`evaluate.in_order`), so a chain of values costs no
+frames.
 """
 
 import math
@@ -34,7 +38,7 @@ from fractions import Fraction
 from forge.domain.blocks.board_check import BoardColumn, BoardsCheck, column_at
 from forge.domain.blocks.catalogue import CATALOGUE, ENTERED, SKIP, Kind
 from forge.domain.blocks.check import form_of, leaf_of, same_value
-from forge.domain.blocks.evaluate import MOST_BITS, Column, RunResult
+from forge.domain.blocks.evaluate import MOST_BITS, Column, RunResult, in_order
 from forge.domain.blocks.numbers import exact
 from forge.domain.definitions import Leaderboard
 
@@ -119,23 +123,13 @@ def value_bounds(
     values: Mapping[str, object],
     groups: Mapping[str, Sequence[RunResult]],
     columns: Mapping[str, Column],
+    given: Mapping[str, Bounds] | None = None,
 ) -> dict[str, Bounds]:
     """Each of a task's values' bounds: `groups` each group's runs, `all`
-    among them, as a fold reads them, and `columns` each report's column as
-    the plan gives it."""
-    found: dict[str, Bounds] = {}
-    walking: set[str] = set()
-
-    def value(name: str) -> Bounds:
-        if name in found:
-            return found[name]
-        tree = values.get(name)
-        if tree is None or name in walking:
-            return None
-        walking.add(name)
-        found[name] = node(tree, None, None)
-        walking.discard(name)
-        return found[name]
+    among them, as a fold reads them, `columns` each report's column as
+    the plan gives it, and `given` the bounds of values read but not in
+    `values`."""
+    found: dict[str, Bounds] = dict(given or {})
 
     def node(tree: object, runs: Sequence[RunResult] | None, missing: object) -> Bounds:
         number = exact(tree) if not isinstance(tree, dict | list) else None
@@ -149,7 +143,7 @@ def value_bounds(
                 return None
             kind, named = leaf
             if kind == "value" and isinstance(named, str):
-                return value(named)
+                return found.get(named)
             if kind == "fact":
                 return ZERO_ONE if named == "compiled" else None
             if kind == "run" and isinstance(named, list) and runs is not None:
@@ -193,7 +187,9 @@ def value_bounds(
             return widest(*got)
         return _over_numbers(block.name, got)
 
-    return {name: value(name) for name in values}
+    for name in in_order(values):
+        found[name] = node(values[name], None, None)
+    return {name: found.get(name) for name in values}
 
 
 def _weight(run: RunResult, weights: object) -> Fraction:
@@ -240,16 +236,19 @@ def column_bounds(
     checked: BoardsCheck,
     tasks: Mapping[str, Mapping[str, Bounds]],
     most: Mapping[str, int | None],
+    trees: Mapping[str, Mapping[str, object]],
 ) -> dict[BoardColumn, Bounds]:
     """Each number column's bounds, of the boards worked out on read:
     `tasks` each task's values' bounds, a task the board reads with none
-    there giving none, and `most` each task's `submissions.max`."""
+    there giving none, `most` each task's `submissions.max`, and `trees`
+    each task's values' trees, which `best_each` with a `missing` number
+    works out again."""
     found: dict[BoardColumn, Bounds] = {}
     for board, name in checked.order:
         shape = checked.shapes[board][name]
         if shape.kind is not Kind.NUMBER:
             continue
-        reader = _ColumnBounds(board, boards[board], checked, tasks, most, found)
+        reader = _ColumnBounds(board, boards[board], checked, tasks, most, trees, found)
         found[(board, name)] = reader.node(boards[board].columns[name], ())
     return found
 
@@ -262,6 +261,7 @@ class _ColumnBounds:
         checked: BoardsCheck,
         tasks: Mapping[str, Mapping[str, Bounds]],
         most: Mapping[str, int | None],
+        trees: Mapping[str, Mapping[str, object]],
         done: Mapping[BoardColumn, Bounds],
     ) -> None:
         self.board = board
@@ -269,6 +269,7 @@ class _ColumnBounds:
         self.checked = checked
         self.tasks = tasks
         self.most = most
+        self.trees = trees
         self.done = done
 
     def read(self, task: str, name: str) -> Bounds:
@@ -293,6 +294,29 @@ class _ColumnBounds:
             shape = self.checked.shapes.get(board, {}).get(name)
             return shape.of_tasks if shape is not None else frozenset()
         return frozenset()
+
+    def best_each(self, tree: Mapping[str, object], task: str) -> Bounds:
+        """The value's bounds, or, with a `missing` number, which any value
+        it reads may count as instead, worked out again from theirs widened
+        by it, as a fold's are."""
+        value = tree.get("value")
+        named = leaf_of(value) if isinstance(value, dict) else None
+        if named is None:
+            return None
+        name = str(named[1])
+        found = self.read(task, name)
+        instead = exact(tree.get("missing"))
+        if instead is None:
+            return found
+        own = self.trees.get(task, {}).get(name)
+        if found is None or own is None:
+            return None
+        given = {
+            each: widest(bounds, (instead, instead))
+            for each, bounds in self.tasks.get(task, {}).items()
+            if each != name
+        }
+        return value_bounds({name: own}, {}, {}, given)[name]
 
     def node(self, tree: object, scope: tuple[str, ...]) -> Bounds:
         number = exact(tree) if not isinstance(tree, dict | list) else None
@@ -326,9 +350,7 @@ class _ColumnBounds:
             leaf = leaf_of(tree[over]) if isinstance(tree.get(over), dict) else None
             task = str(leaf[1]) if leaf is not None else ""
             if block.name == "best_each":
-                value = tree.get("value")
-                named = leaf_of(value) if isinstance(value, dict) else None
-                return self.read(task, str(named[1])) if named is not None else None
+                return self.best_each(tree, task)
             inner = (*scope, task)
             most = self.most.get(task)
             if block.name == "count":

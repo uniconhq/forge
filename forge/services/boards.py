@@ -268,6 +268,9 @@ async def read(
         owner for owner in await timelines.rows(ctx, contest) if only is None or owner == only
     ]
     extensions = await timelines.of_owners(ctx, contest, owners)
+    # A task reveals once it has closed for every row, whichever rows are
+    # read, so a read of one row never reveals it sooner.
+    every_row = await timelines.every_extension(ctx, contest)
     shown = await _names(ctx, owners)
     marked = await marks.of_tasks(ctx, [task.id for task in tasks])
     since = None
@@ -287,7 +290,7 @@ async def read(
         held = await published.runs_held(ctx, task)
         trees[task.name] = scoring.values
         entered[task.name] = using(scoring.values, ENTERED)
-        revealed = ctx.now >= reveal_of(settings, task.entry, extensions.values())
+        revealed = ctx.now >= reveal_of(settings, task.entry, every_row)
         results_released = not viewer.staff and await published.results_released(ctx, task.id)
         groups = {ALL: [RunResult(run.id, "", run.key) for run in held.runs]}
         for name, picked in scoring.groups.items():
@@ -321,7 +324,7 @@ async def read(
         )
         for owner, listed in found.items():
             results[owner][task.name] = listed
-    columns = column_bounds(settings.leaderboards, checked, bounds, most)
+    columns = column_bounds(settings.leaderboards, checked, bounds, most, trees)
     parts = self_reported_parts(checked, reported)
     rows: list[Row] = []
     for owner in owners:
@@ -458,8 +461,10 @@ async def _results(
                 for name, outcome in worked.outcomes.items()
                 if outcome.number is not None
             }
-            waits = frozenset(name for name, outcome in worked.outcomes.items() if outcome.waiting)
-            results = Submitted(number, {**values, **worked.facts, **own}, waits)
+            waits = {name for name, outcome in worked.outcomes.items() if outcome.waiting}
+            if worked.grading.compiled is None:
+                waits.add("compiled")
+            results = Submitted(number, {**values, **worked.facts, **own}, frozenset(waits))
         else:
             shown = run_showing.shown(
                 scoring,

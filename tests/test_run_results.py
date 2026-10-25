@@ -7,7 +7,8 @@ through a late one; a run still to come waits, and one never run is
 missing; until the reveal an entrant reads the early row alone, whatever
 the late row does, and a run a later save added never waits; the facts
 count from the due and the start, 0 before, and `compiled` reads an
-untainted compile done once; what is shown before and after the reveal;
+untainted compile done once, waiting while a row is still to run it;
+what is shown before and after the reveal;
 an entrant's texts are read by where they are shown, never by the output
 that holds them; a key's file not yet shown is never named; a value
 reading a column the entrant could set is marked; a task with nothing
@@ -395,6 +396,31 @@ def test_compiled_is_0_on_a_compile_error_of_an_untainted_step_done_once() -> No
         compiling={"compile"},
     )
     assert (stopped.compiled, tainted.compiled, built.compiled) == (0, 1, 1)
+
+
+def test_compiled_waits_while_a_row_whose_plan_compiles_is_still_to_give_it() -> None:
+    text = ISLANDS.replace("  values:\n", "  values:\n    built: {fact: compiled}\n")
+    start = datetime(2026, 9, 26, 10, 0, tzinfo=UTC)
+    early = _row({"r1": "accepted", "r2": "accepted"})
+
+    def worked(late: Mapping[str, Any] | None, coming: set[str]) -> tuple[Any, Any, bool]:
+        grading = run_grading(
+            ISLAND_RUNS, early, late, waiting=(), compiling={"compile"}, compiling_waiting=coming
+        )
+        facts = facts_of(None, start, start, grading.compiled)
+        built = _numbers(worked_out(_scoring(text), ISLAND_RUNS, grading, facts, COLUMNS))["built"]
+        return grading.compiled, built, "compiled" in facts
+
+    late = _row({"r3": "accepted", "r4": "accepted"}, outcomes={"compile": "accepted"})
+    failed = _row(
+        dict.fromkeys(("r3", "r4"), "compile_error"), outcomes={"compile": "compile_error"}
+    )
+    # The late row's plan compiles: until it gives the outcome, it waits.
+    assert worked(None, {"compile"}) == (None, "waiting", False)
+    assert worked(late, {"compile"}) == (1, 1, True)
+    assert worked(failed, {"compile"}) == (0, 0, True)
+    # A compile no row's plan holds still to give never waits.
+    assert worked(None, set()) == (1, 1, True)
 
 
 def test_compiled_and_the_compile_log_are_shown_once_a_run_is() -> None:

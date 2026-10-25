@@ -36,7 +36,8 @@ group to `now` (phase 4.10).
   one named like a group or a value, since the entry names that.
 - **`compiled`** is shown from the time `show` lists it under, by its
   name as a value is, and once any run is shown, since the shown runs'
-  verdicts already tell it (stage 5 section 6 item 124).
+  verdicts already tell it (stage 5 section 6 item 124); none while it
+  waits for its compile to run (`forge.domain.run_results`).
 - `staff` outputs never.
 
 A text is a reference to a stored output, which may be another entrant's
@@ -110,8 +111,8 @@ class ValueShown:
 class Shown:
     """A run task's grading as one reader sees it now: its values, its runs
     by group, what the steps done once reported (`reports` and `texts`),
-    `compiled`, none while not shown, and whether nothing of the task is
-    shown before its reveal. Organisers also read the facts.
+    `compiled`, none while not shown or while it waits, and whether nothing
+    of the task is shown before its reveal. Organisers also read the facts.
     """
 
     values: tuple[ValueShown, ...]

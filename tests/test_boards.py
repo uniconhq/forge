@@ -14,7 +14,12 @@ from typing import Any
 
 import pytest
 
-from forge.domain.blocks.board_check import MOST_COLUMNS, BoardsCheck, check_boards
+from forge.domain.blocks.board_check import (
+    MOST_COLUMNS,
+    MOST_LEADERBOARDS,
+    BoardsCheck,
+    check_boards,
+)
 from forge.domain.blocks.board_evaluate import Cell, Submitted, work_out_row
 from forge.domain.blocks.bounds import column_bounds, self_reported_parts, value_bounds
 from forge.domain.blocks.catalogue import CATALOGUE, Scope
@@ -1048,7 +1053,7 @@ def test_the_gradebooks_headers_carry_bounds_and_the_self_reported_mark_no_cell_
         "search": {"score": (Fraction(0), Fraction(1))},
         "cartpole": {"reward": (Fraction(0), Fraction(500))},
     }
-    bounds = column_bounds(settings.leaderboards, found, tasks, {"search": 50, "cartpole": 50})
+    bounds = column_bounds(settings.leaderboards, found, tasks, {"search": 50, "cartpole": 50}, {})
     parts = self_reported_parts(found, {"search": frozenset(), "cartpole": frozenset({"reward"})})
     headers = headers_of("gradebook", settings.leaderboards["gradebook"], bounds, parts)
     worked = work_out_row(settings.leaderboards, found, {"cartpole": [sub(1, reward=475)]}, {})
@@ -1277,6 +1282,75 @@ def test_otherwise_and_sum_best_and_missing_spreading() -> None:
     assert column("p", "c", listed, {"block": "sum_best", "k": 2, "of": [a, b]}).number is None
 
 
+def first_of(task: str, name: str) -> dict[str, object]:
+    return {"block": "first", "from": results(task), "where": read(task, name)}
+
+
+def test_a_missing_pick_stays_missing_through_otherwise_so_an_if_testing_it_is_missing() -> None:
+    # a has no solved submission, so none; b's one submission has solved
+    # missing, so the pick is missing, given as it is by otherwise.
+    listed = {"a": [sub(1, solved=0)], "b": [sub(1)]}
+    either = {"block": "otherwise", "of": [first_of("a", "solved"), first_of("b", "solved")]}
+    direct = column(
+        "p", "c", listed, {"block": "if", "test": first_of("b", "solved"), "then": 1, "else": 0}
+    )
+    through = column("p", "c", listed, {"block": "if", "test": either, "then": 1, "else": 0})
+
+    assert direct.number is None and direct.counted == {("b", 1)}
+    assert through.number is None and through.counted == {("b", 1)}
+    assert column("p", "c", listed, either).missing
+
+
+def test_otherwise_over_a_value_still_grading_leaves_its_submission_out() -> None:
+    # A task's otherwise waits when its first waits (item 128); on a board
+    # the block looking at the submission leaves it out, so it is never
+    # both counted and waiting, and the fallback is never taken for it.
+    listed = {"a": [sub(1, time=5, attempt=1), sub(2, attempt=2, waiting=("time",))]}
+    fallback = {"block": "otherwise", "of": [read("a", "time"), 0]}
+    least = column("p", "c", listed, {"block": "min", "over": results("a"), "of": fallback})
+    lowest = column(
+        "p", "c", listed, read({"block": "lowest", "from": results("a"), "by": fallback}, "attempt")
+    )
+    # A fold that left out every submission as waiting has no number, so
+    # otherwise around it gives the fallback, as for a pick passing over
+    # them: the submission is left out, not read.
+    left_out = column(
+        "p",
+        "c",
+        {"a": [sub(1, waiting=("time",))]},
+        {
+            "block": "otherwise",
+            "of": [{"block": "min", "over": results("a"), "of": read("a", "time")}, 0],
+        },
+    )
+
+    assert least.number == 5
+    assert least.counted == {("a", 1)} and least.waiting == {("a", 2)}
+    assert lowest.number == 1
+    assert lowest.counted == {("a", 1)} and lowest.waiting == {("a", 2)}
+    assert left_out.number == 0 and not left_out.counted and left_out.waiting == {("a", 1)}
+    # So the grading queue and the entries list submission 1 alone.
+    text = (
+        "tasks: [{id: a}]\nleaderboards:\n  fastest:\n    audience: {who: everyone}\n"
+        "    columns:\n"
+        "      time: {block: min, over: {results: a}, of: {block: otherwise, of: "
+        "[{value: [a, time]}, 0]}}\n"
+        "    display: [time]\n"
+    )
+    assert counted_in(read_as(text, "fastest", [(1, "r1", listed)]), "a") == {
+        owner(1): {1: (("fastest", "time"),)}
+    }
+
+
+def test_otherwise_over_a_value_held_back_leaves_its_submission_out_and_hides() -> None:
+    listed = {"a": [sub(1, time=5), hidden_sub(2, "time")]}
+    fallback = {"block": "otherwise", "of": [read("a", "time"), 0]}
+    least = column("p", "c", listed, {"block": "min", "over": results("a"), "of": fallback})
+
+    assert least.hidden
+    assert least.number == 5 and least.counted == {("a", 1)}
+
+
 # The board check
 
 
@@ -1412,6 +1486,20 @@ def test_a_board_of_too_many_columns_is_refused() -> None:
     assert [path for path, _ in problems(board(columns))] == ["leaderboards.s.columns"]
 
 
+def test_a_contest_of_more_than_20_leaderboards_is_refused() -> None:
+    boards = {f"b{index}": Leaderboard(columns={"c": 1}) for index in range(MOST_LEADERBOARDS)}
+    assert MOST_LEADERBOARDS == 20
+    assert check_boards(boards, []).problems == []
+    boards["more"] = Leaderboard(columns={"c": 1})
+    assert check_boards(boards, []).problems == [
+        (
+            ("leaderboards",),
+            "This contest has 21 leaderboards. A contest has at most 20, so working them out "
+            "stays quick.",
+        )
+    ]
+
+
 def test_a_task_value_using_a_board_block_or_leaf_is_refused() -> None:
     for tree in (
         {"block": "first", "from": results("a")},
@@ -1514,7 +1602,7 @@ def test_the_gradebooks_total_carries_its_bounds_and_seconds_late_none() -> None
         "search": {"score": (Fraction(0), Fraction(1))},
         "cartpole": {"reward": (Fraction(0), Fraction(500))},
     }
-    bounds = column_bounds(settings.leaderboards, found, tasks, {"search": 50, "cartpole": 50})
+    bounds = column_bounds(settings.leaderboards, found, tasks, {"search": 50, "cartpole": 50}, {})
 
     assert bounds[("gradebook", "search_mark")] == (Fraction(0), Fraction(1))
     assert bounds[("gradebook", "cartpole_best")] == (Fraction(0), Fraction(500))
@@ -1534,7 +1622,7 @@ def test_a_division_by_bounds_holding_0_and_a_fold_over_results_by_submissions()
     )
     found = checked(settings)
     bounds = column_bounds(
-        settings.leaderboards, found, {"a": {"score": (Fraction(0), Fraction(2))}}, {"a": 3}
+        settings.leaderboards, found, {"a": {"score": (Fraction(0), Fraction(2))}}, {"a": 3}, {}
     )
 
     assert bounds[("s", "n")] == (Fraction(0), Fraction(3))
@@ -1549,12 +1637,29 @@ def test_a_folds_bounds_over_results_widen_by_its_missing_number() -> None:
     )
     found = checked(settings)
     bounds = column_bounds(
-        settings.leaderboards, found, {"a": {"score": (Fraction(0), Fraction(2))}}, {"a": 3}
+        settings.leaderboards, found, {"a": {"score": (Fraction(0), Fraction(2))}}, {"a": 3}, {}
     )
 
     assert bounds[("s", "wide")] == (Fraction(0), Fraction(5))
     assert bounds[("s", "low")] == (Fraction(-1), Fraction(2))
     assert bounds[("s", "plain")] == (Fraction(0), Fraction(2))
+
+
+def test_best_eachs_bounds_are_worked_out_again_from_each_read_widened_by_its_missing() -> None:
+    tree = best_each("total")
+    settings = contest(board({"wide": {**tree, "missing": 5}, "skip": {**tree, "missing": "skip"}}))
+    found = checked(settings)
+    one = (Fraction(0), Fraction(1))
+    tasks = {"a": {"st1": one, "st2": one, "total": (Fraction(0), Fraction(100))}}
+
+    def bounds(given: Mapping[str, Mapping[str, Any]]) -> dict[tuple[str, str], Any]:
+        return column_bounds(settings.leaderboards, found, given, {"a": 3}, {"a": ISLANDS_VALUES})
+
+    # A missing st2 counted as 5 gives 40 * 1 + 60 * 5 = 340, within them.
+    assert bounds(tasks)[("s", "wide")] == (Fraction(0), Fraction(500))
+    assert bounds(tasks)[("s", "skip")] == (Fraction(0), Fraction(100))
+    # A value read with no bounds, such as one not shown, gives none.
+    assert bounds({"a": {"st1": one, "total": (Fraction(0), Fraction(100))}})[("s", "wide")] is None
 
 
 def test_a_column_over_two_tasks_names_the_one_value_that_is_self_reported() -> None:
@@ -1824,6 +1929,36 @@ def test_each_refusal_across_files(columns: dict[str, object], path: str, words:
 
     assert [each for each, _ in found] == [path]
     assert words in found[0][1]
+
+
+def test_best_each_refuses_a_value_using_otherwise_by_its_name_and_works_none_out() -> None:
+    fallback = {"block": "otherwise", "of": [{"value": "st2"}, 0]}
+    values = {
+        **ISLANDS_VALUES,
+        "kept": {
+            "block": "add",
+            "of": [
+                {"block": "mul", "of": [10, fallback]},
+                {"block": "mul", "of": [40, {"value": "st1"}]},
+                {"block": "mul", "of": [60, {"value": "st2"}]},
+            ],
+        },
+    }
+    text = board({"c": best_each("kept")})
+    found, _ = check_contest(contest(text), {"a": Scored(values)})
+    listed = {"a": [sub(1, st1=1, st2=0.5), sub(2, st1=0.5, st2=1)]}
+
+    assert [(".".join(str(part) for part in path), message) for path, message in found] == [
+        (
+            "leaderboards.s.columns.c.value",
+            "best_each works kept out again from the best of each value it reads directly, "
+            "but kept reads a fallback for a missing number, through otherwise directly, so "
+            "no one best of it would be right. Give best_each a value that reads only other "
+            "values and numbers.",
+        )
+    ]
+    # A version still to be checked gets no number on read either.
+    assert cells(text, listed, {"a": values})[("s", "c")].number is None
 
 
 def test_what_reads_a_mark_without_choosing_by_it_and_a_task_not_resolved_pass() -> None:

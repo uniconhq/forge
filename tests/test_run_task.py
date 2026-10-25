@@ -1781,6 +1781,28 @@ def test_a_check_that_does_not_fit_the_task_is_refused_at_its_path(
         assert messages == [words]
 
 
+def test_a_check_expecting_a_value_that_reads_a_mark_is_refused_at_the_save(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    marked = ISLANDS.replace(
+        "    total:\n",
+        "    review: {block: entered, at_least: 0, at_most: 10}\n"
+        "    reviewed: {block: add, of: [{value: st1}, {value: review}]}\n"
+        "    total:\n",
+        1,
+    )
+    check = "{submit: {code: checks/good}, expect: {review: 7, reviewed: 8, total: 100}}"
+    found = islands(primitives, f"{marked}checks:\n  - {check}\n", paths=CHECK_PATHS)
+
+    assert at(found, "checks[0].expect.review") == [
+        "review reads a mark staff enter, directly or through other values, and a check's "
+        "made-up submission is never marked, so a check cannot expect it. Expect a value that "
+        "reads no mark."
+    ]
+    assert len(at(found, "checks[0].expect.reviewed")) == 1
+    assert at(found, "checks[0].expect.total") == []
+
+
 def test_a_check_needs_something_to_expect() -> None:
     with pytest.raises(InvalidDefinition) as raised:
         parse_task(

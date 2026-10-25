@@ -5,8 +5,9 @@ true and false, so a group named `no` or the country code `NO` is text, and
 `1_000`, `1:30` and a date are text too. Every number with a point or an
 exponent is read as the exact `Decimal` it is written as, never a float, so
 no digit of a bound is lost on its way to a score. The loader refuses a key
-given twice, and the document is then validated by a pydantic model that refuses any key it does not
-know, so a typo is an error rather than a setting silently left out. Every
+given twice, and an anchor or an alias (`&`, `*`), and the document is
+then validated by a pydantic model that refuses any key it does not know,
+so a typo is an error rather than a setting silently left out. Every
 problem is reported as a path into the YAML and a sentence a person reads:
 `leaderboards[0].order[1].direction`, `This must be one of asc or desc.` A form
 shows the sentence beside the field the path names.
@@ -24,8 +25,10 @@ from typing import Annotated, Any, NoReturn, TypedDict
 from pydantic import BaseModel, ConfigDict, PlainValidator, ValidationError
 from pydantic_core import ErrorDetails, PydanticCustomError
 from ruamel.yaml import YAML
+from ruamel.yaml.composer import Composer, ComposerError
 from ruamel.yaml.constructor import ConstructorError, SafeConstructor
 from ruamel.yaml.error import YAMLError as YAMLError
+from ruamel.yaml.events import AliasEvent
 from ruamel.yaml.nodes import ScalarNode
 from ruamel.yaml.representer import SafeRepresenter
 from ruamel.yaml.resolver import BaseResolver
@@ -184,23 +187,48 @@ for _other in ("timestamp", "binary", "set", "omap", "pairs", "merge", "value"):
     _ExactConstructor.add_constructor(_TAG + _other, _ExactConstructor.construct_not_core)
 
 
+class _PlainComposer(Composer):
+    """The composer, refusing an anchor (`&`) and an alias (`*`): an alias
+    makes two parts of the file one object, so what is read of one, such
+    as the mark entered for a value, would be read of the other, and a few
+    aliases of aliases could stand for millions of parts."""
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        event = self.parser.peek_event()
+        if isinstance(event, AliasEvent) or event.anchor is not None:
+            raise ComposerError(
+                None,
+                None,
+                "a part is named with & or repeated with *, which Unicon does not read; "
+                "write each part out in full",
+                event.start_mark,
+            )
+        return super().compose_node(parent, index)
+
+
 def _reader() -> YAML:
     reader = YAML(typ="safe", pure=True)
     reader.Resolver = _CoreResolver
     reader.Constructor = _ExactConstructor
+    reader.Composer = _PlainComposer
     return reader
 
 
 def load_yaml(text: bytes | str) -> object:
     """The document in `text`, read as YAML 1.2's core schema with every
-    number that is not whole a `Decimal`. Raises `YAMLError` when it does
-    not parse.
+    number that is not whole a `Decimal`, and no anchor or alias. Raises
+    `YAMLError` when it does not parse.
     """
     return _reader().load(text)
 
 
 class _ExactRepresenter(SafeRepresenter):
-    """The safe representer, writing a `Decimal` as the digits it holds."""
+    """The safe representer, writing a `Decimal` as the digits it holds,
+    and a part given twice out in full each time, since the reader
+    refuses an alias."""
+
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
 
     def represent_decimal(self, data: Decimal) -> ScalarNode:
         """Its digits, under the int tag when they are a whole number with

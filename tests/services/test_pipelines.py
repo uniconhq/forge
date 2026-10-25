@@ -18,9 +18,10 @@ again once a regrade replaced its early row; a late row reads what its
 early row read, and reuses as it did; an upload is linked only when the
 submission took it; a task with nothing early makes its late row at
 once, told as submitted until the reveal, with or without the platform's
-images; a step whose image the platform withdrew ends its start saying
-so and is refused at a save; each row has a user of its own, and takes
-one a lost row held; a save is checked by a pipeline of its own before
+images, and `compiled` waits for every reader until that row compiles; a
+step whose image the platform withdrew ends its start saying so and is
+refused at a save; each row has a user of its own, and takes one a lost
+row held; a save is checked by a pipeline of its own before
 it takes over, compared with the publication entrants are graded on, and
 one whose checker does not compile is refused while the old version
 keeps grading, shown so to its organisers and checked again by a save of
@@ -899,6 +900,54 @@ async def test_a_task_with_nothing_early_makes_its_late_row_at_once(
     assert await _seen(setup, session, islands) == [(1, SubmissionState.SUBMITTED)]
     clock.set(AFTER_CLOSE)
     assert await _seen(setup, session, islands) == [(1, SubmissionState.GRADING)]
+
+
+BUILT_LATE = NOTHING_EARLY.replace(
+    "  values:\n", "  values:\n    built: {fact: compiled}\n"
+).replace("after_close: [st1, st2, total, all]", "after_close: [st1, st2, total, all, built]")
+"""islands with nothing early and a value reading `compiled` shown after
+the close, so its compile runs in the late row."""
+BUILT_BOARD = (
+    LIVE
+    + "leaderboards:\n  built:\n    audience: {who: staff}\n    columns:\n"
+    + "      c: {value: [{block: latest, from: {results: islands}}, compiled]}\n"
+    + "    display: [c]\n"
+)
+"""A board for staff reading the latest submission's `compiled`."""
+
+
+async def test_compiled_waits_for_every_reader_until_the_late_row_that_compiles_has_run(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme, BUILT_LATE, contest=BUILT_BOARD)
+    session = await _submit(setup, acme, islands)
+    [late] = await _rows(setup, "late")
+    staff = await _staff(setup, acme)
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    async with setup.unit_of_work() as ctx:
+        entrant = await ctx.db.scalar(select(Entrant.id))
+    assert entrant is not None
+
+    async def read() -> tuple[Any, ...]:
+        graded = await submissions.organised(setup, manager, islands.task, EntrantOwner(entrant), 1)
+        assert graded.grading is not None
+        [board] = await boards.seen(setup, staff, SPRING, "built")
+        mine = _values(await _grading(setup, session, islands)).get("built")
+        built = _values(graded.grading)["built"]
+        cell = board.rows[0].cells[0]
+        return built, graded.grading.compiled, cell.number, cell.waiting, mine
+
+    # Staff, and the entrant from the reveal, read it waiting, never 1.
+    waiting = (Counted("islands", 1),)
+    assert await read() == ("waiting", None, None, waiting, None)
+    clock.set(AFTER_CLOSE)
+    assert await read() == ("waiting", None, None, waiting, "waiting")
+    await _step(setup, acme, late.id, "late", "compile", _compiled())
+    await _step(setup, acme, late.id, "late", "solution", _batch())
+    await _step(setup, acme, late.id, "late", "compare", _batch(score=True))
+    assert await _report(setup, late.id, "late") is GradingStatus.DONE
+    assert await read() == (1, 1, 1, (), 1)
 
 
 async def test_a_row_with_nothing_to_run_ends_without_the_platforms_images(

@@ -211,7 +211,7 @@ class Result:
     no `values`: `run_values` holds each value of its scoring shown to its
     reader, `runs` each run shown, by group, `once` what its steps done
     once reported, the compile log among them, and `compiled`, once a run
-    is shown, and, to organisers alone, `facts`
+    is shown and none while it waits, and, to organisers alone, `facts`
     (`forge.domain.run_showing`), an entrant's texts there with no output
     named, `texts_at` where each is shown and what holds it, for
     `read_text` and never served; and `reveal_at`, until then, when the

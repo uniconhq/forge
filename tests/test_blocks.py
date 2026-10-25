@@ -18,8 +18,24 @@ import pytest
 from forge.domain import exact_json
 from forge.domain.blocks.bounds import value_bounds
 from forge.domain.blocks.catalogue import CATALOGUE, Scope
-from forge.domain.blocks.check import MOST_DEPTH, MOST_NODES, Found, check_values, tree_size
-from forge.domain.blocks.evaluate import MOST_BITS, Column, Outcome, RunResult, evaluate, using
+from forge.domain.blocks.check import (
+    MOST_DEPTH,
+    MOST_GROUPS,
+    MOST_NODES,
+    MOST_VALUES,
+    Found,
+    check_values,
+    tree_size,
+)
+from forge.domain.blocks.evaluate import (
+    MOST_BITS,
+    Column,
+    Outcome,
+    RunResult,
+    evaluate,
+    in_order,
+    using,
+)
 from forge.domain.blocks.numbers import Better, decimal_of, exact, written
 
 COLUMNS = {
@@ -507,6 +523,52 @@ def test_a_tree_far_deeper_than_python_recurses_is_refused_and_still_worked_out(
 
     assert [path for path, _ in problems({"v": tree})] == [("values", "v")]
     assert number({"v": tree}) == 1
+
+
+def links(count: int) -> dict[str, object]:
+    """A chain of `count` values, each 1 more than the next, the last 1."""
+    values: dict[str, object] = {
+        f"v{index}": many("add", value(f"v{index + 1}"), 1) for index in range(count - 1)
+    }
+    values[f"v{count - 1}"] = 1
+    return values
+
+
+def test_a_task_of_more_than_200_values_or_groups_is_refused() -> None:
+    assert (MOST_VALUES, MOST_GROUPS) == (200, 200)
+    assert problems(links(200)) == []
+    assert problems(links(400)) == [
+        (
+            ("values",),
+            "This task has 400 values. A task has at most 200, so working its values out "
+            "stays quick.",
+        )
+    ]
+    groups = check_values({}, groups=[f"g{index}" for index in range(201)], columns={}, keys={})
+    assert groups.problems == [
+        (
+            ("groups",),
+            "This task has 201 groups. A task has at most 200, so working its values out "
+            "stays quick.",
+        )
+    ]
+
+
+def test_a_chain_of_values_is_walked_with_no_recursion_between_them() -> None:
+    values = links(400)
+
+    assert value_bounds(values, {"all": []}, {})["v0"] == (Fraction(400), Fraction(400))
+    assert number(values, "v0") == 400
+
+
+def test_values_are_put_in_order_in_one_pass_over_what_each_reads() -> None:
+    values = links(20000)
+    started = time.monotonic()
+    order = in_order(values)
+
+    assert time.monotonic() - started < 1
+    assert order == [f"v{index}" for index in reversed(range(20000))]
+    assert in_order({"b": value("a"), "a": 1, "c": value("c")}) == ["a", "b"]
 
 
 def test_a_block_the_catalogue_does_not_have_raises_when_read() -> None:
