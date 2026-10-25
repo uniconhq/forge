@@ -314,6 +314,86 @@ def test_a_submission_still_grading_is_left_out_and_said_waiting() -> None:
     assert ("a", 1) in found[("standings", "solved")].waiting
 
 
+LAST = """\
+tasks: [{id: a}]
+leaderboards:
+  one:
+    columns:
+      last: {block: latest, from: {results: a}}
+      total: {block: otherwise, of: [{value: [last, total]}, -1]}
+    display: [total]
+  two:
+    columns:
+      total: {block: otherwise, of: [{value: [{column: [one, last]}, score]}, -1]}
+    display: [total]
+"""
+
+
+def test_a_pick_passes_over_a_newest_submission_whose_value_read_through_it_waits() -> None:
+    gradebook = cells(
+        GRADEBOOK, {"search": [sub(1, score=0.9), sub(2, waiting=("score", "compiled"))]}
+    )
+    grading = {"a": [sub(1, total=50, score=5), sub(2, score=6, waiting=("total",))]}
+    found = cells(LAST, grading)
+
+    # The latest submission's score still waits, so the one before counts.
+    mark = gradebook[("gradebook", "search_mark")]
+    assert mark.number == Fraction(9, 10)
+    assert mark.counted == {("search", 1)}
+    assert mark.waiting == {("search", 2)}
+    # A pick column counts as reading what every column reads through it,
+    # another board's among them, so both boards pass over submission 2.
+    assert found[("one", "total")].number == 50
+    assert found[("one", "total")].waiting == {("a", 2)}
+    assert found[("two", "total")].number == 5
+    assert found[("two", "total")].counted == {("a", 1)}
+    assert checked(contest(LAST)).through == {("one", "last"): {"total", "score"}}
+
+
+def test_a_pick_takes_a_newest_submission_whose_waiting_value_it_does_not_read() -> None:
+    reads_score = column(
+        "b",
+        "c",
+        {"a": [sub(1, score=1), sub(2, score=2, waiting=("total",))]},
+        read({"block": "latest", "from": results("a")}, "score"),
+    )
+    reads_total = column(
+        "b",
+        "c",
+        {"a": [sub(1, total=1), sub(2, waiting=("total",))]},
+        read({"block": "latest", "from": results("a")}, "total"),
+    )
+
+    assert reads_score.number == 2
+    assert reads_score.counted == {("a", 2)}
+    assert not reads_score.waiting
+    assert reads_total.number == 1
+    assert reads_total.counted == {("a", 1)}
+    assert reads_total.waiting == {("a", 2)}
+
+
+def test_a_column_read_from_another_board_works_out_and_names_the_task() -> None:
+    text = (
+        "tasks: [{id: a}, {id: b}]\nleaderboards:\n"
+        "  one:\n    columns:\n"
+        "      best: {block: max, over: {results: a}, of: {value: [a, total]}}\n"
+        "      other: {block: count, over: {results: b}}\n"
+        "  two:\n    columns:\n      half: {block: mul, of: [0.5, {column: [one, best]}]}\n"
+        "  three:\n    columns:\n      tries: {column: [one, other]}\n"
+    )
+    found = cells(text, {"a": [sub(1, total=40), sub(2, total=80)]})
+    boards = checked(contest(text))
+
+    assert found[("two", "half")].number == 40
+    assert found[("two", "half")].counted == {("a", 2)}
+    # A board reading a task only through another board's column reads it.
+    assert boards.reading("a") == ["one", "two"]
+    assert boards.reads("a", "total") == ["one", "two"]
+    assert boards.reading("b") == ["one", "three"]
+    # A read of two works out only its columns and those they read.
+    assert boards.needed(["two"]).order == (("one", "best"), ("two", "half"))
+
+
 def test_the_three_boards_rank_rows_with_shared_places() -> None:
     settings = contest(ICPC)
     found = checked(settings)

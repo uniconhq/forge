@@ -26,15 +26,17 @@ A board whose check finds anything, or that reads a column of such a
 board, is not worked out on read (`BoardsCheck.readable`); the contest's
 save refuses it first. `BoardsCheck.order` gives every column of the
 readable boards after each column it reads, so they are worked out in one
-pass with no recursion between them.
+pass with no recursion between them. `BoardsCheck.through` gives, for each
+column giving a submission's results, every value and fact any column of
+any board reads through it, which its picks read as well (guarantee 5).
 
 Each column's tree is at most `MOST_NODES` nodes and `MOST_DEPTH` deep,
 as a task's value is, and a board has at most `MOST_COLUMNS` columns,
 since every read of a board works out each column for each row.
 """
 
-from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 
 from forge.domain.blocks.catalogue import (
     ASC,
@@ -91,30 +93,61 @@ class ColumnShape:
 class BoardsCheck:
     """Every problem with a contest's leaderboards, each at its path from
     the top of `contest.yaml`; each column's shape, by board; the boards
-    that are worked out on read; and their columns in an order that has
-    each after every column it reads.
+    that are worked out on read; their columns in an order that has each
+    after every column it reads; and, for each column giving a
+    submission's results, the values and facts any column reads through
+    it, from any board, which its picks pass over a submission still
+    waiting on (guarantee 5).
     """
 
     problems: Found
     shapes: Mapping[str, Mapping[str, ColumnShape]] = field(default_factory=dict)
     readable: frozenset[str] = frozenset()
     order: tuple[BoardColumn, ...] = ()
+    through: Mapping[BoardColumn, frozenset[str]] = field(default_factory=dict)
 
     def reads(self, task: str, name: str) -> list[str]:
-        """The boards with a column reading `name` of `task`."""
-        return [
-            board
-            for board, columns in self.shapes.items()
-            if any((task, name) in shape.reads for shape in columns.values())
-        ]
+        """The boards with a column reading `name` of `task`, directly or
+        through the columns it reads, another board's among them."""
+        return self._boards(lambda shape: (task, name) in shape.reads)
 
     def reading(self, task: str) -> list[str]:
-        """The boards with a column reading the results of `task`."""
-        return [
-            board
+        """The boards with a column reading the results of `task`, directly
+        or through the columns it reads, another board's among them."""
+        return self._boards(lambda shape: task in shape.tasks)
+
+    def needed(self, boards: Collection[str]) -> BoardsCheck:
+        """This, its `order` cut to the columns of `boards` and every column
+        they read, so a read of some boards works out no other."""
+        wanted = {(board, name) for board in boards for name in self.shapes.get(board, {})}
+        waiting = list(wanted)
+        while waiting:
+            board, name = waiting.pop()
+            for other in self.shapes[board][name].columns:
+                if other not in wanted and other[1] in self.shapes.get(other[0], {}):
+                    wanted.add(other)
+                    waiting.append(other)
+        return replace(self, order=tuple(each for each in self.order if each in wanted))
+
+    def _boards(self, hit: Callable[[ColumnShape], bool]) -> list[str]:
+        """The boards with a column that `hit`s, or reads one that does."""
+        found = {
+            (board, name)
             for board, columns in self.shapes.items()
-            if any(task in shape.tasks for shape in columns.values())
-        ]
+            for name, shape in columns.items()
+            if hit(shape)
+        }
+        grown = True
+        while grown:
+            more = {
+                (board, name)
+                for board, columns in self.shapes.items()
+                for name, shape in columns.items()
+                if (board, name) not in found and shape.columns & found
+            }
+            found |= more
+            grown = bool(more)
+        return [board for board in self.shapes if any(each[0] == board for each in found)]
 
 
 def column_at(board: str, named: object) -> BoardColumn:
@@ -136,9 +169,10 @@ def check_boards(boards: Mapping[str, Leaderboard], tasks: Sequence[str]) -> Boa
     problems += _contest_names(boards, tasks)
     kinds = _kinds(boards)
     shapes: dict[str, dict[str, ColumnShape]] = {}
+    through: dict[BoardColumn, set[str]] = {}
     troubled: set[str] = set()
     for key, board in boards.items():
-        checker = _Checker(key, board, tasks, boards, kinds)
+        checker = _Checker(key, board, tasks, boards, kinds, through)
         checker.check()
         shapes[key] = checker.shapes
         if checker.problems:
@@ -155,7 +189,9 @@ def check_boards(boards: Mapping[str, Leaderboard], tasks: Sequence[str]) -> Boa
             )
         )
     readable = _readable(shapes, troubled)
-    return BoardsCheck(problems, shapes, readable, _order(shapes, readable))
+    return BoardsCheck(
+        problems, shapes, readable, _order(shapes, readable), _through(boards, through)
+    )
 
 
 def _said(board: str, column: BoardColumn) -> str:
@@ -276,12 +312,14 @@ class _Checker:
         tasks: Sequence[str],
         boards: Mapping[str, Leaderboard],
         kinds: Mapping[BoardColumn, tuple[Kind, frozenset[str]]],
+        through: dict[BoardColumn, set[str]],
     ) -> None:
         self.key = key
         self.board = board
         self.tasks = frozenset(tasks)
         self.boards = boards
         self.kinds = kinds
+        self.through = through
         self.problems: Found = []
         self.shapes: dict[str, ColumnShape] = {}
         self.reading = _Reading()
@@ -526,6 +564,7 @@ class _Checker:
                 )
                 return None
             self.reading.reads.update((task, name) for task in tasks)
+            self.through.setdefault((self.key, of), set()).add(name)
             return _NUMBER
         gives = self.gives((*at, "value", 0), of, scope)
         if gives is None:
@@ -537,6 +576,8 @@ class _Checker:
             )
             return None
         self.reading.reads.update((task, name) for task in gives.tasks)
+        for column in _submission_columns(of, self.key):
+            self.through.setdefault(column, set()).add(name)
         return _NUMBER
 
     def _column(self, at: Path, named: object) -> _Gives | None:
@@ -715,6 +756,43 @@ def _loops(
                     seen.add(each)
                     waiting.append([*path, each])
     return found
+
+
+def _submission_columns(tree: object, board: str) -> list[BoardColumn]:
+    """The columns a tree of `board` gives the submission of as it is: a
+    `{column: ...}` leaf, or one among `otherwise`'s inputs, at any depth."""
+    if not isinstance(tree, dict):
+        return []
+    if "block" in tree:
+        given = tree.get("of")
+        if tree["block"] != "otherwise" or not isinstance(given, list):
+            return []
+        return [column for each in given for column in _submission_columns(each, board)]
+    leaf = leaf_of(tree)
+    if leaf is not None and leaf[0] == "column":
+        return [column_at(board, leaf[1])]
+    return []
+
+
+def _through(
+    boards: Mapping[str, Leaderboard], read: Mapping[BoardColumn, set[str]]
+) -> dict[BoardColumn, frozenset[str]]:
+    """What each column giving a submission's results has read through
+    it, `read` what each is read for directly, handed on to each column it
+    gives the submission of as it is (`_submission_columns`)."""
+    found = {column: set(names) for column, names in read.items()}
+    grown = True
+    while grown:
+        grown = False
+        for column, names in list(found.items()):
+            board = boards.get(column[0])
+            tree = board.columns.get(column[1]) if board is not None else None
+            for other in _submission_columns(tree, column[0]):
+                had = found.setdefault(other, set())
+                if not names <= had:
+                    had |= names
+                    grown = True
+    return {column: frozenset(names) for column, names in found.items()}
 
 
 def _readable(

@@ -12,10 +12,9 @@ contest's settings runs over them.
   oldest first, each by the attempt of it that counts (`scores.usable`):
   one cancelled or ended over the limit with no result is left out, and
   one still grading has its values and `compiled` waiting. Each value is
-  worked out by the shared scoring (`scores.run_scored`), staff reading
-  `organised`, every value; any other reader is given `whole`, which
-  leaves out each value reading an entered mark (stage 5 section 6, item
-  45), so a board never shows more than the task's own page.
+  worked out by the shared scoring (`scores.run_scored`) as staff read it,
+  every value (`organised`). What an entrant or a visitor may read of a
+  board is phase 5.6's, built from what each of them is shown of a task.
 - **Facts:** `attempt` counts the row's submissions to the task that are
   read, 1 the oldest; `seconds` and `seconds_late` are from the contest's
   start and the row's due on the task, its extension included; `marked`
@@ -23,8 +22,10 @@ contest's settings runs over them.
 - **Tasks.** A board reads a run task's results; a task graded test by
   test, a withdrawn one, or one with no publication gives none (item 70).
 - **A regrade's board diff** works the boards out twice, the regraded
-  task's submissions read once by the attempts before the regrade and
-  once by its own (`Side`).
+  task's submissions read once by the attempts that counted when the
+  regrade began and once with its own added (`Side`, `regrade_sides`).
+- **A read works out** only the boards asked for and the columns they
+  read (`BoardsCheck.needed`), and loads only the tasks those read.
 
 A save of the contest's settings is checked by `check_contest`: each board
 against the catalogue (`board_checks`), and a task's marks not lowered
@@ -34,6 +35,7 @@ below the marks a row holds on it.
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from fractions import Fraction
 
 from sqlalchemy import select
@@ -122,6 +124,7 @@ async def worked_out(
     wanted = [key for key in settings.leaderboards if key in keys and key in checked.readable]
     if not wanted:
         return ()
+    checked = checked.needed(wanted)
     read = _tasks_read(checked)
     tasks = [
         task
@@ -154,9 +157,7 @@ async def worked_out(
         bounds[task.name] = value_bounds(scoring.values, groups, held.columns)
         reported[task.name] = held.self_reported
         attempts = side.attempts if side is not None and side.task == task.id else None
-        found = await _results(
-            ctx, contest, settings, task, owners, extensions, marked, organised=True, pick=attempts
-        )
+        found = await _results(ctx, contest, settings, task, owners, extensions, marked, attempts)
         for owner, listed in found.items():
             results[owner][task.name] = listed
     most = {task.name: task.definition.submissions.max for task in tasks}
@@ -183,13 +184,8 @@ async def worked_out(
 
 
 def _tasks_read(checked: BoardsCheck) -> set[str]:
-    """Every task whose results a readable board reads."""
-    return {
-        task
-        for board in checked.readable
-        for shape in checked.shapes[board].values()
-        for task in shape.tasks
-    }
+    """Every task whose results a column the check orders reads."""
+    return {task for board, name in checked.order for task in checked.shapes[board][name].tasks}
 
 
 async def _results(
@@ -200,13 +196,11 @@ async def _results(
     owners: Sequence[WorkspaceOwner],
     extensions: Mapping[WorkspaceOwner, Extension],
     marked: Mapping[tuple[WorkspaceId, TaskId], set[int]],
-    *,
-    organised: bool,
     pick: Callable[[Sequence[Grading]], Sequence[Grading]] | None = None,
 ) -> dict[WorkspaceOwner, list[Submitted]]:
-    """Each row's submissions to a run task as a board reads them, oldest
-    first: `organised` every value, as staff read them, else as an entrant
-    reads them; `pick` the attempts of each submission read, all when none.
+    """Each row's submissions to a run task as staff read them, every
+    value, oldest first; `pick` the attempts of each submission read, all
+    when none, a submission it leaves none of left out.
     """
     workspaces = {ctx.forge.workspaces.workspace_of(contest, owner): owner for owner in owners}
     rows = (
@@ -268,7 +262,7 @@ async def _results(
             lates.get(counted.id),
             entered[counted.submission_id],
         )
-        worked = scored.organised if organised else scored.whole
+        worked = scored.organised
         values = {
             name: outcome.number
             for name, outcome in worked.outcomes.items()
@@ -361,21 +355,30 @@ async def _names(ctx: Context, owners: Sequence[WorkspaceOwner]) -> dict[Workspa
 
 
 def regrade_sides(
-    regrade: uuid.UUID, task: TaskId, then: PublishedTask, now: PublishedTask
+    regrade: uuid.UUID,
+    started_at: datetime,
+    task: TaskId,
+    then: PublishedTask,
+    now: PublishedTask,
 ) -> tuple[Side, Side]:
-    """How a regrade's board diff reads its task before and after: before,
-    each submission by its attempts made before the regrade's first of it,
-    under the publication then the task's latest; after, by the regrade's
-    own attempts of it, under the one it grades against. A submission the
-    regrade did not take reads the same on both sides."""
+    """How a regrade's board diff reads its task before and after (stage
+    5 section 6, item 71): before, each submission by the attempts queued
+    by the time the regrade began, but its own, under the publication then
+    the task's latest; after, by those and the regrade's own, under the one
+    it grades against. Each side counts the attempt every board does
+    (`scores.usable`), so while a regrade's attempt of a submission is
+    still to finish, or once it was cancelled or ended over the limit, the
+    after side reads the attempt before it, as the live board does. A
+    submission made after the regrade began has neither, and is on
+    neither side."""
 
     def before(attempts: Sequence[Grading]) -> Sequence[Grading]:
-        own = [row.attempt for row in attempts if row.regrade_id == regrade]
-        return [row for row in attempts if row.attempt < min(own)] if own else attempts
+        return [
+            row for row in attempts if row.regrade_id != regrade and row.queued_at <= started_at
+        ]
 
     def after(attempts: Sequence[Grading]) -> Sequence[Grading]:
-        own = [row for row in attempts if row.regrade_id == regrade]
-        return own or attempts
+        return [row for row in attempts if row.regrade_id == regrade or row.queued_at <= started_at]
 
     return Side(task, then, before), Side(task, now, after)
 

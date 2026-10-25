@@ -272,6 +272,25 @@ async def test_a_task_with_a_submission_is_withdrawn_and_hidden_from_entrants_un
     assert len(await submissions.mine(setup, entered.session, entered.task)) == 1
 
 
+async def test_a_task_is_put_back_in_a_contest_stored_with_old_leaderboards(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    """A read ignores boards in the old list form, which a save refuses, so
+    withdrawing and putting back each leave them as they are."""
+    old = "leaderboards:\n  - {title: Standings, who: everyone}\n"
+    await three(setup, acme, old)
+    manager = await _manager(setup, acme)
+    await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
+    await take_out(setup, manager, entered.task, TakeOut.WITHDRAW)
+
+    returned = await put_back(setup, manager, entered.task)
+
+    assert returned.notes == ()
+    settings = await _settings(acme)
+    assert b"withdrawn" not in settings
+    assert settings.endswith(old.encode())
+
+
 async def test_a_removal_waits_for_a_submit_in_flight_and_then_withdraws_nothing(
     setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
 ) -> None:

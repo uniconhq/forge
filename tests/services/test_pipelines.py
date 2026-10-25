@@ -1671,6 +1671,52 @@ async def test_a_staff_read_of_a_board_starts_the_retry_of_a_failure_it_finds(
     ]
 
 
+async def test_staff_read_a_rows_earlier_result_while_its_newest_submission_grades(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    islands = await _checked(setup, acme, contest=GRADEBOOK)
+    session = await _submit(setup, acme, islands)
+    [first] = await _rows(setup, "early")
+    await _ended(setup, first, ACCEPTED_EARLY, ACCEPTED_LATE)
+    clock.advance(timedelta(minutes=1))
+    made = await upload(setup, acme.fake, session, islands.task, CODE, input="code")
+    await submissions.submit(
+        setup,
+        session,
+        islands.task,
+        {"code": SubmittedInput(uploads=(made.id,)), "language": SubmittedInput(value="python")},
+        idempotency_key=uuid.uuid4().hex,
+    )
+    await setup.settle()
+
+    [board] = await boards.seen(setup, await _staff(setup, acme), SPRING)
+
+    # The latest submission's st2 and total still wait, so the pick passes
+    # over it to the one before, and says it is waiting.
+    [row] = board.rows
+    assert [(cell.column, cell.number) for cell in row.cells] == [
+        ("st2", Fraction(1)),
+        ("total", Fraction(100)),
+    ]
+    assert row.cells[1].counted == (Counted("islands", 1),)
+    assert row.cells[1].waiting == (Counted("islands", 2),)
+
+
+async def test_a_manager_or_observer_of_the_task_alone_reads_no_board(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands = await _checked(setup, acme, contest=GRADEBOOK)
+    await _submit(setup, acme, islands)
+
+    for user, role in ((11, Role.MANAGER), (12, Role.OBSERVER)):
+        acme.fake.add_user(user, f"staff{user}")
+        await acme.fake.orgs.grant_role(user, ISLANDS, role)
+        session = await signed_in(setup, acme.fake, user)
+        # A board reads other tasks, so a role at one task reads none.
+        assert await boards.seen(setup, session, SPRING) == ()
+        assert await boards.seen(setup, session, SPRING, "gradebook") == ()
+
+
 def _task_only(acme: Acme, role: Role) -> Any:
     """Someone holding `role` at islands and nothing else."""
     return Organiser(
@@ -1722,6 +1768,132 @@ async def test_a_regrade_lists_each_submission_whose_values_it_changed_old_to_ne
             ("total", Fraction(100), Fraction(40)),
         ]
     assert [cell.changed for cell in board.rows[0].cells] == [False, False]
+
+
+async def test_the_board_diff_reads_the_result_before_while_a_regrade_runs_or_was_cancelled(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands, regrade, rows = await _regraded(setup, acme, 3, GRADEBOOK)
+    # One regrade attempt done unchanged, one still queued, one cancelled.
+    await _ended(setup, rows[0], ACCEPTED_EARLY, ACCEPTED_LATE)
+    async with setup.unit_of_work() as ctx:
+        cancelled = await ctx.db.get(Grading, rows[2].id)
+        assert cancelled is not None
+        cancelled.status = GradingStatus.CANCELLED
+
+    summary = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
+    [board] = await boards.seen(setup, await _staff(setup, acme), SPRING)
+
+    assert (summary.running, summary.failed, summary.changed) == (1, 1, ())
+    assert summary.boards is not None
+    [diff] = summary.boards
+    # Each row reads as the live board does: the result from before counts
+    # until the regrade's own attempt finishes with one, so nothing drops.
+    live = {row.owner: [(cell.column, cell.number) for cell in row.cells] for row in board.rows}
+    for row in diff.rows:
+        assert [(cell.column, cell.after) for cell in row.cells] == live[row.owner]
+        assert [(cell.column, cell.before, cell.after) for cell in row.cells] == [
+            ("st2", Fraction(1), Fraction(1)),
+            ("total", Fraction(100), Fraction(100)),
+        ]
+        assert (row.place_before, row.place_after) == (1, 1)
+        assert all(cell.waiting == () for cell in row.cells)
+    # The row the regrade is still grading says so; the cancelled one is
+    # done with.
+    assert [row.regrading for row in diff.rows if row.regrading] == [
+        (Counted("islands", rows[1].submission_number),)
+    ]
+
+
+MIRRORED = GRADEBOOK + (
+    "  mirror:\n"
+    "    title: Mirror\n"
+    "    columns:\n"
+    "      total: {column: [gradebook, total]}\n"
+    "    sort: [{total: desc}]\n"
+    "    display: [total]\n"
+)
+"""The gradebook, and a board reading islands only through its total."""
+
+
+async def test_the_board_diff_covers_a_board_reading_the_task_through_another_alone(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    islands, regrade, rows = await _regraded(setup, acme, 2, MIRRORED)
+    wrong = _result({"r3": "accepted", "r4": "wrong_answer"})
+    await _ended(setup, rows[0], ACCEPTED_EARLY, wrong)
+    await _ended(setup, rows[1], ACCEPTED_EARLY, ACCEPTED_LATE)
+    # A submission made after the regrade began has no result that counted
+    # then, nor one of the regrade's, so it is on neither side.
+    clock.advance(timedelta(minutes=1))
+    acme.fake.add_user(30, "entrant30")
+    await _submit(setup, acme, islands, user=30)
+    newest = (await _rows(setup, "early"))[-1]
+    await _ended(setup, newest, ACCEPTED_EARLY, ACCEPTED_LATE)
+
+    summary = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
+
+    assert summary.boards is not None
+    assert [each.board for each in summary.boards] == ["gradebook", "mirror"]
+    mirror = summary.boards[1]
+    assert [
+        (row.name, row.place_before, row.place_after, row.cells[0].before, row.cells[0].after)
+        for row in mirror.rows
+    ] == [
+        (mirror.rows[0].name, 1, 1, Fraction(100), Fraction(100)),
+        (mirror.rows[1].name, 1, 2, Fraction(100), Fraction(40)),
+        ("entrant30", 3, 3, Fraction(0), Fraction(0)),
+    ]
+
+
+def test_a_regrades_sides_read_the_attempts_that_counted_when_it_began_and_its_own() -> None:
+    began = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
+    regrade, other = uuid.uuid4(), uuid.uuid4()
+
+    def attempt(number: int, queued: datetime, of: uuid.UUID | None = None) -> Grading:
+        return Grading(attempt=number, queued_at=queued, regrade_id=of)
+
+    earlier = attempt(1, began - timedelta(hours=1))
+    own = attempt(2, began, regrade)
+    later = attempt(3, began + timedelta(minutes=5), other)
+    newcomer = attempt(1, began + timedelta(minutes=1))
+    task: Any = None
+    before, after = boards.regrade_sides(regrade, began, TaskId("acme/spring/islands"), task, task)
+
+    assert before.attempts([earlier, own, later]) == [earlier]
+    assert after.attempts([earlier, own, later]) == [earlier, own]
+    # One made after the regrade began is on neither side.
+    assert before.attempts([newcomer]) == after.attempts([newcomer]) == []
+
+
+async def test_a_regrade_whose_earlier_publication_no_longer_reads_gives_boards_unread(
+    setup: Setup, acme: Acme, spring: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    islands, regrade, [row] = await _regraded(setup, acme, 1, GRADEBOOK)
+    await _ended(setup, row, ACCEPTED_EARLY, _result({"r3": "accepted", "r4": "wrong_answer"}))
+    as_of = regrades._as_of
+    calls: list[str] = []
+
+    async def unread(ctx: Context, current: Any, publication: Any) -> Any:
+        # The first read is of the publication the results counted under.
+        calls.append(publication)
+        return None if len(calls) == 1 else await as_of(ctx, current, publication)
+
+    monkeypatch.setattr(regrades, "_as_of", unread)
+
+    summary = await regrades.run_summary(setup, acme.ada, islands.task, regrade)
+
+    assert summary.unread == 1
+    # The board is not worked out under the new scoring and called the
+    # board before: it says it cannot be compared, as the summary does.
+    assert summary.boards is not None
+    [board] = summary.boards
+    assert (board.board, board.title, board.unread, board.rows) == (
+        "gradebook",
+        "Gradebook",
+        True,
+        (),
+    )
 
 
 async def test_a_regrade_that_makes_a_submission_fail_to_compile_lists_its_verdicts(

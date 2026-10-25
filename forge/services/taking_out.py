@@ -62,7 +62,7 @@ from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.invites import InviteStatus
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, contest_id_of, contest_scope, task_scope
-from forge.domain.yaml_models import InvalidDefinition
+from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -145,7 +145,10 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
     """Put a withdrawn task back in its contest, as a save of the contest's
     settings taking `withdrawn` out of its entry would, checked the same
     way: `InvalidDefinition` naming `contest.yaml` with what a leaderboard
-    or a timeline refuses. Needs the manager role at the contest.
+    or a timeline refuses. Only what the edit brings is refused, so a file
+    stored with what a save now refuses but a read ignores, old
+    leaderboards among them (stage 5 section 6, item 73), takes it as
+    withdrawing did. Needs the manager role at the contest.
     `TakeOutRefused` when the entry cannot be edited line by line. A task
     not withdrawn changes nothing.
     """
@@ -157,8 +160,13 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
     updated = _edited(name, lambda: with_withdrawn(found.content, name, False))
     if updated is None:
         return PutBack(())
-    before, after = parse_contest(found.content), parse_contest(updated, saved=True)
-    problems = await timelines.check_contest(ctx, contest, before, after)
+    before, after = parse_contest(found.content), parse_contest(updated)
+    problems = [
+        problem
+        for problem in _saved_problems(updated)
+        if problem not in _saved_problems(found.content)
+    ]
+    problems += await timelines.check_contest(ctx, contest, before, after)
     checked = await boards.check_contest(ctx, contest, after)
     problems += checked.problems
     if problems:
@@ -167,6 +175,16 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
     places.ahead_at(ctx, task)
     log.info("tasks.put_back", task=task, user_id=organiser.user.id)
     return PutBack(tuple(checked.notes))
+
+
+def _saved_problems(text: bytes | str) -> list[Problem]:
+    """What a save of the contest's settings in `text` is refused for at
+    the parse (`parse_contest`'s `saved`)."""
+    try:
+        parse_contest(text, saved=True)
+    except InvalidDefinition as refused:
+        return refused.errors
+    return []
 
 
 async def _name(ctx: Context, task: TaskId) -> str:

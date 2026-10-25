@@ -426,6 +426,45 @@ def test_a_run_task_moving_only_what_is_shown_scores_nothing_again() -> None:
     assert first.scores == ("sum now counts on the leaderboard Standings.",)
 
 
+def test_a_board_reading_the_task_through_another_boards_column_is_named_too() -> None:
+    through = CONTEST.model_copy(
+        update={
+            "leaderboards": {
+                **CONTEST.leaderboards,
+                "mirror": CONTEST.leaderboards["standings"].model_copy(
+                    update={
+                        "title": "Mirror",
+                        "columns": {"m": {"column": ["standings", "sum_total"]}},
+                    }
+                ),
+            }
+        }
+    )
+
+    def effect(after: str, before: str | None = ISLANDS) -> SaveEffect:
+        return effect_of(
+            "sum",
+            _run(before) if before is not None else None,
+            _run(after),
+            through,
+            changes=(),
+            regrades=0,
+            graded=True,
+            read=NOTHING_READ,
+        )
+
+    changed = effect(ISLANDS.replace("of: [40, {value: st1}]", "of: [50, {value: st1}]"))
+    first = effect(ISLANDS, before=None)
+
+    assert changed.scores[-1] == (
+        "Every result is scored again, and the leaderboards Standings and Mirror with them."
+    )
+    assert first.scores == (
+        "sum now counts on the leaderboard Standings.",
+        "sum now counts on the leaderboard Mirror.",
+    )
+
+
 def test_a_task_file_shown_at_another_time_is_said_under_what_entrants_read_alone() -> None:
     later = ISLANDS.replace(
         "now: [sample_score, sample_time, sample_tests, samples/]",

@@ -49,13 +49,14 @@ from sqlalchemy import select
 
 from forge.db.tables import Grading, Regrade
 from forge.db.tables.gradings import FRONT
-from forge.domain.blocks.board_check import BoardsCheck
 from forge.domain.board_checks import boards_of
+from forge.domain.boards import Counted
 from forge.domain.definitions import TASK_FILE, ContestDefinition, parse_task
 from forge.domain.errors import NotFound, PortError
 from forge.domain.grading import UNFINISHED, GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, PublicationId, TaskId, WorkspaceId
+from forge.domain.names import WorkspaceOwner
 from forge.domain.regrades import (
     GRADED,
     BoardDiff,
@@ -374,6 +375,7 @@ async def run_summary(
     )
     marks = await entries.entered_for(ctx, task, newest)
     running = failed = unread = more = 0
+    regrading: dict[WorkspaceOwner, builtins.list[Counted]] = {}
     changed: builtins.list[SubmissionChange] = []
     for submission, latest_row in sorted(
         newest.items(), key=lambda each: (each[1].submitted_at, each[0])
@@ -384,6 +386,9 @@ async def run_summary(
             late is not None and gradings.status_of(ctx, late) in UNFINISHED
         ):
             running += 1
+            regrading.setdefault(owners[latest_row.workspace_id], []).append(
+                Counted(current.name, latest_row.submission_number)
+            )
             continue
         if not gradings.good(latest_row):
             failed += 1
@@ -421,7 +426,15 @@ async def run_summary(
             )
         )
     boards = (
-        await _board_diffs(ctx, contest, settings, row, then or now, now)
+        await _board_diffs(
+            ctx,
+            contest,
+            settings,
+            row,
+            then,
+            now,
+            {owner: tuple(each) for owner, each in regrading.items()},
+        )
         if holds(organiser.grants, contest_scope(contest), Role.MANAGER)
         else None
     )
@@ -465,38 +478,33 @@ async def _board_diffs(
     contest: ContestId,
     settings: ContestDefinition,
     regrade: Regrade,
-    then: published.PublishedTask,
+    then: published.PublishedTask | None,
     now: published.PublishedTask,
+    regrading: Mapping[WorkspaceOwner, tuple[Counted, ...]],
 ) -> tuple[BoardDiff, ...]:
     """Each board that reads the regrade's task, directly or through
     another board's column, worked out for staff before the regrade and
     after (`boards.regrade_sides`), in the file's order: `then` the task as
-    it scored before, the live publication when that one no longer reads
-    (stage 5 section 6, item 71), and `now` as the regrade grades it."""
-    keys = _reading(boards_of(settings), now.name)
+    it scored before, `now` as the regrade grades it, and `regrading` each
+    row's submissions the regrade is still grading. When `then` no longer
+    reads, each board is given `unread`, with no rows, as the summary
+    counts its submissions (stage 5 section 6, item 71)."""
+    checked = boards_of(settings)
+    keys = [key for key in checked.reading(now.name) if key in checked.readable]
     if not keys:
         return ()
-    before_side, after_side = boards.regrade_sides(regrade.id, now.id, then, now)
+    if then is None:
+        return tuple(
+            BoardDiff(key, board.title_or(key), (), board.sort, (), unread=True)
+            for key, board in settings.leaderboards.items()
+            if key in keys
+        )
+    before_side, after_side = boards.regrade_sides(
+        regrade.id, regrade.started_at, now.id, then, now
+    )
     before = await boards.worked_out(ctx, contest, settings, keys, before_side)
     after = await boards.worked_out(ctx, contest, settings, keys, after_side)
-    return tuple(board_diff(was, now_) for was, now_ in zip(before, after, strict=True))
-
-
-def _reading(checked: BoardsCheck, task: str) -> set[str]:
-    """The boards reading `task`'s results, directly or through a column of
-    another board that does."""
-    found = set(checked.reading(task))
-    grown = True
-    while grown:
-        more = {
-            board
-            for board, columns in checked.shapes.items()
-            if board not in found
-            and any(other in found for shape in columns.values() for other, _ in shape.columns)
-        }
-        found |= more
-        grown = bool(more)
-    return found
+    return tuple(board_diff(was, now_, regrading) for was, now_ in zip(before, after, strict=True))
 
 
 async def _settings(ctx: Context, contest: ContestId) -> ContestDefinition | None:

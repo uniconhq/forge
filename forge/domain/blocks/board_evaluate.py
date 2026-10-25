@@ -26,7 +26,12 @@ task's submissions oldest first, every number an exact fraction.
   5.7).
 - **Waiting.** A value of a submission still being worked out, or waiting
   for staff, is left out of every block that reads it, as a missing one
-  is, and the submission is recorded as left out waiting (guarantee 5).
+  is, and the submission is recorded as left out waiting (guarantee 5). A
+  pick reads every value and fact read through it, so it passes over a
+  submission waiting on any of them, among those its `where` keeps: a
+  pick column what any column of any board reads through it
+  (`BoardsCheck.through`), a pick read in place, `{value: [<pick>, v]}`,
+  its `v`.
 
 Each cell records the submissions it counted (the leaderboards note's
 5.3): a pick its one; `max` and `min` the oldest that reached the result;
@@ -104,7 +109,8 @@ def work_out_row(
     row = _Row(results, trees)
     for board, name in checked.order:
         row.board = board
-        row.done[(board, name)] = row.node(boards[board].columns[name], {})
+        through = checked.through.get((board, name), frozenset())
+        row.done[(board, name)] = row.node(boards[board].columns[name], {}, through)
     return row.done
 
 
@@ -122,7 +128,10 @@ class _Row:
         self.done: dict[BoardColumn, Cell] = {}
         self.board = ""
 
-    def node(self, tree: object, scope: Scope) -> Cell:
+    def node(self, tree: object, scope: Scope, through: frozenset[str] = frozenset()) -> Cell:
+        """What `tree` gives, `scope` the submissions the blocks around it
+        are looking at by task, and `through` what is read through it when
+        it gives a submission's results."""
         if not isinstance(tree, dict | list):
             number = exact(tree)
             if number is None:
@@ -131,7 +140,7 @@ class _Row:
         if not isinstance(tree, dict):
             raise ValueError(f"{tree!r} is not a node of a column's tree")
         if "block" in tree:
-            return self.block(tree, scope)
+            return self.block(tree, scope, through)
         leaf = leaf_of(tree)
         if leaf is None:
             raise ValueError(f"{tree!r} is not a node of a column's tree")
@@ -142,13 +151,17 @@ class _Row:
             of, name = named
             if isinstance(of, str) and of in scope:
                 return _read(scope[of], name)
-            picked = self.done[(self.board, of)] if isinstance(of, str) else self.node(of, scope)
+            picked = (
+                self.done[(self.board, of)]
+                if isinstance(of, str)
+                else self.node(of, scope, frozenset({name}))
+            )
             if picked.picked is None:
                 return Cell(counted=picked.counted, waiting=picked.waiting)
             return _read(picked.picked, name).having(picked)
         raise ValueError(f"{tree!r} gives no number on a board")
 
-    def block(self, tree: Mapping[str, object], scope: Scope) -> Cell:
+    def block(self, tree: Mapping[str, object], scope: Scope, through: frozenset[str]) -> Cell:
         name = tree["block"]
         block = CATALOGUE.get(name) if isinstance(name, str) else None
         form = form_of(block, tree) if block is not None else None
@@ -160,7 +173,7 @@ class _Row:
             task = str(source["results"])
             listed = self.results.get(task, ())
             if block.name in PICKS:
-                return self.pick(block.name, tree, task, listed, scope)
+                return self.pick(block.name, tree, task, listed, scope, through)
             if block.name == "best_each":
                 return self.best_each(tree, task, listed)
             return self.fold(block.name, tree, task, listed, scope)
@@ -176,10 +189,10 @@ class _Row:
         given = tree["of"]
         inputs = given if isinstance(given, list) else [given]
         if block.name == "otherwise":
-            first = self.node(inputs[0], scope)
+            first = self.node(inputs[0], scope, through)
             if not first.nothing:
                 return first
-            return self.node(inputs[1], scope).having(first)
+            return self.node(inputs[1], scope, through).having(first)
         got = [self.node(each, scope) for each in inputs]
         read = _MISSING.having(*got)
         if any(each.number is None for each in got):
@@ -207,6 +220,7 @@ class _Row:
         task: str,
         listed: Sequence[Submitted],
         scope: Scope,
+        through: frozenset[str],
     ) -> Cell:
         waiting: set[SubmissionAt] = set()
         kept: list[tuple[Submitted, Fraction]] = []
@@ -221,6 +235,10 @@ class _Row:
                 waiting |= by.waiting
                 if by.number is None:
                     continue
+            if through & each.waiting:
+                # What is read through the pick still waits: pass it over.
+                waiting.add((task, each.number))
+                continue
             kept.append(
                 (each, by.number if by is not None and by.number is not None else Fraction(0))
             )

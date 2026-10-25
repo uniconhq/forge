@@ -47,7 +47,7 @@ from fractions import Fraction
 
 from forge.domain.blocks.evaluate import RunResult
 from forge.domain.blocks.numbers import Better
-from forge.domain.boards import Board, Header
+from forge.domain.boards import Board, Counted, Header
 from forge.domain.ids import PublicationId
 from forge.domain.names import WorkspaceOwner
 from forge.domain.publications import Publication
@@ -212,11 +212,13 @@ counted."""
 @dataclass(frozen=True, slots=True)
 class CellDiff:
     """One displayed cell of a row, its number before the regrade and
-    after, none for missing."""
+    after, none for missing, and the submissions it left out after as
+    still waiting, as the live board says."""
 
     column: str
     before: Fraction | None
     after: Fraction | None
+    waiting: tuple[Counted, ...] = ()
 
     @property
     def changed(self) -> bool:
@@ -226,33 +228,42 @@ class CellDiff:
 @dataclass(frozen=True, slots=True)
 class RowDiff:
     """One row of a board before the regrade and after: who, its name, its
-    place on each side, none on a board with no `sort`, and its displayed
-    cells."""
+    place on each side, none on a board with no `sort`, its displayed
+    cells, and its submissions the regrade is still grading, whose result
+    from before it the after side reads meanwhile, so the row may still
+    move."""
 
     owner: WorkspaceOwner
     name: str
     place_before: int | None
     place_after: int | None
     cells: tuple[CellDiff, ...]
+    regrading: tuple[Counted, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class BoardDiff:
     """One board that reads a regraded task, as staff read it, every row
-    and cell and no hold (stage 5 section 6, item 4): its key and title,
-    its displayed columns' headers as they stand after, the keys it sorts
-    by, and each row in its order after the regrade, with its place and
-    cells before and after."""
+    and cell and no hold (stage 5 section 6, items 4 and 71): its key and
+    title, its displayed columns' headers as they stand after, the keys it
+    sorts by, and each row in its order after the regrade, with its place
+    and cells before and after; or, `unread`, no headers and no rows,
+    since the publication the results counted under before no longer
+    reads, as the summary counts those submissions `unread`."""
 
     board: str
     title: str
     headers: tuple[Header, ...]
     sort: tuple[tuple[str, str], ...]
     rows: tuple[RowDiff, ...]
+    unread: bool = False
 
 
-def board_diff(before: Board, after: Board) -> BoardDiff:
-    """A board worked out before a regrade and after, row by row."""
+def board_diff(
+    before: Board, after: Board, regrading: Mapping[WorkspaceOwner, tuple[Counted, ...]]
+) -> BoardDiff:
+    """A board worked out before a regrade and after, row by row,
+    `regrading` each row's submissions the regrade is still grading."""
     was = {row.owner: row for row in before.rows}
     rows: list[RowDiff] = []
     for row in after.rows:
@@ -262,11 +273,19 @@ def board_diff(before: Board, after: Board) -> BoardDiff:
                 cell.column,
                 old.number if then is not None and (old := then.cell(cell.column)) else None,
                 cell.number,
+                cell.waiting,
             )
             for cell in row.cells
         )
         rows.append(
-            RowDiff(row.owner, row.name, then.place if then is not None else None, row.place, cells)
+            RowDiff(
+                row.owner,
+                row.name,
+                then.place if then is not None else None,
+                row.place,
+                cells,
+                regrading.get(row.owner, ()),
+            )
         )
     return BoardDiff(after.key, after.title, after.headers, after.sort, tuple(rows))
 
