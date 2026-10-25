@@ -51,10 +51,10 @@ board's audience, never stored.
   is, how many still grade (`still_grading`).
 - **What the cells counted** of a task, row by row (`counted_in`), is
   what the grading queue lists, and says when a mark entered for a
-  submission reaches its entrant (`entries_open`): once a cell shown to
-  them counted the submission, or, when no cell counted it, from the
-  task's reveal (SIMPLER-CORE.md 14), so a mark never tells which
-  submission a hidden cell chose. The cells reading one task alone
+  submission reaches its entrant (`entries_open`): only once a cell shown
+  to them counted the submission, before the reveal or after it
+  (SIMPLER-CORE.md 14), so a mark never tells which submission a hidden
+  cell chose. The cells reading one task alone
   (`alone`) are those whose choices tell nothing of another task.
 - **A header** says what a listed column is, the same for every row: its
   name, the decimal places it is shown to, the least and most it can give
@@ -292,16 +292,15 @@ def counted_in(
     return counted
 
 
-def entries_open(
-    number: int, shown: Collection[int], every: Collection[int], *, revealed: bool
-) -> bool:
+def entries_open(number: int, shown: Collection[int]) -> bool:
     """Whether the marks entered for an entrant's submission `number` count
     in what they are served (SIMPLER-CORE.md 14), which is worked out as if
-    none were entered until then: once a cell shown to them counted it, one
-    of `shown`; or, when no cell counted it, as staff read every board,
-    `every`, once the task has revealed, since no hidden choice is left to
-    tell (stage 5 section 6, item 9)."""
-    return number in shown or (number not in every and revealed)
+    none were entered until then: only once a cell shown to them counted
+    it, one of `shown`, before the reveal or after it. A submission no
+    shown cell counted never opens, since one opening when no cell counted
+    it would leave the one a hidden cell chose as the one with no mark
+    (stage 5 section 6, item 9)."""
+    return number in shown
 
 
 def alone(checked: BoardsCheck, task: str) -> frozenset[BoardColumn]:

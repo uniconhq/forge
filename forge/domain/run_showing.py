@@ -12,7 +12,10 @@ steps done once gave and `compiled`, as if no late row were made. Nothing
 they read then moves when the late row is made, runs or ends, so they
 never learn its timing (the order rule). From then on they read both
 rows. A late run is shown before the reveal only when a save moved its
-group to `now` (phase 4.10).
+group to `now` (phase 4.10). A value a save moved to `now` that reads,
+directly or through other values, a run this grading's plan ran late is
+missing until then, not worked out with that run as never run (stage 5
+section 6, item 134).
 
 - **A value** listed is shown with its number, missing as none. One that
   waits for staff is told so ("being checked") only as its runs are: when
@@ -20,9 +23,9 @@ group to `now` (phase 4.10).
   they are. Each carries whether it reads, directly or through others, a
   column the entrant could set (#504). A value reading an entered mark is
   worked out by the caller as if no mark were entered until a board cell
-  shown to the entrant counted the submission, or, when none counted it,
-  until the reveal (`forge.domain.boards.entries_open`, SIMPLER-CORE.md
-  14), so it reads then as on a submission with no mark.
+  shown to the entrant counted the submission, and never when none did
+  (`forge.domain.boards.entries_open`, SIMPLER-CORE.md 14), so it reads
+  then as on a submission with no mark.
 - **A group** listed shows its runs that a row holds: each with the
   group's name and its place in the group from 1 ("Test 3"), never its id,
   which counts every run of the task; its key, a file or folder it names
@@ -150,15 +153,16 @@ def shown(
     revealed: bool,
     released: bool = False,
     everything: bool = False,
+    late: Collection[str] = (),
 ) -> Shown:
     """What a reader sees of a grading now: `scoring`, `runs` and `files` the
     task's live publication's, `whole` the grading worked out from both its
     rows and `early` giving it from its early row alone, called only before
-    the reveal and the release, and `self_reported` the
-    values reading a column the entrant could set; for an entrant, whether
-    the task has revealed and whether its results are released; with
-    `everything`, as organisers read it. Texts are as stored: `bare` takes
-    them out for an entrant.
+    the reveal and the release, `self_reported` the values reading a
+    column the entrant could set, and `late` the runs the grading's plan
+    ran late; for an entrant, whether the task has revealed and whether
+    its results are released; with `everything`, as organisers read it.
+    Texts are as stored: `bare` takes them out for an entrant.
     """
     if everything:
         return _everything(scoring, runs, whole, self_reported)
@@ -166,15 +170,21 @@ def shown(
     listed = {entry for time in times for entry in scoring.show.lists()[time]}
     held = _held(scoring, runs, whole.grading, files, times)
     view = whole
+    unseen: frozenset[str] = frozenset()
     if not (revealed or released or {name for name, _ in held} - whole.grading.early):
         view = early()
         held = _held(scoring, runs, view.grading, files, times)
+        unseen = frozenset(late)
     grading = view.grading
     seen = {name for name, _ in held}
     values: list[ValueShown] = []
     for name in scoring.values:
         outcome = view.outcomes[name]
         if name not in listed:
+            continue
+        if outcome.runs & unseen:
+            # Moved to `now` after this grading: missing until its late runs show.
+            values.append(ValueShown(name, None, False, name in self_reported))
             continue
         if outcome.waiting:
             waits = {run for run in outcome.runs if grading.read[run].verdict == SYSTEM_ERROR}

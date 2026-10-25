@@ -5,7 +5,9 @@ sample leaving `sample_time` missing; cartpole shows `reward` at once and
 run that faulted makes its values wait, told through an early run and not
 through a late one; a run still to come waits, and one never run is
 missing; until the reveal an entrant reads the early row alone, whatever
-the late row does, and a run a later save added never waits; the facts
+the late row does, a run a later save added never waits, and a value a
+save moved to `now` is missing where it read a run the grading ran late;
+the facts
 count from the due and the start, 0 before, and `compiled` reads an
 untainted compile done once, waiting while a row is still to run it;
 what is shown before and after the reveal;
@@ -152,6 +154,7 @@ def _seen(
     runs: Sequence[Run] = ISLAND_RUNS,
     files: frozenset[str] = ISLAND_FILES,
     self_reported: frozenset[str] = frozenset(),
+    late: frozenset[str] = frozenset(),
 ) -> Shown:
     return shown(
         _scoring(text),
@@ -162,6 +165,7 @@ def _seen(
         self_reported,
         revealed=revealed,
         everything=everything,
+        late=late,
     )
 
 
@@ -362,6 +366,51 @@ def test_until_the_reveal_an_entrant_reads_the_early_row_alone_whatever_the_late
             first.once,
             first.compiled,
         )
+
+
+MOVED = {
+    "groups": {"samples": {"input": "a"}},
+    "values": {"total": {"block": "sum", "over": {"runs": "all"}, "of": {"run": ["all", "score"]}}},
+    "show": {"now": ["total", "samples"]},
+}
+"""A total over every run, which a save moved to `now` after a grading that
+ran r2 late."""
+MOVED_RUNS = (Run("r1", {"input": "a"}, True), Run("r2", {"input": "b"}, False))
+
+
+def test_a_value_moved_to_now_is_missing_until_the_reveal_where_it_read_a_late_run() -> None:
+    scoring = Scoring.model_validate(MOVED)
+    early, late = _row({"r1": "accepted"}), _row({"r2": "accepted"})
+
+    def worked(first: Mapping[str, Any], then: Mapping[str, Any] | None) -> Worked:
+        grading = run_grading(MOVED_RUNS, first, then, waiting=(), compiling=())
+        return Worked(grading, worked_out(scoring, MOVED_RUNS, grading, FACTS, COLUMNS), FACTS)
+
+    whole, alone = worked(early, late), worked(early, None)
+
+    def seen(late_runs: frozenset[str], *, revealed: bool = False, everything: bool = False) -> Any:
+        found = shown(
+            scoring,
+            MOVED_RUNS,
+            (),
+            whole,
+            lambda: alone,
+            (),
+            revealed=revealed,
+            everything=everything,
+            late=late_runs,
+        )
+        return [(each.name, each.number, each.waiting) for each in found.values]
+
+    # Staff read 2; the entrant reads it missing until the reveal, not 1
+    # from r2 read as never run, and 2 from then on.
+    assert seen(frozenset({"r2"}), everything=True)[0][:2] == ("total", 2)
+    assert seen(frozenset({"r2"})) == [("total", None, False)]
+    assert seen(frozenset({"r2"}), revealed=True) == [("total", 2, False)]
+    # A grading made after the save ran every run early: nothing ran late.
+    both = _row({"r1": "accepted", "r2": "accepted"})
+    whole = alone = worked(both, None)
+    assert seen(frozenset()) == [("total", 2, False)]
 
 
 def test_seconds_late_counts_from_the_due_and_seconds_from_the_start_each_0_before() -> None:

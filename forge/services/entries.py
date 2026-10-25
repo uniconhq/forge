@@ -31,10 +31,10 @@ read does (stage 5 section 6, items 100 and 119).
 
 **When an entry shows.** A mark reaches an entrant only once a board
 cell shown to them counted the submission, and `show` lists the value
-then; one no cell counted, by `show` alone once the task has revealed
-(`forge.domain.boards.entries_open`, which the submission's page reads).
-Until then the submission's values are worked out as if no mark were
-entered, so it reads as one with none. So a mark appearing on one
+then, before the reveal or after it; one no shown cell counted never
+does (`forge.domain.boards.entries_open`, which the submission's page
+reads). Until then the submission's values are worked out as if no mark
+were entered, so it reads as one with none. So a mark appearing on one
 submission, or held back from it, never tells its entrant which
 submission a hidden cell chose. Staff read every entry at once. Entering
 one nudges nobody, which would tell a mark was entered before it may

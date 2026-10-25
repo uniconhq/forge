@@ -80,9 +80,9 @@ platform. A run's log names every test, hidden ones too, so it is the
 organisers' alone. A run task's result is read through
 `forge.domain.run_showing`, its values worked out on read
 (`scores.run_scored`), a mark entered for it counted only once a board
-cell shown to the entrant counted the submission, or, when no cell
-counted it, once the task has revealed (`boards.chosen`, SIMPLER-CORE.md
-14): until then it is worked out as if none were entered. A text it
+cell shown to the entrant counted the submission, before the reveal or
+after it (`boards.chosen`, SIMPLER-CORE.md 14): until then, and always
+when none does, it is worked out as if none were entered. A text it
 shows is read one at a time, only while the result shows it to that
 reader: an entrant's by where it is shown (`read_text`), never by the
 stored output that holds it, whose id is another entrant's too and says
@@ -1071,9 +1071,9 @@ async def _runs(
     its results are released (`run_showing.shown`, 9.4), so a group moved
     to `now` shows its runs even where they ran late. Its values are
     worked out as if no mark were entered until a board cell shown to the
-    entrant counted the submission, of those `chosen` gives, or, when no
-    cell counted it, until the reveal (14), so a mark held back tells
-    nothing a submission with none does not. Before the reveal,
+    entrant counted the submission, of those `chosen` gives, and never when
+    none did (14), so a mark held back tells nothing a submission with none
+    does not. Before the reveal,
     and with no release, the late row is told to no entrant; after it,
     while that attempt has no result, the grading is told as where it
     stands, `grading` or `delayed`; and a task with
@@ -1087,7 +1087,7 @@ async def _runs(
     if not everything:
         counted = chosen or boards.Chosen()
         number = row.submission_number
-        if not entries_open(number, counted.shown, counted.every, revealed=revealed):
+        if not entries_open(number, counted.shown):
             # Worked out with no mark, so it reads as a submission with none.
             marks = {}
     scored = await scores.run_scored(ctx, current, settings, extension, row, late, marks)
@@ -1104,6 +1104,7 @@ async def _runs(
         revealed=revealed,
         released=released,
         everything=everything,
+        late=scored.late,
     )
     runs, once = seen.runs, seen.once
     texts_at: dict[run_showing.TextAt, tuple[str, str]] = {}

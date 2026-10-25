@@ -772,15 +772,12 @@ def test_a_hidden_cell_counts_nothing() -> None:
     assert counted_in(read_as(text, "s", staff), "a") == {owner(1): {1: (("s", "best"),)}}
 
 
-@pytest.mark.parametrize(
-    ("number", "revealed", "served"),
-    [(1, False, True), (2, False, False), (2, True, False), (3, False, False), (3, True, True)],
-)
-def test_an_entry_shows_once_a_shown_cell_counted_it_or_no_cell_did_from_the_reveal(
-    number: int, revealed: bool, served: bool
-) -> None:
-    # 1 a shown cell counted, 2 only a hidden or staff's cell, 3 no cell.
-    assert entries_open(number, {1}, {1, 2}, revealed=revealed) is served
+@pytest.mark.parametrize(("number", "served"), [(1, True), (2, False), (3, False)])
+def test_an_entry_shows_only_once_a_shown_cell_counted_it(number: int, served: bool) -> None:
+    # 1 a shown cell counted, 2 only a hidden or staff's cell, 3 no cell:
+    # neither opens, after the reveal too, so the one with no mark tells
+    # nothing of which a hidden cell chose.
+    assert entries_open(number, {1}) is served
 
 
 def test_a_cell_is_an_exact_fraction() -> None:

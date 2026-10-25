@@ -41,10 +41,8 @@ the check a save of the contest's settings runs over them.
   read, and the columns of those (`BoardsCheck.needed`), and loads only the
   tasks those read.
 - **What a row's cells counted** of one task (`chosen`): those a cell
-  shown to its own entrant counted, and those any cell counted as staff
-  read every board, which the task's page reads to serve an entered mark
-  no sooner than a cell counting it (SIMPLER-CORE.md 14), and the grading
-  queue reads for every row (`entries.queue`).
+  shown to its own entrant counted, which the task's page reads to serve
+  an entered mark only once such a cell counts it (SIMPLER-CORE.md 14).
 
 A save of the contest's settings is checked by `check_contest`: each board
 against the catalogue and against the live publication of each task it
@@ -140,11 +138,9 @@ publication, which a save row still checks."""
 @dataclass(frozen=True, slots=True)
 class Chosen:
     """A row's submissions to one task that the boards' cells counted, by
-    number: `shown`, those a cell shown to the row's own entrant counted;
-    `every`, those any cell of any board counted, as staff read it."""
+    number: `shown`, those a cell shown to the row's own entrant counted."""
 
     shown: frozenset[int] = frozenset()
-    every: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,18 +201,13 @@ async def chosen(
 ) -> Chosen:
     """The submissions of the row `owner` to the task named `task` that
     the boards' cells counted (`Chosen`): its own row of each board its
-    entrant reads, as they read it, and of every board, as staff read it.
-    A row not approved has none."""
+    entrant reads, as they read it. A row not approved has none."""
     if not settings.leaderboards:
         return Chosen()
     viewer = Viewer(own=owner)
     keys = [key for key, each in settings.leaderboards.items() if sees(each, viewer)]
     own = await read(ctx, contest, settings, keys, viewer, only=owner)
-    staff = await read(ctx, contest, settings, list(settings.leaderboards), STAFF, only=owner)
-    return Chosen(
-        frozenset(counted_in(own, task).get(owner, {})),
-        frozenset(counted_in(staff, task).get(owner, {})),
-    )
+    return Chosen(frozenset(counted_in(own, task).get(owner, {})))
 
 
 async def worked_out(
@@ -475,6 +466,7 @@ async def _results(
                 scored.self_reported,
                 revealed=revealed,
                 released=released,
+                late=scored.late,
             )
             facts = {name: scored.whole.facts[name] for name in ("seconds", "seconds_late")}
             results = results_seen(

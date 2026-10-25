@@ -8,8 +8,8 @@ version gives no `entered` block takes none. The grading queue lists, for
 each row once the task has closed for it, the submissions the boards'
 cells counted with their marks, for an observer of the task, who enters
 nothing; and an entry reaches its entrant only once a board cell shown to
-them counted the submission, or, when no cell counted it, once the task
-has revealed (#505, SIMPLER-CORE.md 14).
+them counted the submission, and never when none did, after the reveal
+too (#505, SIMPLER-CORE.md 14).
 """
 
 import uuid
@@ -201,7 +201,7 @@ async def test_an_entry_is_kept_through_a_regrade(
         assert await ctx.db.scalar(select(func.count()).select_from(Entry)) == 1
 
 
-async def test_an_entry_no_cell_counted_reaches_its_entrant_once_the_task_has_revealed(
+async def test_an_entry_no_cell_counted_never_reaches_its_entrant(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
@@ -212,10 +212,10 @@ async def test_an_entry_no_cell_counted_reaches_its_entrant_once_the_task_has_re
     clock.set(AFTER_CLOSE)
     after = _values(await _grading(setup, session, islands))
 
-    # The contest has no board, so no cell counted it: `show` alone, from
-    # the reveal, reading as no mark before. Organisers read it at once.
+    # The contest has no board, so no cell counted it: it reads as no mark,
+    # after the reveal too. Organisers read it at once.
     assert (before["review"], before["reviewed"]) == (None, None)
-    assert (after["review"], after["reviewed"]) == (6, 7)
+    assert (after["review"], after["reviewed"]) == (None, None)
     assert {"review", "reviewed"} <= set(await _organised(setup, acme, islands.task))
 
 
@@ -537,6 +537,7 @@ async def test_an_entry_a_cell_never_shown_counted_stays_hidden_after_the_reveal
     await _submitted(setup, acme, clock, islands, session, WRONG_LATE)
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
     await entries.enter(setup, manager, islands.task, owner, 1, "review", "7")
+    await entries.enter(setup, manager, islands.task, owner, 2, "review", "3")
     clock.set(AFTER_CLOSE)
 
     [board] = await boards.seen(setup, session, SPRING)
@@ -547,8 +548,8 @@ async def test_an_entry_a_cell_never_shown_counted_stays_hidden_after_the_reveal
     ]
 
     # The board chose the first by a total no entrant is ever shown, so its
-    # mark waits for that cell, and it reads as the second, which no cell
-    # counted and has no mark.
+    # mark waits for that cell; the second's, which no cell counted, stays
+    # back too, else the one with no mark would be the hidden choice.
     assert board.rows[0].cells[0].hidden
     assert (oldest["review"], oldest["reviewed"]) == (None, None)
     assert (newest["review"], newest["reviewed"]) == (None, None)

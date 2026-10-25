@@ -325,10 +325,12 @@ BEFORE_CLOSE = datetime(2026, 9, 26, 14, 50, tzinfo=UTC)
 AFTER_CLOSE = datetime(2026, 9, 26, 15, 5, tzinfo=UTC)
 
 
-async def _graded_both(setup: Setup, acme: Acme, text: str = TASKS["islands"][0]) -> Any:
-    """islands as `text` has it, one submission graded early and late
-    before the close; the entrant's session."""
-    islands = await _checked(setup, acme, text)
+async def _graded_both(
+    setup: Setup, acme: Acme, text: str = TASKS["islands"][0], contest: str = LIVE
+) -> Any:
+    """islands as `text` has it in the contest `contest`, one submission
+    graded early and late before the close; the entrant's session."""
+    islands = await _checked(setup, acme, text, contest)
     session = await _submit(setup, acme, islands)
     [early] = await _rows(setup, "early")
     await _early(setup, acme, early.id)
@@ -471,6 +473,52 @@ async def test_a_group_moved_to_now_shows_its_runs_where_they_ran_late(
     ]
     # tests/4.in is shown now and tests/3.in is not, so only one key names its file.
     assert [run["key"] for run in grading.runs[2:]] == [{}, {"input": "tests/4.in"}]
+
+
+TOTALS = LIVE + (
+    "leaderboards:\n"
+    "  totals:\n"
+    "    audience: {who: entrants, rows: own}\n"
+    "    columns:\n"
+    "      total: {value: [{block: latest, from: {results: islands}}, total]}\n"
+    "    display: [total]\n"
+)
+"""A leaderboard each entrant reads alone, over their latest submission's
+total."""
+
+
+async def test_a_value_moved_to_now_is_missing_until_the_reveal_where_it_read_late_runs(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    # Item 134: st1, st2 and total read runs this grading ran late.
+    clock.set(BEFORE_CLOSE)
+    islands, session = await _graded_both(setup, acme, contest=TOTALS)
+    text = (
+        TASKS["islands"][0]
+        .replace("samples/]", "samples/, st1, st2, total]")
+        .replace("[st1, st2, total, all]", "[all]")
+    )
+    await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
+    await setup.settle()
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    async with setup.unit_of_work() as ctx:
+        entrant = await ctx.db.scalar(select(Entrant.id))
+    assert entrant is not None
+
+    before = _values(await _grading(setup, session, islands))
+    [own] = await boards.seen(setup, session, SPRING)
+    staff = await submissions.organised(setup, manager, islands.task, EntrantOwner(entrant), 1)
+    clock.set(AFTER_CLOSE)
+    after = _values(await _grading(setup, session, islands))
+    [revealed] = await boards.seen(setup, session, SPRING)
+
+    # Missing, not 0 from late runs read as never run, nor told waiting.
+    assert before == {"sample_score": 1, "sample_time": 12, "st1": None, "st2": None, "total": None}
+    assert own.rows[0].cells[0].number is None and not own.rows[0].cells[0].waiting
+    assert staff.grading is not None
+    assert {value.name: value.number for value in staff.grading.run_values}["total"] == 100
+    assert after["total"] == 100
+    assert revealed.rows[0].cells[0].number == 100
 
 
 async def test_organisers_read_every_run_of_both_rows_with_its_id(

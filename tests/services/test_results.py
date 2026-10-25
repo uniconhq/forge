@@ -128,12 +128,13 @@ async def test_an_entrant_reads_the_early_row_alone_until_the_reveal_or_while_re
     async def st1() -> Any:
         return _values(await _grading(setup, session, islands))["st1"]
 
-    # From the early row alone r3 never ran, so st1 is 0; from both, 1.
-    assert await st1() == 0
+    # From the early row alone st1 reads r3, which ran late, so it is
+    # missing (item 134); from both, 1.
+    assert await st1() is None
     await _release(setup, acme, islands.task)
     assert await st1() == 1
     await _hide(setup, acme, islands.task)
-    assert await st1() == 0
+    assert await st1() is None
     clock.set(AFTER_CLOSE)
     assert await st1() == 1
 

@@ -188,14 +188,16 @@ class RunScored:
     and plan, the grading from both its rows, every value, as organisers
     read it, and from its early row alone, which `run_showing.shown`
     serves an entrant from before the reveal, worked out only when called
-    (stage 5 section 6, item 129), and the values reading a column the
-    entrant could set.
+    (stage 5 section 6, item 129), the values reading a column the
+    entrant could set, and the runs the early row's plan ran late, which a
+    value shown from the early row alone may not read (item 134).
     """
 
     held: RunsHeld
     whole: Worked
     early: Callable[[], Worked]
     self_reported: frozenset[str]
+    late: frozenset[str] = frozenset()
 
 
 async def late_of(ctx: Context, early: Grading) -> Grading | None:
@@ -312,9 +314,10 @@ async def run_scored(
             compiling_waiting=compiles_early | compiles_late,
         )
     )
+    ran_late = frozenset(run for run, first in planned.items() if not first)
     if late_result is None and not waits_late and not programs_late and not compiles_late:
         # The early row alone is all there is, so it works out the same.
-        return RunScored(held, whole, lambda: whole, held.self_reported)
+        return RunScored(held, whole, lambda: whole, held.self_reported, ran_late)
     kept: list[Worked] = []
 
     def alone() -> Worked:
@@ -334,7 +337,7 @@ async def run_scored(
             )
         return kept[0]
 
-    return RunScored(held, whole, alone, held.self_reported)
+    return RunScored(held, whole, alone, held.self_reported, ran_late)
 
 
 async def _planned(
