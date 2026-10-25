@@ -60,7 +60,7 @@ async def _submit(setup: Setup, acme: Acme, person: Session, task: TaskId, key: 
         person,
         task,
         {
-            "submission": SubmittedInput(uploads=(made.id,)),
+            "code": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key=key,
@@ -222,7 +222,7 @@ async def test_the_feed_and_a_tasks_gradings_go_by_the_packages_clock_not_the_da
     fed = await gradings.feed(setup, observer, SPRING)
     # One row a page, so the page after one starts where it ended.
     paged = await gradings.feed(setup, observer, SPRING, status=GradingStatus.SYSTEM_ERROR, limit=1)
-    listed = await gradings.list(setup, observer, entered.task)
+    listed = await gradings.list_gradings(setup, observer, entered.task)
 
     assert [entry.grading.id for entry in fed] == [
         busy["by_carol"],
@@ -333,7 +333,7 @@ async def test_a_members_gradings_are_the_submissions_they_made_and_the_entrants
     manager = await organiser(setup, acme.fake, 7, CONTEST, Role.MANAGER)
     (hers,) = [
         entrant
-        for entrant in await entrants.list(setup, manager, SPRING)
+        for entrant in await entrants.list_entrants(setup, manager, SPRING)
         if entrant.id != entered.entrant
     ]
     await entrants.move_member(setup, manager, SPRING, hers.id, 20, entered.entrant)
@@ -369,7 +369,7 @@ async def test_a_tasks_gradings_say_who_submitted_each_as_the_feed_does(
 ) -> None:
     observer = await organiser(setup, acme.fake, 7, CONTEST, Role.OBSERVER)
 
-    listed = await gradings.list(setup, observer, entered.task)
+    listed = await gradings.list_gradings(setup, observer, entered.task)
 
     assert [
         (entry.grading.id, entry.by.username, entry.task_name, entry.label) for entry in listed

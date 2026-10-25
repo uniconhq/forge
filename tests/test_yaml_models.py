@@ -1,8 +1,9 @@
 """Every definition file is read as YAML 1.2's core schema, whatever `%YAML`
 line it starts with: only `true` and `false` are booleans, so `no`, `NO` and
 `on` are text, `1_000`, `1:30` and a date are text, a leading zero is no
-octal, and every number that is not whole is the exact `Decimal` it is
-written as. `one_line` writes a value so that the same reader reads it back.
+octal, every number that is not whole is the exact `Decimal` it is
+written as, and an anchor or an alias is refused. `one_line` writes a
+value so that the same reader reads it back.
 """
 
 from datetime import UTC, datetime
@@ -90,14 +91,55 @@ def test_a_key_given_twice_is_refused_at_its_line() -> None:
     )
 
 
+ALIASED_TASK = """\
+name: Review
+workflow: unicon/run@v1
+scoring:
+  values:
+    review: &mark {block: entered, at_least: 0, at_most: 10}
+    bonus: *mark
+"""
+ALIASED_CONTEST = """\
+name: Spring
+leaderboards:
+  one: {columns: {total: &x 1}}
+  two: {columns: {total: *x}}
+"""
+
+
+def test_an_anchor_or_an_alias_is_refused_at_its_line() -> None:
+    # An alias would make two values one object, so the mark entered for
+    # one would be read for the other.
+    with pytest.raises(InvalidDefinition) as task:
+        parse_task(ALIASED_TASK)
+    with pytest.raises(InvalidDefinition) as contest:
+        parse_contest(ALIASED_CONTEST)
+
+    assert task.value.errors[0]["message"] == (
+        "Unicon could not read the task's settings, because of a mistake on line 5: a part is "
+        "named with & or repeated with *, which Unicon does not read; write each part out in "
+        "full."
+    )
+    assert (
+        "a mistake on line 3: a part is named with & or repeated with *"
+        in (contest.value.errors[0]["message"])
+    )
+    assert load_yaml("a: 'x & y * z'\nb: x&y\n") == {"a": "x & y * z", "b": "x&y"}
+    # What forge writes gives a part given twice out in full each time.
+    shared = {"block": "entered", "at_least": 0, "at_most": 10}
+    written = one_line({"review": shared, "bonus": shared})
+    assert load_yaml(f"values: {written}\n") == {"values": {"review": shared, "bonus": shared}}
+
+
 def test_groups_named_no_and_on_are_groups_of_those_names() -> None:
     task = parse_task(
-        b"name: Sum\nworkflow: unicon/classic@v2\n"
-        b"test_groups:\n  no: {each: 1}\n  NO: {pass: 2.5}\n  on: {}\n"
+        b"name: Sum\nworkflow: unicon/classic@v3\n"
+        b"scoring:\n  groups:\n    no: {input: [a]}\n    NO: {input: [b]}\n    on: {}\n"
+        b"  values:\n    score: {block: count, over: {runs: all}}\n"
     )
 
-    assert list(task.test_groups) == ["no", "NO", "on"]
-    assert task.test_groups["NO"].pass_ == Decimal("2.5")
+    assert list(task.scoring.groups) == ["no", "NO", "on"]
+    assert task.scoring.groups["NO"] == {"input": ["b"]}
 
 
 @pytest.mark.parametrize(
@@ -125,7 +167,7 @@ def test_a_decimal_is_written_as_its_digits() -> None:
 def contest_starting(start: str) -> bytes:
     return (
         f"name: Spring\nstart: {start}\nend: 2027-01-01T00:00:00Z\nstate: draft\n"
-        "visibility: signed-in\nleaderboards: []\n"
+        "visibility: signed-in\n"
     ).encode()
 
 

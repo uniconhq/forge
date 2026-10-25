@@ -40,7 +40,7 @@ class FakeGitHost:
         self.content = FakeContent(self.state, self.uploads)
         self.workspaces = FakeWorkspaces(self.state, self.uploads)
         self.threads = FakeThreads(self.state)
-        self.workflows = FakeWorkflows(self.state)
+        self.workflows = FakeWorkflows(self.state, self.uploads)
         self.primitives = FakePrimitives(self.state)
         # What a CI needs from the git host, handed to the CI it is paired with.
         self.ci_host = FakeCiHost(self.state, public_url=public_url)

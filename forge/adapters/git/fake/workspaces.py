@@ -32,7 +32,7 @@ from forge.domain.ids import (
     WorkspaceId,
 )
 from forge.domain.names import WorkspaceOwner
-from forge.domain.publications import Publication, read_note
+from forge.domain.publication_record import Publication, read_note
 from forge.domain.roles import Scope
 from forge.domain.submissions import Submitted, write_note
 from forge.domain.submissions import read_note as read_submission_note
@@ -85,7 +85,13 @@ class FakeWorkspaces:
         task_ref = parse_task(task)
         if (task_ref.org, task_ref.contest) != (ref.org, ref.contest):
             raise NotFound(f"{task} is not a task of the contest {workspace} is in")
-        self._open(ref, ref.submission_repo(task_ref.task), member_ids, reserve=True)
+        self._open(
+            ref,
+            ref.submission_repo(task_ref.task),
+            member_ids,
+            reserve=True,
+            scope=Scope(task_ref.org, task_ref.contest, task_ref.task),
+        )
 
     async def delete_submission_place(self, workspace: WorkspaceId, task: TaskId) -> None:
         self._state.record("delete_submission_place", PLATFORM, workspace=workspace, task=task)
@@ -107,23 +113,27 @@ class FakeWorkspaces:
         *,
         reserve: bool = False,
         read_only: bool = False,
+        scope: Scope | None = None,
     ) -> None:
         """One repository of the workspace, its submissions reserved before
         anyone may write it, and anyone on one that is there who is not a
         member now taken off first, as the Forgejo implementation does.
         """
-        scope = Scope(ref.org, ref.contest)
+        attached = scope or Scope(ref.org, ref.contest)
         repo = self._state.repos.get((ref.org, name))
         if repo is not None:
             repo.writers.intersection_update(member_ids)
             repo.readers.intersection_update(member_ids)
+            _attach(repo, attached)
         holding = set() if repo is None else repo.readers if read_only else repo.writers
         if repo is not None and member_ids and set(member_ids) <= holding:
             return
         if repo is None:
-            repo = self._state.create_repo(PLATFORM, ref.org, name, {}, scope=scope)
+            repo = self._state.create_repo(
+                PLATFORM, ref.org, name, {}, scope=Scope(ref.org, ref.contest)
+            )
         repo.rewrites_refused = True
-        repo.teams.add(scope)
+        _attach(repo, attached)
         if reserve:
             repo.reserved.add(SUBMISSION_PREFIX)
         if read_only:
@@ -290,10 +300,7 @@ class FakeWorkspaces:
                     grading_changed=note.grading_changed,
                     changes=note.changes,
                     workflows=note.workflows,
-                    sealed=note.sealed,
-                    measures=note.measures,
-                    titles=note.titles,
-                    meanings=note.meanings,
+                    checked_first=note.checked_first,
                     at=self._state.published_at.get((task, number), self._state.clock.now()),
                 )
             )
@@ -305,6 +312,15 @@ class FakeWorkspaces:
             for (owner, name), repo in self._state.repos.items()
             if owner == ref.org and (name == ref.desk_repo or ref.is_submission_repo(name))
         ]
+
+
+def _attach(repo: Repo, scope: Scope) -> None:
+    """The scope's roles, and the contest's above a task, as Forgejo's
+    `attach_scope` walks the lineage. An org's roles cover every repository.
+    """
+    for at in scope.lineage():
+        if at.contest is not None:
+            repo.teams.add(at)
 
 
 def _ref(contest: ContestId, owner: WorkspaceOwner) -> WorkspaceRef:

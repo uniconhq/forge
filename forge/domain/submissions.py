@@ -1,27 +1,31 @@
-"""A submission: what a contestant gives for each of a task's contestant
+"""A submission: what an entrant gives for each of a task's entrant
 inputs, checked against those inputs, and the one commit it becomes in their
-place to submit the task (TASK-FORMAT.md section 2, the runner's
-`submission.schema.json`, version 5):
+place to submit the task (SIMPLER-CORE.md 8.3, the runner's
+`submission.schema.json`, version 6, `lay_out_runs`):
 
 - `files/<input id>/<relative path>` for every file of a `file` or `folder`
-  input, and nothing else; a `per_test` input's files are at
-  `files/<input id>/<group>/<test>` or `files/<input id>/<group>/<test>.<ending>`,
-  the ending not empty, one per test of the plan at most;
+  input given once, and nothing else;
 - `submission.json` at the top, naming each file or folder input's files,
   or giving a text, number, true-or-false or enum input its value.
 
-    {"schema_version": 5, "inputs": {
-      "submission": {"files": ["files/submission/main.py"]},
-      "language": {"value": "python"}}}
-
-A contestant input is what the plan's `contestant` declares, with the form
+An entrant input is what the run plan's `entrant` declares, with the form
 details the task gives it (`Field`). A file input is one file; a folder
 input one or more, each under its own path; the files under an input
 together within its `max_size`. A text, number, true-or-false or enum input
-the contestant leaves out takes the task's `default`, and one without a
+the entrant leaves out takes the task's `default`, and one without a
 default is required; an enum's value is one of the task's `options`, the
 workflow's when the task narrows none, and a number lies within `min` and
 `max`.
+
+An entrant input inside the task's `repeat` is given part by part, each
+part its tuple's position from 1, its files at
+`files/<input id>/<part>/<relative path>` and its value in a map from part
+to value, so a label never shows a hidden file's name. A part not given is
+left out, and every run made from its tuple is skipped (`skipped`).
+
+    {"schema_version": 6, "inputs": {
+      "best": {"value": 1200},
+      "route": {"parts": {"1": {"files": ["files/route/1/route.txt"]}}}}}
 
 The submission is named as a protected version whose note carries the
 submit's idempotency key, so a submit tried again after its answer was lost
@@ -30,7 +34,7 @@ finds the submission it made instead of making a second.
 
 import re
 import uuid
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -40,77 +44,96 @@ import yaml
 
 from forge.domain import exact_json
 from forge.domain.contracts import violation
-from forge.domain.definitions import DEFAULT_MAX_SIZE, Form
+from forge.domain.definitions import DEFAULT_MAX_SIZE, ENTRANT, Form
 from forge.domain.errors import InvalidInputs
 from forge.domain.ids import SubmissionId, VersionId
+from forge.domain.run_task import Part, Run
 from forge.domain.types import FILES, Type
 from forge.domain.uploads import filename_problem
 
-SCHEMA_VERSION = 5
+RUN_SCHEMA_VERSION = 6
 SUBMISSION_FILE = "submission.json"
 FILES_FOLDER = "files"
 TEXT_MAX = 64 * 1024
 KEY_MIN, KEY_MAX = 8, 128
 KEY_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
-TEST_FILE = re.compile(r"^(?P<group>[A-Za-z0-9_-]+)/(?P<test>[A-Za-z0-9_-]+)(\.[^/]+)?$")
-"""A per-test input's file name: `<group>/<test>`, or `<group>/<test>.<ending>`
-with an ending that is not empty, the harness's own rule."""
+
+
+@dataclass(frozen=True, slots=True)
+class FieldPart:
+    """One part of an entrant input: the tuple's title, and the most that
+    part may hold, in bytes.
+    """
+
+    title: str | None
+    max_size: int
 
 
 @dataclass(frozen=True, slots=True)
 class Field:
-    """One input the contestant gives: what the plan declares of it, its
-    type, an enum's options and whether it is one file per test, and the
-    task's form details, its label, default, bounds, options and size.
+    """One input the entrant gives: what the plan declares of it, its type
+    and an enum's options, the task's form details, its label, default,
+    bounds, options and size, and its parts when it is inside `repeat`.
     """
 
     id: str
     type: Type
     label: str
     options: tuple[str, ...] | None = None
-    per_test: bool = False
     default: Any = None
     min: int | Decimal | None = None
     max: int | Decimal | None = None
     max_size: int = DEFAULT_MAX_SIZE
+    parts: tuple[FieldPart, ...] | None = None
 
     @property
     def files(self) -> bool:
         return self.type in FILES
 
 
-def fields_of(
-    contestant: Mapping[str, Any],
-    inputs: Mapping[str, Any],
-    titles: Mapping[str, str] | None = None,
-) -> tuple[Field, ...]:
-    """The contestant's inputs, each from the plan's `contestant` declaration
-    of it and the task's form details in `inputs`: in the order `task.yaml`
-    lists them, then the rest by name. Each is labelled by the task's
-    `label`, else the workflow's title in `titles`, else its key.
+def run_fields_of(entrant: Mapping[str, Any], inputs: Mapping[str, Any]) -> tuple[Field, ...]:
+    """A task's entrant inputs, each from its run plan's `entrant` entry
+    and the form details `task.yaml` gives an input made the entrant's,
+    `{entrant: {...}}`: in the order `inputs` lists them, then the rest by
+    name. A file's most size is the plan's.
     """
-    order = [name for name in inputs if name in contestant]
-    order += sorted(name for name in contestant if name not in order)
+    order = [name for name in inputs if name in entrant]
+    order += sorted(name for name in entrant if name not in order)
     found = []
     for name in order:
-        declared = contestant[name]
-        details = inputs.get(name)
+        declared = entrant[name]
+        given = inputs.get(name)
+        details = given.get(ENTRANT) if isinstance(given, dict) else None
         form = Form.model_validate(details) if isinstance(details, dict) else Form()
-        options = tuple(form.options or declared.options or ()) or None
+        max_size = declared.max_size or form.max_size or DEFAULT_MAX_SIZE
         found.append(
             Field(
                 id=name,
                 type=Type(declared.type),
-                label=form.label or (titles or {}).get(name) or name,
-                options=options,
-                per_test=bool(declared.per_test),
+                label=form.label or name,
+                options=tuple(form.options or declared.options or ()) or None,
                 default=form.default,
                 min=form.min,
                 max=form.max,
-                max_size=form.max_size if form.max_size is not None else DEFAULT_MAX_SIZE,
+                max_size=max_size,
+                parts=_field_parts(declared, max_size),
             )
         )
     return tuple(found)
+
+
+def _field_parts(declared: Any, max_size: int) -> tuple[FieldPart, ...] | None:
+    """A plan entry's parts, one each, or none when it is given once. A
+    plan names a part's title and size only when some part has its own;
+    otherwise each part is untitled and holds `max_size`, the input's.
+    """
+    raw = getattr(declared, "part_details", None)
+    if raw:
+        return tuple(FieldPart(title=part.title, max_size=part.max_size) for part in raw)
+    count = getattr(declared, "parts", None)
+    if not count:
+        return None
+    return tuple(FieldPart(title=None, max_size=max_size) for _ in range(count))
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,24 +176,16 @@ def key_is_valid(key: str) -> bool:
     return KEY_MIN <= len(key) <= KEY_MAX and set(key) <= KEY_CHARACTERS
 
 
-def path_problem(entry: Field, name: str, tests: Collection[str]) -> str | None:
+def path_problem(entry: Field, name: str) -> str | None:
     """What is wrong with `name` as where an uploaded file goes under its
-    input, if anything: one plain name for a file input, a path of plain
-    names for a folder input, and `<group>/<test>` with or without an
-    ending, for a test of the plan, for a per-test input.
+    input, if anything: one plain name for a file input, and a path of
+    plain names for a folder input.
     """
     parts = name.split("/")
     for part in parts:
         problem = filename_problem(part)
         if problem is not None:
             return problem
-    if entry.per_test:
-        matched = TEST_FILE.match(name)
-        if matched is None or f"{matched['group']}/{matched['test']}" not in tests:
-            return (
-                "Name each file of this input after a test, as <group>/<test>, such as main/1.txt."
-            )
-        return None
     if entry.type is Type.FILE and len(parts) > 1:
         return "A file name cannot include a folder."
     return None
@@ -192,6 +207,7 @@ class SubmittedInput:
 
     uploads: tuple[uuid.UUID, ...] = ()
     value: str | bool | None = None
+    parts: Mapping[int, SubmittedInput] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,16 +233,19 @@ class Layout:
     inputs: Mapping[str, Any] = field(default_factory=dict)
 
 
-def lay_out(
+def lay_out_runs(
     declared: tuple[Field, ...],
-    tests: Collection[str],
+    parts: Mapping[str, int],
     given: Mapping[str, SubmittedInput],
     uploads: Mapping[uuid.UUID, UploadedFile],
 ) -> Layout:
-    """The submission `given` makes for inputs `declared` of a plan whose
-    tests are `tests`, each upload of which is in `uploads`. `InvalidInputs`
-    naming every problem when it does not fit, or when its `submission.json`
-    would break the runner's contract.
+    """A submission, version 6: `given` for inputs `declared`, `parts`
+    giving how many parts each input inside the task's `repeat` has, each
+    upload of which is in `uploads`. An input given once has its files
+    under `files/<input id>/`; one in parts needs at least one part, each
+    part's files under `files/<input id>/<part>/`. `InvalidInputs` naming
+    every problem when it does not fit, or when its `submission.json` would
+    break the runner's contract.
     """
     problems: list[dict[str, str]] = []
     files: dict[str, uuid.UUID] = {}
@@ -235,12 +254,21 @@ def lay_out(
     for name in sorted(set(given) - known):
         problems.append({"input": name, "message": "The task has no such input."})
     for entry in declared:
-        found = _one(entry, tests, given.get(entry.id), uploads, files)
+        found: dict[str, Any] | str | None
+        submitted = given.get(entry.id)
+        count = parts.get(entry.id)
+        if count is None:
+            if submitted is not None and submitted.parts:
+                found = "This input is given once, not in parts."
+            else:
+                found = _one(entry, submitted, uploads, files, entry.max_size)
+        else:
+            found = _parts(entry, count, submitted, uploads, files)
         if isinstance(found, str):
             problems.append({"input": entry.id, "message": found})
         elif found is not None:
             inputs[entry.id] = found
-    document = {"schema_version": SCHEMA_VERSION, "inputs": inputs}
+    document = {"schema_version": RUN_SCHEMA_VERSION, "inputs": inputs}
     if not problems:
         problems.extend(_contract_problems(document))
     if problems:
@@ -253,9 +281,75 @@ def lay_out(
     return Layout(files=files, document=text.encode(), inputs=inputs)
 
 
+def _parts(
+    entry: Field,
+    count: int,
+    given: SubmittedInput | None,
+    uploads: Mapping[uuid.UUID, UploadedFile],
+    files: dict[str, uuid.UUID],
+) -> dict[str, Any] | str:
+    """An input inside the task's `repeat`: each part given, by its number,
+    or a sentence saying what is wrong.
+    """
+    if given is None or not given.parts:
+        if given is not None and (given.uploads or given.value is not None):
+            return "Give this input part by part."
+        return "Give at least one part of this input."
+    if given.uploads or given.value is not None:
+        return "Give this input part by part."
+    found: dict[str, Any] = {}
+    for number, part in sorted(given.parts.items()):
+        if not 1 <= number <= count:
+            return f"There is no part {number}: this input has parts 1 to {count}."
+        if part.parts:
+            return f"Part {number} is one part, with no parts of its own."
+        laid: dict[str, uuid.UUID] = {}
+        each = _one(entry, part, uploads, laid, _part_size(entry, number))
+        if isinstance(each, str):
+            return f"Part {number}: {each}"
+        assert each is not None
+        if "files" in each:
+            each = {"files": [_in_part(path, entry.id, number) for path in each["files"]]}
+            files.update(
+                {_in_part(path, entry.id, number): upload for path, upload in laid.items()}
+            )
+        found[str(number)] = each
+    return {"parts": found}
+
+
+def _part_size(entry: Field, number: int) -> int:
+    """The most part `number` of `entry` may hold: its own size, as the plan
+    budgets its box, or the input's when the plan gives parts none.
+    """
+    if entry.parts is not None and 1 <= number <= len(entry.parts):
+        return entry.parts[number - 1].max_size
+    return entry.max_size
+
+
+def _in_part(path: str, input_id: str, number: int) -> str:
+    """A file's path in the commit moved into its part's folder."""
+    top = f"{FILES_FOLDER}/{input_id}/"
+    return f"{top}{number}/{path.removeprefix(top)}"
+
+
+def skipped(runs: Sequence[Run], inputs: Mapping[str, Any]) -> frozenset[str]:
+    """The runs a submission's `inputs` skips: each made from a
+    tuple whose part of an entrant input was not given.
+    """
+    return frozenset(
+        run.id
+        for run in runs
+        if any(
+            isinstance(value, Part)
+            and str(value.number) not in inputs.get(name, {}).get("parts", {})
+            for name, value in run.key.items()
+        )
+    )
+
+
 def _contract_problems(document: Mapping[str, Any]) -> list[dict[str, str]]:
     """How `document` breaks the runner's submission contract, at the input
-    it is about when it is about one, so a submission the harness would
+    it is about when it is about one, so a submission the runner would
     refuse is never made.
     """
     broken = violation(document, "submission")
@@ -274,16 +368,16 @@ def _contract_problems(document: Mapping[str, Any]) -> list[dict[str, str]]:
 
 def _one(
     entry: Field,
-    tests: Collection[str],
     given: SubmittedInput | None,
     uploads: Mapping[uuid.UUID, UploadedFile],
     files: dict[str, uuid.UUID],
+    max_size: int,
 ) -> dict[str, Any] | str | None:
     """The input's entry in `submission.json`, or a sentence saying what is
-    wrong.
+    wrong. Its files come to at most `max_size` bytes.
     """
     if entry.files:
-        return _files(entry, tests, given, uploads, files)
+        return _files(entry, given, uploads, files, max_size)
     if given is None or given.value is None:
         if given is not None and given.uploads:
             return "Give this input a value, not files."
@@ -303,10 +397,10 @@ def _one(
 
 def _files(
     entry: Field,
-    tests: Collection[str],
     given: SubmittedInput | None,
     uploads: Mapping[uuid.UUID, UploadedFile],
     files: dict[str, uuid.UUID],
+    max_size: int,
 ) -> dict[str, Any] | str:
     if given is None or not given.uploads:
         return (
@@ -316,7 +410,7 @@ def _files(
         )
     if given.value is not None:
         return "Give this input files, not a value."
-    if entry.type is Type.FILE and not entry.per_test and len(given.uploads) != 1:
+    if entry.type is Type.FILE and len(given.uploads) != 1:
         return "This input takes exactly one file."
     if len(set(given.uploads)) != len(given.uploads):
         return "The same file is given more than once. Give it once."
@@ -333,21 +427,13 @@ def _files(
     if both:
         return f"{both[0]} is both a file and a folder. Rename one of them."
     for name in names:
-        problem = path_problem(entry, name, tests)
+        problem = path_problem(entry, name)
         if problem is not None:
             return f"There is a problem with the file {name}: {problem}"
-    if entry.per_test:
-        answered = [
-            f"{matched['group']}/{matched['test']}"
-            for name in names
-            if (matched := TEST_FILE.match(name)) is not None
-        ]
-        if len(set(answered)) != len(answered):
-            return "Two files are for the same test. Give one file for each test."
     total = sum(upload.size for upload in chosen)
-    if total > entry.max_size:
+    if total > max_size:
         return (
-            f"The files of this input come to more than the {entry.max_size} bytes allowed. "
+            f"The files of this input come to more than the {max_size} bytes allowed. "
             "Make them smaller."
         )
     paths = []

@@ -12,6 +12,8 @@ from forge.adapters.git.fake.state import Repo, State, token_of
 from forge.adapters.git.fake.uploads import FakeUploads, repo_of
 from forge.adapters.ids import (
     CONTEST,
+    DISPATCH_FILES,
+    DISPATCH_REPO,
     PUBLISHED_PREFIX,
     TASK,
     ContestRef,
@@ -63,6 +65,14 @@ class FakeContent:
             PLATFORM, ref.org, ref.repo, files, scope=Scope(ref.org, ref.contest, ref.task)
         )
         return ref.id
+
+    async def create_dispatch(self, org: OrgId) -> None:
+        self._state.record("create_dispatch", PLATFORM, org=org)
+        self._state.check_up()
+        try:
+            self._state.create_repo(PLATFORM, org, DISPATCH_REPO, DISPATCH_FILES)
+        except Conflict:
+            return
 
     async def secure(self, place: ContentPlace) -> int:
         self._state.record("secure", PLATFORM, place=place)
@@ -249,6 +259,7 @@ class FakeContent:
         return FileSet(
             version=VersionId(at if at is not None else repo.head),
             tokens={path: token_of(content) for path, content in files.items()},
+            sizes={path: len(content) for path, content in files.items()},
         )
 
     async def list_tree(

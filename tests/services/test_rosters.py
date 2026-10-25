@@ -60,11 +60,11 @@ from forge.runtime.setup import Setup
 from forge.services import (
     account,
     clarifications,
+    entrant_view,
     entrants,
     identity,
     invites,
     live,
-    published,
     submissions,
     timelines,
 )
@@ -108,7 +108,7 @@ def contest(
 
 def code(*uploads: Any) -> dict[str, SubmittedInput]:
     return {
-        "submission": SubmittedInput(uploads=tuple(uploads)),
+        "code": SubmittedInput(uploads=tuple(uploads)),
         "language": SubmittedInput(value="python"),
     }
 
@@ -524,7 +524,9 @@ async def test_organisers_move_take_out_rename_and_delete(
     assert _repo(acme.fake, adders.id, sum_task).writers == set()
     await entrants.delete(setup, manager, SPRING, third.id)
     assert await _mine(setup, eve) is None
-    names = [entrant.display_name for entrant in await entrants.list(setup, manager, SPRING)]
+    names = [
+        entrant.display_name for entrant in await entrants.list_entrants(setup, manager, SPRING)
+    ]
     assert names == ["Adders", "Takers"]
 
 
@@ -534,7 +536,7 @@ async def test_an_organiser_takes_the_last_member_out_of_an_entrant_that_never_s
     adders = await entrants.register(setup, crowd["bob"], SPRING, name="Adders")
 
     assert await entrants.remove_member(setup, manager, SPRING, adders.id, 8) is None
-    assert await entrants.list(setup, manager, SPRING) == ()
+    assert await entrants.list_entrants(setup, manager, SPRING) == ()
     with pytest.raises(NotFound):
         await entrants.remove_member(setup, manager, SPRING, adders.id, 8)
 
@@ -590,7 +592,7 @@ async def test_an_organiser_extends_an_entrant_on_the_named_tasks_alone(
 async def _reveal(setup: Setup) -> datetime | None:
     """When sum reveals, by the extensions in force now."""
     async with setup.unit_of_work() as ctx:
-        settings = await published.contest(ctx, SPRING)
+        settings = await entrant_view.contest(ctx, SPRING)
         return await timelines.reveal(ctx, SPRING, settings, "sum")
 
 
@@ -928,7 +930,7 @@ async def test_the_last_one_out_and_an_accept_of_the_entrants_invite_take_turns(
     bob, carol = crowd["bob"], crowd["carol"]
     await entrants.register(setup, bob, SPRING, name="Adders")
     asked = await invites_of(setup, bob, "carol")
-    closing = entrants._close
+    closing = entrants.entrant_rows._close
     accepting: list[asyncio.Future[Any]] = []
 
     async def slow_close(ctx: Any, workspace: Any, user_ids: Any) -> None:
@@ -937,7 +939,7 @@ async def test_the_last_one_out_and_an_accept_of_the_entrants_invite_take_turns(
         await asyncio.sleep(1.0)
         await closing(ctx, workspace, user_ids)
 
-    monkeypatch.setattr(entrants, "_close", slow_close)
+    monkeypatch.setattr(entrants.entrant_rows, "_close", slow_close)
 
     await entrants.leave(setup, bob, SPRING)
     (accepted,) = await asyncio.gather(*accepting, return_exceptions=True)
@@ -1087,7 +1089,7 @@ async def test_deleting_an_entrant_someone_joined_meanwhile_is_asked_again(
     bob, carol = crowd["bob"], crowd["carol"]
     adders = await entrants.register(setup, bob, SPRING, name="Adders")
     asked = await invites_of(setup, bob, "carol")
-    holding = entrants._hold_people
+    holding = entrants.guards._hold_people
     joined: list[bool] = []
 
     async def carol_joins_first(ctx: Any, contest: Any, user_ids: Any) -> None:
@@ -1096,7 +1098,7 @@ async def test_deleting_an_entrant_someone_joined_meanwhile_is_asked_again(
             await invites.accept(setup, carol, asked.id)
         await holding(ctx, contest, user_ids)
 
-    monkeypatch.setattr(entrants, "_hold_people", carol_joins_first)
+    monkeypatch.setattr(entrants.guards, "_hold_people", carol_joins_first)
 
     with pytest.raises(EntrantChanged):
         await entrants.delete(setup, manager, SPRING, adders.id)

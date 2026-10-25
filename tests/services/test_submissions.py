@@ -1,38 +1,33 @@
 """A contestant's uploads become a submission. A passing submit is one commit
 by the contestant with the files under `files/` and `submission.json`
-(version 5), named `submission/<n>` by the platform, and one queued grading
-row against the current publication, holding the hash of its callback token.
-Each refusal comes before anything is written, with its own code, in the
-order the rules give. A number another took first is taken by the next. The
-same key sent twice returns the first submission and makes nothing, and a
-submit whose forge writes landed but whose rows did not is completed by the
-retry instead of made again. A folder input takes a tree of files and a
-per-test input one file per test, named `<group>/<test>`, the files under an
-input within its `max_size` together. The contestant reads their own
-submissions back, each grading with its test groups as their `show` allows
-before and after the task's reveal, with the publication it ran under when
-the tests have changed since, a run in `system_error` as delayed, how
-many days late each was, and nobody else's.
+(version 6), named `submission/<n>` by the platform, and one queued grading
+row against the current publication. Each refusal comes before anything is
+written, with its own code, in the order the rules give. A number another
+took first is taken by the next. The same key sent twice returns the first
+submission and makes nothing, and a submit whose forge writes landed but
+whose rows did not is completed by the retry instead of made again. A
+folder input takes a tree of files, within its `max_size` together. The
+contestant reads their own submissions back and their files, and nobody
+else's; staff of the task read and download them too.
 """
 
 import hashlib
 import json
 import re
+import uuid
 from collections.abc import Mapping
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from fractions import Fraction
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import select, update
 
 from forge.db.tables import Grading
 from forge.db.tables import Upload as UploadRow
 from forge.domain.content import Edit
-from forge.domain.definitions import Show
 from forge.domain.errors import (
     Archived,
+    Forbidden,
     InvalidIdempotencyKey,
     InvalidInputs,
     NotApproved,
@@ -46,27 +41,26 @@ from forge.domain.errors import (
     UploadNotReady,
     UploadNotYours,
 )
-from forge.domain.grading import LOST_CHECK_AFTER, RunState, callback_token, token_hash
-from forge.domain.identity import PLATFORM
+from forge.domain.grading import LOST_CHECK_AFTER, RunState
+from forge.domain.identity import PLATFORM, User
 from forge.domain.ids import ContestId, RunId, TaskId
-from forge.domain.meanings import ValueMeaning
 from forge.domain.names import EntrantOwner
-from forge.domain.publications import write_note
-from forge.domain.roles import Role, Scope
-from forge.domain.scoring import Better, Points
-from forge.domain.showing import GroupShown, Sealed, SubmissionState
+from forge.domain.roles import Role, RoleGrant, Scope
+from forge.domain.submission_state import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import pointer_text
 from forge.domain.workflows import Visibility
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
-from forge.services import entrants, gradings, identity, publications, submissions, uploads
-from forge.testing import CLASSIC, FakeClock
+from forge.services import entrants, gradings, identity, submissions, task_save, uploads
+from forge.services.access import Organiser
+from forge.testing import FakeClock
 from tests.services.conftest import (
     RUNNING,
     SPRING,
     Acme,
     Entered,
+    checked,
     organiser,
     segment,
     signed_in,
@@ -78,29 +72,10 @@ KEY = "key-0001-aaaa"
 SOURCE = b"print(sum(map(int, input().split())))\n"
 END = datetime(2026, 9, 26, 15, 0, tzinfo=UTC)
 
-FOLDERS = CLASSIC.replace(b"  submission:\n    type: file\n", b"  submission:\n    type: folder\n")
-"""classic, with the contestant's sources a folder."""
-
-ANSWERS = b"""\
-inputs:
-  answers: {type: file, contestant: true, per_test: true}
-test:
-  input: file
-  answer: file
-steps:
-  - id: check
-    use: unicon/diff-check@v2
-    per_test: true
-    with:
-      actual: ${{ inputs.answers }}
-      expected: ${{ test.answer }}
-"""
-"""An output-only workflow: the contestant uploads one answer per test."""
-
 
 def code(*uploads: Any, language: str = "python") -> dict[str, SubmittedInput]:
     return {
-        "submission": SubmittedInput(uploads=tuple(uploads)),
+        "code": SubmittedInput(uploads=tuple(uploads)),
         "language": SubmittedInput(value=language),
     }
 
@@ -108,7 +83,13 @@ def code(*uploads: Any, language: str = "python") -> dict[str, SubmittedInput]:
 async def _gradings(setup: Setup) -> list[Grading]:
     async with setup.unit_of_work() as ctx:
         return list(
-            (await ctx.db.execute(select(Grading).order_by(Grading.submission_number))).scalars()
+            (
+                await ctx.db.execute(
+                    select(Grading)
+                    .where(Grading.pipeline != "save")
+                    .order_by(Grading.submission_number)
+                )
+            ).scalars()
         )
 
 
@@ -126,14 +107,15 @@ async def _save(setup: Setup, acme: Acme, task: TaskId, files: Mapping[str, byte
     contest runs.
     """
     head = await acme.fake.content.list_files(PLATFORM, task)
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         task,
         {path: Edit(content, head.tokens.get(path)) for path, content in files.items()},
         confirm=True,
     )
-    assert isinstance(saved, publications.Published), saved
+    assert isinstance(saved, task_save.Published), saved
+    await checked(setup, task)
 
 
 async def _task_yaml(acme: Acme, task: TaskId) -> bytes:
@@ -171,19 +153,18 @@ async def test_a_submit_commits_as_the_contestant_names_it_and_queues_one_gradin
         1,
         clock.now(),
     )
-    assert submission.late_days == 0
     assert submission.grading is not None
     assert (submission.grading.attempt, submission.grading.status) == (1, SubmissionState.QUEUED)
     repo = acme.fake.state.repos[("acme", f"spring.sum.{segment(entered.entrant)}.sub")]
     head = repo.history[-1]
     assert head.author_id == 8
     assert repo.versions == {"submission/1": head.version}
-    assert sorted(repo.snapshots[head.version]) == ["files/submission/main.py", "submission.json"]
-    assert repo.snapshots[head.version]["files/submission/main.py"] == _pointer(SOURCE)
+    assert sorted(repo.snapshots[head.version]) == ["files/code/main.py", "submission.json"]
+    assert repo.snapshots[head.version]["files/code/main.py"] == _pointer(SOURCE)
     assert json.loads(repo.snapshots[head.version]["submission.json"]) == {
-        "schema_version": 5,
+        "schema_version": 6,
         "inputs": {
-            "submission": {"files": ["files/submission/main.py"]},
+            "code": {"files": ["files/code/main.py"]},
             "language": {"value": "python"},
         },
     }
@@ -209,9 +190,7 @@ async def test_a_submit_commits_as_the_contestant_names_it_and_queues_one_gradin
         KEY,
         None,
     )
-    assert len(acme.fake.calls_to("start_run")) == 1
-    token = callback_token(setup.settings.token_encryption_key_bytes, row.id)
-    assert row.callback_token_hash == token_hash(token)
+    assert len(acme.fake.calls_to("start_pipeline")) == 1
     async with setup.unit_of_work() as ctx:
         used = (await ctx.db.execute(select(UploadRow))).scalar_one()
     assert (used.status, used.consumed_by) == (
@@ -252,7 +231,7 @@ async def test_a_second_submission_holds_only_its_own_files(
     )
 
     assert second.number == 2
-    assert sorted(await _snapshot(acme, entered, 2)) == ["files/submission/b.py", "submission.json"]
+    assert sorted(await _snapshot(acme, entered, 2)) == ["files/code/b.py", "submission.json"]
     assert [row.submission_number for row in await _gradings(setup)] == [1, 2]
 
 
@@ -572,6 +551,20 @@ async def _stands(setup: Setup, number: int, **values: Any) -> None:
 
 
 FAILED = {"status": "system_error", "error": "The checker crashed."}
+RESULT = {
+    "schema_version": 6,
+    "runs": [
+        {
+            "id": "r1",
+            "key": {"input": "tests/1.in", "answer": "tests/1.ans"},
+            "verdict": "accepted",
+            "passed": 1,
+            "reports": {},
+            "texts": {},
+        }
+    ],
+}
+"""The result of sum's one run, accepted."""
 
 
 async def test_a_delayed_submission_uses_up_none_while_it_waits_and_is_graded_only_with_room(
@@ -666,7 +659,8 @@ async def test_a_file_over_the_size_its_input_takes_now_is_refused_naming_the_in
     made = await upload(setup, acme.fake, entered.session, entered.task, b"x" * 1000)
     current = await _task_yaml(acme, entered.task)
     smaller = current.replace(
-        b"submission: {label: Your solution}", b"submission: {label: Your solution, max_size: 512B}"
+        b"code: {entrant: {label: Your solution}}",
+        b"code: {entrant: {label: Your solution, max_size: 512B}}",
     )
     assert smaller != current
     await _save(setup, acme, entered.task, {"task.yaml": smaller})
@@ -676,7 +670,7 @@ async def test_a_file_over_the_size_its_input_takes_now_is_refused_naming_the_in
             setup, entered.session, entered.task, code(made.id), idempotency_key=KEY
         )
 
-    assert (refused.value.extra["limit"], refused.value.extra["input"]) == (512, "submission")
+    assert (refused.value.extra["limit"], refused.value.extra["input"]) == (512, "code")
     assert acme.fake.calls_to("record_submission") == []
 
 
@@ -713,45 +707,16 @@ async def test_what_does_not_fit_the_inputs_is_refused_and_nothing_is_written(
     assert await _gradings(setup) == []
 
 
-async def test_a_file_input_takes_one_file_and_no_value(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    one = await upload(setup, acme.fake, entered.session, entered.task, SOURCE)
-    two = await upload(setup, acme.fake, entered.session, entered.task, b"x\n", filename="b.py")
-
-    with pytest.raises(InvalidInputs) as many:
-        await submissions.submit(
-            setup, entered.session, entered.task, code(one.id, two.id), idempotency_key=KEY
-        )
-    with pytest.raises(InvalidInputs) as valued:
-        await submissions.submit(
-            setup,
-            entered.session,
-            entered.task,
-            {**code(), "submission": SubmittedInput(value="print(1)")},
-            idempotency_key=KEY,
-        )
-
-    assert many.value.extra["errors"] == [
-        {"input": "submission", "message": "This input takes exactly one file."}
-    ]
-    assert valued.value.extra["errors"] == [
-        {"input": "submission", "message": "This input needs a file."}
-    ]
-    assert acme.fake.calls_to("record_submission") == []
-
-
 async def test_a_folder_input_takes_a_tree_of_files_within_its_size_together(
     setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
 ) -> None:
-    await _workflow(acme, "folders", FOLDERS)
     current = await _task_yaml(acme, entered.task)
     await _save(
         setup,
         acme,
         entered.task,
         {
-            "task.yaml": current.replace(b"unicon/classic@v2", b"acme/folders@v1").replace(
+            "task.yaml": current.replace(
                 b"{label: Your solution}", b"{label: Your sources, max_size: 1KB}"
             )
         },
@@ -768,22 +733,20 @@ async def test_a_folder_input_takes_a_tree_of_files_within_its_size_together(
 
     snapshot = await _snapshot(acme, entered, made.number)
     assert sorted(snapshot) == [
-        "files/submission/lib/add.py",
-        "files/submission/main.py",
+        "files/code/lib/add.py",
+        "files/code/main.py",
         "submission.json",
     ]
-    assert snapshot["files/submission/lib/add.py"] == _pointer(b"def add(a, b): ...\n")
+    assert snapshot["files/code/lib/add.py"] == _pointer(b"def add(a, b): ...\n")
     assert json.loads(snapshot["submission.json"]) == {
-        "schema_version": 5,
+        "schema_version": 6,
         "inputs": {
-            "submission": {"files": ["files/submission/lib/add.py", "files/submission/main.py"]},
+            "code": {"files": ["files/code/lib/add.py", "files/code/main.py"]},
             "language": {"value": "python"},
         },
     }
     files = await submissions.files(setup, session, task, made.number)
-    assert files.inputs["submission"] == {
-        "files": ["files/submission/lib/add.py", "files/submission/main.py"]
-    }
+    assert files.inputs["code"] == {"files": ["files/code/lib/add.py", "files/code/main.py"]}
 
     # Each file fits on its own; the two of them together do not.
     clock.advance(timedelta(seconds=31))
@@ -797,7 +760,7 @@ async def test_a_folder_input_takes_a_tree_of_files_within_its_size_together(
         )
     assert refused.value.extra["errors"] == [
         {
-            "input": "submission",
+            "input": "code",
             "message": "The files of this input come to more than the 1024 bytes allowed. "
             "Make them smaller.",
         }
@@ -805,94 +768,9 @@ async def test_a_folder_input_takes_a_tree_of_files_within_its_size_together(
     with pytest.raises(InvalidInputs) as empty:
         await submissions.submit(setup, session, task, code(), idempotency_key="key-0003-cccc")
     assert empty.value.extra["errors"] == [
-        {"input": "submission", "message": "This input needs at least one file."}
+        {"input": "code", "message": "This input needs at least one file."}
     ]
     assert len(acme.fake.calls_to("record_submission")) == 1
-
-
-async def test_a_per_test_input_takes_one_file_named_for_each_test(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
-) -> None:
-    await _workflow(acme, "answers", ANSWERS)
-    await _save(
-        setup,
-        acme,
-        entered.task,
-        {
-            "task.yaml": b"name: Sum\nworkflow: acme/answers@v1\n"
-            + b"test_groups:\n  main: {each: 100}\n",
-            "tests/main/2/input": b"2 2\n",
-            "tests/main/2/answer": b"4\n",
-        },
-    )
-    session, task = entered.session, entered.task
-    digest = hashlib.sha256(b"3\n").hexdigest()
-
-    # The slot takes only a test's path, with or without an ending.
-    for wrong in ("1.txt", "main/3.txt", "other/1", "main/1/x"):
-        with pytest.raises(InvalidInputs):
-            await uploads.slot(
-                setup, session, task, input="answers", filename=wrong, size=2, sha256=digest
-            )
-    first = await upload(
-        setup, acme.fake, session, task, b"3\n", input="answers", filename="main/1"
-    )
-    second = await upload(
-        setup, acme.fake, session, task, b"4\n", input="answers", filename="main/2.txt"
-    )
-
-    made = await submissions.submit(
-        setup,
-        session,
-        task,
-        {"answers": SubmittedInput(uploads=(second.id, first.id))},
-        idempotency_key=KEY,
-    )
-
-    snapshot = await _snapshot(acme, entered, made.number)
-    assert sorted(snapshot) == [
-        "files/answers/main/1",
-        "files/answers/main/2.txt",
-        "submission.json",
-    ]
-    assert json.loads(snapshot["submission.json"]) == {
-        "schema_version": 5,
-        "inputs": {"answers": {"files": ["files/answers/main/1", "files/answers/main/2.txt"]}},
-    }
-
-    # A test may go unanswered, but never answered twice.
-    clock.advance(timedelta(seconds=31))
-    again = await upload(
-        setup, acme.fake, session, task, b"3\n", input="answers", filename="main/1.out"
-    )
-    alone = await upload(
-        setup, acme.fake, session, task, b"5\n", input="answers", filename="main/1"
-    )
-    with pytest.raises(InvalidInputs) as twice:
-        await submissions.submit(
-            setup,
-            session,
-            task,
-            {"answers": SubmittedInput(uploads=(again.id, alone.id))},
-            idempotency_key="key-0002-bbbb",
-        )
-    assert twice.value.extra["errors"] == [
-        {
-            "input": "answers",
-            "message": "Two files are for the same test. Give one file for each test.",
-        }
-    ]
-    one = await submissions.submit(
-        setup,
-        session,
-        task,
-        {"answers": SubmittedInput(uploads=(alone.id,))},
-        idempotency_key="key-0003-cccc",
-    )
-    assert sorted(await _snapshot(acme, entered, one.number)) == [
-        "files/answers/main/1",
-        "submission.json",
-    ]
 
 
 async def test_an_upload_the_forge_no_longer_holds_is_refused_before_the_commit(
@@ -984,13 +862,11 @@ async def test_a_contestant_reads_their_own_submissions_and_their_files(
     assert await submissions.one(setup, entered.session, entered.task, 1) == listed[1]
     files = await submissions.files(setup, entered.session, entered.task, 2)
     assert files.inputs == {
-        "submission": {"files": ["files/submission/main.py"]},
+        "code": {"files": ["files/code/main.py"]},
         "language": {"value": "python"},
     }
-    door = await submissions.download(
-        setup, entered.session, entered.task, 2, "files/submission/main.py"
-    )
-    assert re.search(r"/media/files/submission/main\.py\?ref=[0-9a-f]{40}$", door.path), door.path
+    door = await submissions.download(setup, entered.session, entered.task, 2, "files/code/main.py")
+    assert re.search(r"/media/files/code/main\.py\?ref=[0-9a-f]{40}$", door.path), door.path
     assert await acme.fake.workspaces.fetch(door) == b"print(2)\n"
     with pytest.raises(NotFound):
         await submissions.download(setup, entered.session, entered.task, 2, "submission.json")
@@ -1005,348 +881,55 @@ async def test_a_contestant_reads_their_own_submissions_and_their_files(
     with pytest.raises(NotFound):
         await submissions.files(setup, cyd, entered.task, 1)
     with pytest.raises(NotFound):
-        await submissions.download(setup, cyd, entered.task, 1, "files/submission/main.py")
+        await submissions.download(setup, cyd, entered.task, 1, "files/code/main.py")
 
 
-GROUPS = b"""\
-test_groups:
-  main: {each: 100}
-  small: {pass: 30, show: verdict}
-  large: {pass: 70, show: after_close}
-"""
-
-RESULT: dict[str, Any] = {
-    "schema_version": 5,
-    "stopped": None,
-    "stopped_by": None,
-    "tests": [
-        {"test": "large/1", "outcome": "wrong_answer", "values": {"time_ms": 30, "memory_kb": 9}},
-        {"test": "main/1", "outcome": "accepted", "values": {"time_ms": 10, "memory_kb": 7}},
-        {"test": "small/1", "outcome": "accepted", "values": {"time_ms": 20, "memory_kb": 8}},
-    ],
-    "values": {"log": "compiled"},
-    "run_log": "http://machines.test/unicon-results/logs/x/1.log",
-    "error": None,
-}
-
-
-async def _three_groups(setup: Setup, acme: Acme, task: TaskId) -> None:
-    """The task with a group of each `show`, one test in each."""
-    current = await _task_yaml(acme, task)
-    start = current.index(b"test_groups:")
-    files = {"task.yaml": current[:start] + GROUPS}
-    for group in ("small", "large"):
-        files[f"tests/{group}/1/input"] = b"1 1\n"
-        files[f"tests/{group}/1/answer"] = b"2\n"
-    await _save(setup, acme, task, files)
-
-
-def _credited(index: int) -> dict[str, Any]:
-    """RESULT's test row as shown, with the credit it earned."""
-    row = RESULT["tests"][index]
-    return {**row, "credit": 1 if row["outcome"] == "accepted" else 0}
-
-
-async def _graded(setup: Setup, result: dict[str, Any], status: str = "done") -> None:
-    async with setup.unit_of_work() as ctx:
-        await ctx.db.execute(update(Grading).values(status=status, result=result))
-
-
-async def test_each_group_is_shown_as_its_show_allows_until_the_task_reveals(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
-) -> None:
-    await _three_groups(setup, acme, entered.task)
-    await _submit(setup, acme, entered)
-    await _graded(setup, RESULT)
-
-    [before] = await submissions.mine(setup, entered.session, entered.task)
-
-    assert before.grading is not None
-    assert (before.grading.status, before.grading.stopped) == (SubmissionState.GRADED, None)
-    # The groups whose verdict is shown passed; large's verdict waits.
-    assert before.grading.outcome == "accepted"
-    assert before.grading.values == {"log": "compiled"}
-    # Each value with the words its publication froze, in the report's order.
-    assert before.grading.meanings == (
-        ValueMeaning("time_ms", "Run time", "ms", Better.LOWER),
-        ValueMeaning("memory_kb", "Memory used", "KB", Better.LOWER),
-        ValueMeaning("log", "Compile log"),
-    )
-    # No worth in the contest, so the task is worth its groups' total, 200:
-    # main 100, small 30 and large's 70 decided at the reveal.
-    assert before.grading.groups == (
-        GroupShown(
-            group="main",
-            show=Show.ALWAYS,
-            outcome="accepted",
-            tests=(
-                {
-                    "test": "main/1",
-                    "outcome": "accepted",
-                    "values": {"time_ms": 10, "memory_kb": 7},
-                    "credit": 1,
-                },
-            ),
-            shown_at=None,
-            points=Fraction(100),
-            max=Fraction(100),
-        ),
-        GroupShown(
-            group="small",
-            show=Show.VERDICT,
-            outcome="accepted",
-            tests=None,
-            shown_at=END,
-            points=Fraction(30),
-            max=Fraction(30),
-        ),
-        GroupShown(
-            group="large",
-            show=Show.AFTER_CLOSE,
-            outcome=None,
-            tests=None,
-            shown_at=END,
-            max=Fraction(70),
-        ),
-    )
-    assert before.grading.points == Points(
-        shown=Fraction(130), pending=Fraction(70), pending_until=END
-    )
-
-    clock.set(END)
-    await identity.current(entered.session.id, setup=setup)
-    [after] = await submissions.mine(setup, entered.session, entered.task)
-
-    assert after.grading is not None
-    assert after.grading.outcome == "wrong_answer"
-    assert [(group.group, group.outcome, group.shown_at) for group in after.grading.groups] == [
-        ("main", "accepted", None),
-        ("small", "accepted", None),
-        ("large", "wrong_answer", None),
-    ]
-    assert after.grading.groups[2].tests == (_credited(0),)
-    assert after.grading.groups[1].tests == (_credited(2),)
-    assert after.grading.points == Points(
-        shown=Fraction(130), pending=Fraction(0), pending_until=None
-    )
-    assert after.grading.groups[2].points == 0
-
-
-MAIN_ONLY: dict[str, Any] = {**RESULT, "tests": [RESULT["tests"][1]]}
-
-
-async def _published_again(acme: Acme, task: TaskId, **note: Any) -> None:
-    """The latest publication's version published again with nothing that
-    grades changed, its note as the latest's but for `note`.
-    """
-    *_, latest = await acme.fake.workspaces.list_publications(task)
-    kept: dict[str, Any] = {
-        "workflows": latest.workflows,
-        "sealed": latest.sealed,
-        "measures": latest.measures,
-        "titles": latest.titles,
-        "meanings": latest.meanings,
-    }
-    await acme.fake.workspaces.publish(
-        task, latest.version, write_note(False, (), **{**kept, **note})
-    )
-
-
-async def test_a_result_reads_the_words_of_a_later_publication_that_changed_nothing_it_grades(
+async def test_staff_list_and_download_an_entrants_submitted_files(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await _submit(setup, acme, entered)
-    await _graded(setup, MAIN_ONLY)
-    *_, latest = await acme.fake.workspaces.list_publications(entered.task)
-    renamed = tuple(
-        replace(meaning, title="Time taken") if meaning.name == "time_ms" else meaning
-        for meaning in latest.meanings
+    task = Scope("acme", "spring", "sum")
+    acme.fake.add_user(41, "eve")
+    await acme.fake.orgs.grant_role(41, task, Role.OBSERVER)
+    eve = await organiser(setup, acme.fake, 41, task)
+    owner = EntrantOwner(entered.entrant)
+    path = "files/code/main.py"
+
+    listed = await submissions.organised_files(setup, eve, entered.task, owner, 1)
+    door = await submissions.organised_download(setup, eve, entered.task, owner, 1, path)
+
+    assert listed.inputs["code"]["files"] == [path]
+    assert await acme.fake.workspaces.fetch(door) == SOURCE
+    with pytest.raises(NotFound, match="no such file"):
+        await submissions.organised_download(
+            setup, eve, entered.task, owner, 1, "files/code/other.py"
+        )
+
+    elsewhere = Organiser(
+        user=User(id=42, username="finn"),
+        grants=(RoleGrant(Scope("acme", "spring", "product"), Role.OBSERVER),),
+        scope=Scope("acme", "spring", "product"),
+        role=Role.OBSERVER,
+        identity=eve.identity,
     )
-
-    await _published_again(acme, entered.task, meanings=renamed)
-    [mine] = await submissions.mine(setup, entered.session, entered.task)
-
-    assert mine.grading is not None
-    assert mine.grading.meanings[0] == ValueMeaning("time_ms", "Time taken", "ms", Better.LOWER)
-
-
-async def test_a_sealed_values_words_are_served_to_organisers_and_to_entrants_at_the_reveal(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
-) -> None:
-    sealed = Sealed(steps=frozenset({"run"}), values=frozenset({"time_ms"}))
-    await _published_again(acme, entered.task, sealed=sealed)
-    await _submit(setup, acme, entered)
-    await _graded(setup, MAIN_ONLY)
-
-    [before] = await submissions.mine(setup, entered.session, entered.task)
-    organised = await submissions.organised(
-        setup, acme.ada, entered.task, EntrantOwner(entered.entrant), 1
+    stranger = Organiser(
+        user=User(id=43, username="gus"),
+        grants=(),
+        scope=task,
+        role=Role.OBSERVER,
+        identity=eve.identity,
     )
-    clock.set(END)
-    await identity.current(entered.session.id, setup=setup)
-    [after] = await submissions.mine(setup, entered.session, entered.task)
-
-    assert before.grading is not None and organised.grading is not None
-    assert after.grading is not None
-    assert [meaning.name for meaning in before.grading.meanings] == ["memory_kb", "log"]
-    every = ["time_ms", "memory_kb", "log"]
-    assert [meaning.name for meaning in organised.grading.meanings] == every
-    assert [meaning.name for meaning in after.grading.meanings] == every
-
-
-async def _first_attempts_only(setup: Setup) -> None:
-    """Every grading but the first attempt gone: a regrade not yet made."""
-    async with setup.unit_of_work() as ctx:
-        await ctx.db.execute(delete(Grading).where(Grading.attempt > 1))
-
-
-async def test_a_change_to_show_alone_shows_a_grading_with_the_latest_groups(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    await _three_groups(setup, acme, entered.task)
-    await _submit(setup, acme, entered)
-    await _graded(setup, RESULT)
-    current = await _task_yaml(acme, entered.task)
-    shown_now = current.replace(b"small: {pass: 30, show: verdict}", b"small: {pass: 30}")
-    await _save(setup, acme, entered.task, {"task.yaml": shown_now})
-    await _first_attempts_only(setup)
-
-    [submission] = await submissions.mine(setup, entered.session, entered.task)
-
-    assert submission.grading is not None
-    small = submission.grading.groups[1]
-    assert (small.show, small.tests) == (Show.ALWAYS, (_credited(2),))
-
-
-async def test_a_grading_whose_tests_changed_since_is_shown_with_its_own_publication(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    await _three_groups(setup, acme, entered.task)
-    await _submit(setup, acme, entered)
-    await _graded(setup, RESULT)
-    current = await _task_yaml(acme, entered.task)
-    start = current.index(b"test_groups:")
-    await _save(
-        setup,
-        acme,
-        entered.task,
-        {
-            "task.yaml": current[:start]
-            + b"test_groups:\n  main: {each: 100}\n  small: {pass: 30}\n"
-            + b"  large: {pass: 70, show: after_close}\n  extra: {each: 10, show: always}\n",
-            "tests/extra/1/input": b"2 2\n",
-            "tests/extra/1/answer": b"4\n",
-        },
-    )
-    await _first_attempts_only(setup)
-
-    [submission] = await submissions.mine(setup, entered.session, entered.task)
-
-    assert submission.grading is not None
-    assert submission.grading.outcome == "accepted"
-    assert [(group.group, group.show, group.tests) for group in submission.grading.groups] == [
-        ("main", Show.ALWAYS, (_credited(1),)),
-        ("small", Show.VERDICT, None),
-        ("large", Show.AFTER_CLOSE, None),
-    ]
-
-
-async def test_an_extension_holds_the_reveal_back_for_everyone(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
-) -> None:
-    await _three_groups(setup, acme, entered.task)
-    await _submit(setup, acme, entered)
-    await _graded(setup, RESULT)
-    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await entrants.extend(
-        setup, manager, SPRING, entered.entrant, timedelta(hours=1), tasks=["sum"]
-    )
-
-    clock.set(END)
-    await identity.current(entered.session.id, setup=setup)
-    [held] = await submissions.mine(setup, entered.session, entered.task)
-
-    assert held.grading is not None
-    assert held.grading.groups[2] == GroupShown(
-        group="large",
-        show=Show.AFTER_CLOSE,
-        outcome=None,
-        tests=None,
-        shown_at=END + timedelta(hours=1),
-        max=Fraction(70),
-    )
-
-
-async def test_a_stop_is_shown_as_the_outcome(setup: Setup, acme: Acme, entered: Entered) -> None:
-    await _submit(setup, acme, entered)
-    stopped = {
-        **RESULT,
-        "stopped": "compile_error",
-        "stopped_by": "compile",
-        "tests": [{"test": "main/1", "outcome": "skipped", "values": {}}],
-        "values": {"log": "main.py:1: SyntaxError"},
-    }
-    await _graded(setup, stopped)
-
-    [submission] = await submissions.mine(setup, entered.session, entered.task)
-
-    assert submission.grading is not None
-    assert (submission.grading.stopped, submission.grading.outcome) == (
-        "compile_error",
-        "compile_error",
-    )
-    assert submission.grading.values == {"log": "main.py:1: SyntaxError"}
-
-
-async def test_a_system_error_is_read_by_its_contestant_as_delayed(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    await _submit(setup, acme, entered)
-    broken = {
-        **RESULT,
-        "stopped": "system_error",
-        "values": {},
-        "error": "The step check wrote no outcome.",
-    }
-    await _graded(setup, broken, status="system_error")
-
-    [submission] = await submissions.mine(setup, entered.session, entered.task)
-
-    assert submission.grading is not None
-    assert submission.grading.status == SubmissionState.DELAYED
-    assert (
-        submission.grading.stopped,
-        submission.grading.outcome,
-        submission.grading.groups,
-        submission.grading.values,
-    ) == (None, None, (), {})
-
-
-async def test_a_submission_after_the_rows_due_is_late_by_its_started_days(
-    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
-) -> None:
-    await write_contest(
-        acme.fake,
-        RUNNING.format(visibility="everyone")
-        + "    due: 2026-09-26T11:00:00Z\n    late_per_day: 0.5\n",
-    )
-    first = await _submit(setup, acme, entered)
-    assert first.late_days == 1  # an hour after the due is a started day
-
-    manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)
-    await entrants.extend(
-        setup, manager, SPRING, entered.entrant, timedelta(hours=2), tasks=["sum"]
-    )
-    clock.advance(timedelta(minutes=30))
-    second = await _submit(setup, acme, entered, key="key-0002-bbbb", content=b"print(2)\n")
-    clock.advance(timedelta(hours=1))
-    third = await _submit(setup, acme, entered, key="key-0003-cccc", content=b"print(3)\n")
-
-    # The extension moves bob's due to 13:00: the first, at noon, is on time
-    # now, and the third, at 13:30, is late.
-    assert (second.late_days, third.late_days) == (0, 1)
-    listed = await submissions.mine(setup, entered.session, entered.task)
-    assert [(made.number, made.late_days) for made in listed] == [(3, 1), (2, 0), (1, 0)]
+    for who, error in ((elsewhere, Forbidden), (stranger, Forbidden)):
+        with pytest.raises(error):
+            await submissions.organised_files(setup, who, entered.task, owner, 1)
+        with pytest.raises(error):
+            await submissions.organised_download(setup, who, entered.task, owner, 1, path)
+    with pytest.raises(NotFound):
+        await submissions.organised_files(setup, eve, entered.task, EntrantOwner(uuid.uuid4()), 1)
+    with pytest.raises(NotFound):
+        await submissions.organised_download(
+            setup, eve, entered.task, EntrantOwner(uuid.uuid4()), 1, path
+        )
 
 
 async def test_a_place_to_submit_a_try_left_half_made_is_finished_by_the_next_submit(

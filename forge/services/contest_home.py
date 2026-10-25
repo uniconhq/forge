@@ -13,21 +13,20 @@ organisers see their own contests whatever their state. The home carries the
 contest's dates, the person's registration panel (`entrants.panel`): their
 entrant and whether and how they may register; the server's clock so a
 countdown agrees with it, and the tasks released to them, the ones visible
-now, each with its label, its worth and when it falls due and closes for
-their entrant, its extension on it included, and, for a member of an
-approved entrant, the entrant's points on it on each board an entrant sees,
-in the file's order (`boards`), each as that board counts the task, from the
-same scoring every board reads (`boards.own_points`): a group whose results
-are not shown yet counts only as pending, with the time it is shown, so the
-home never shows a number a board holds back.
+now, each with its label and when it falls due and closes for their
+entrant, its extension on it included. A member of an approved
+entrant also reads its standing: their own row on each leaderboard they
+read, as that leaderboard shows it to them (`leaderboards.own_rows`), so the home shows
+no number a leaderboard holds back.
 A task's page gives its statement, its submission caps and the form of the
 inputs a contestant gives, and nothing else of what the task holds, only
 once the task is visible. A task that is not, or a contest the person may
 not see, is no such task or contest, the same answer as one that is not
 there at all.
 
-Beside its statement, the files under a task's `public/` are served one by
-one (`public_file`), to whoever reads its page, with the same checks, and to
+Beside its statement, the files a task's `show` lists from their time on
+are served one by one
+(`public_file`), to whoever reads its page, with the same checks, and to
 whoever holds a role reaching the task, who reads every file of it as an
 organiser anyway, released or not, so a statement shows its images while it
 is being written.
@@ -35,13 +34,14 @@ is being written.
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from decimal import Decimal
 
 from forge.db.tables import Entrant
 from forge.domain import release as rules
 from forge.domain.definitions import ContestDefinition, ContestVisibility, State, Submissions
 from forge.domain.errors import NotFound
 from forge.domain.ids import ContestId, TaskId
+from forge.domain.leaderboard_task_check import marks_of
+from forge.domain.leaderboards import LeaderboardView
 from forge.domain.names import EntrantOwner, ScopeNames
 from forge.domain.registration import Status
 from forge.domain.release import Closed, Extension, close_of, due_of
@@ -50,10 +50,9 @@ from forge.domain.sessions import Session
 from forge.domain.submissions import Field
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import boards, entrants, invites, names, published, release
-from forge.services.boards import BoardPoints
+from forge.services import entrant_view, entrants, invites, leaderboards, names, release, timelines
+from forge.services.entrant_view import PublicFile, PublishedTask
 from forge.services.entrants import Mine
-from forge.services.published import PublicFile, PublishedTask
 from forge.services.release import TaskRelease
 
 
@@ -76,23 +75,18 @@ class ContestSummary:
 @dataclass(frozen=True, slots=True)
 class TaskEntry:
     """A task released to the person, as the contest's home lists it: its
-    name, the label its place in the contest gives it, its title, its worth,
-    whether they may submit to it now, when it falls due, if it does, and
-    closes for their row, and, for a member of an approved entrant, their
-    row's points on it on each board of the home's `boards`, in that order
-    (`boards.own_points`): shown now, as that board counts the task, and
-    pending until the task's reveal; empty for anyone else.
+    name, the label its place in the contest gives it, its title,
+    whether they may submit to it now, and when it falls due, if it does,
+    and closes for their row.
     """
 
     task: TaskId
     name: str
     label: str
     title: str
-    worth: int | Decimal | None
     release: TaskRelease
     due: datetime | None
     closes: datetime | None
-    points: tuple[BoardPoints, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,9 +95,9 @@ class ContestHome:
     the contest, which keeps them from entering it; `registration` is their
     registration panel: their entrant, if any, and whether and how they may
     register; `now` is the server's clock when this was read. `where` is the
-    contest by the names of its org and itself. `boards` names the
-    leaderboards a member of an approved entrant sees, in the file's order,
-    which each task's `points` follow; empty for anyone else.
+    contest by the names of its org and itself. `standing` is the row's own
+    line on each leaderboard they read, none unless they are in an approved
+    entrant.
     """
 
     contest: ContestId
@@ -117,7 +111,7 @@ class ContestHome:
     organises: bool
     now: datetime
     tasks: tuple[TaskEntry, ...]
-    boards: tuple[str, ...] = ()
+    standing: tuple[LeaderboardView, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,16 +119,15 @@ class TaskPage:
     """A task as a person reads it: its statement, the caps a submit is
     counted against, the inputs a contestant gives, which the submit panel
     is built from, when it falls due and closes for the person's row, and
-    how many of the row's submissions it may mark for the `marked` boards,
-    none unless such a board covers the task and the person is an approved
-    contestant.
+    how many of the row's submissions it may mark, none unless the entry
+    gives `marks` or a leaderboard reads the task's `marked`, and the person is
+    an approved contestant.
     """
 
     task: TaskId
     name: str
     label: str
     title: str
-    worth: int | Decimal | None
     statement: str
     submissions: Submissions
     inputs: tuple[Field, ...]
@@ -154,7 +147,7 @@ async def contests(ctx: Context, session: Session) -> tuple[ContestSummary, ...]
     invited = await invites.accepted_places(ctx, session.user_id)
     await ctx.let_go()
     found = []
-    every = await published.every_contest_kept(ctx)
+    every = await entrant_view.every_contest_kept(ctx)
     where = await names.places_named(ctx, [contest for contest, _ in every])
     for contest, settings in every:
         status = statuses.get(contest)
@@ -185,30 +178,26 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
     """
     settings, person = await release.seen(ctx, session, contest)
     extension = release.row_extension(person)
+    standing: tuple[LeaderboardView, ...] = ()
+    if person.entrant is not None and _approved(person.entrant):
+        owner = EntrantOwner(person.entrant.id)
+        standing = await leaderboards.own_rows(ctx, contest, settings, owner)
     await ctx.let_go()
     now = ctx.now
     shown = [
         task
-        for task in await published.tasks(ctx, contest, settings)
+        for task in await entrant_view.tasks(ctx, contest, settings)
         if rules.visible(settings, task.name, now)
     ]
-    points: dict[str, tuple[BoardPoints, ...]] = {}
-    seen: tuple[str, ...] = ()
-    if person.entrant is not None and _approved(person.entrant):
-        owner = EntrantOwner(person.entrant.id)
-        points = await boards.own_points(ctx, contest, settings, shown, owner)
-        seen = tuple(board.name for board in boards.entrants_boards(settings))
     tasks = tuple(
         TaskEntry(
             task=task.id,
             name=task.name,
             label=task.label or task.name,
             title=task.definition.name,
-            worth=task.worth,
             release=_to(person, release.of(settings, task.name, now, extension)),
             due=_due(settings, task, extension),
             closes=_closes(settings, task, extension),
-            points=points.get(task.name, ()),
         )
         for task in shown
     )
@@ -225,7 +214,7 @@ async def home(ctx: Context, session: Session, contest: ContestId) -> ContestHom
         organises=person.organises,
         now=now,
         tasks=tasks,
-        boards=seen,
+        standing=standing,
     )
 
 
@@ -238,21 +227,20 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
     settings, person, found = await _visible(ctx, session, task)
     extension = release.row_extension(person)
     now = ctx.now
-    form = await published.form(ctx, found)
+    form = await entrant_view.form(ctx, found)
     return TaskPage(
         task=task,
         name=found.name,
         label=found.label or found.name,
         title=found.definition.name,
-        worth=found.worth,
-        statement=await published.statement(ctx, found),
+        statement=await entrant_view.statement(ctx, found),
         submissions=found.definition.submissions,
         inputs=form.fields,
         release=_to(person, release.of(settings, found.name, now, extension)),
         due=_due(settings, found, extension),
         closes=_closes(settings, found, extension),
         marks=(
-            settings.marks_of(found.entry)
+            marks_of(settings, found.entry)
             if found.entry is not None and _approved(person.entrant)
             else None
         ),
@@ -261,19 +249,21 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
 
 @action
 async def public_file(ctx: Context, session: Session, task: TaskId, path: str) -> PublicFile:
-    """A file under the task's `public/`, by its path in the task: as its
-    latest publication holds it, for a signed-in person who reads the task's
-    page (`task`); as its head holds it, the draft the statement's preview
-    draws, published or not, for one who holds a role reaching the task,
-    whether or not it is released. `NotFound` for a task neither, a path
-    outside `public/` or not there; `PublicFileTooLarge` for one larger than
-    a page is served.
+    """A file the task shows, by its path in the task: as its latest
+    publication holds it, for a signed-in person who reads the task's page
+    (`task`), once the task shows it (`published.public_file`); as its head
+    holds it, the draft the statement's preview draws, published or not,
+    for one who holds a role reaching the task, whether or not it is
+    released (`published.head_public_file`). `NotFound` for a task neither,
+    a path the task does not show or not there; `PublicFileTooLarge` for
+    one larger than a page is served.
     """
-    path = published.public_path(path)
+    path = entrant_view.public_path(path)
     if await _organises(ctx, session, task):
-        return await published.head_public_file(ctx, task, path)
-    _, _, found = await _visible(ctx, session, task)
-    return await published.public_file(ctx, found, path)
+        return await entrant_view.head_public_file(ctx, task, path)
+    settings, _, found = await _visible(ctx, session, task)
+    reveal = await timelines.reveal(ctx, contest_id_of(task_scope(task)), settings, found.name)
+    return await entrant_view.public_file(ctx, found, path, reveal=reveal)
 
 
 async def _visible(
@@ -287,11 +277,11 @@ async def _visible(
     try:
         settings, person = await release.seen(ctx, session, contest)
     except NotFound as exc:
-        raise NotFound(published.NO_SUCH_TASK) from exc
-    found = await published.task(ctx, task, settings)
+        raise NotFound(entrant_view.NO_SUCH_TASK) from exc
+    found = await entrant_view.task(ctx, task, settings)
     await ctx.let_go()
     if found is None or not rules.visible(settings, found.name, ctx.now):
-        raise NotFound(published.NO_SUCH_TASK)
+        raise NotFound(entrant_view.NO_SUCH_TASK)
     return settings, person, found
 
 

@@ -1,14 +1,11 @@
 """The rules under uploads and submissions, with no database: a file name and
-the parts of a large file; the form a contestant fills, from the plan's
-contestant inputs and the task's form details; what a submission lays out,
-keeping the contract, and what it refuses, input by input; the note its
-protected version carries; and the two secrets a grading run is handed,
-derived and never stored.
+the parts of a large file; the form an entrant fills, from the plan's
+entrant inputs and the task's form details; what a submission lays out,
+keeping the contract, and what it refuses, input by input and part by part;
+and the note its protected version carries.
 """
 
-import ast
 import json
-import re
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -19,17 +16,18 @@ from forge.domain import exact_json
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE
 from forge.domain.errors import InvalidInputs
-from forge.domain.grading import callback_token, envelope_key, token_hash
-from forge.domain.plans import ContestantInput
+from forge.domain.run_plan.models import EntrantEntry
+from forge.domain.run_task import Part, Run
 from forge.domain.submissions import (
-    TEST_FILE,
     Field,
+    FieldPart,
     SubmittedInput,
     UploadedFile,
-    fields_of,
     key_is_valid,
-    lay_out,
+    lay_out_runs,
     read_note,
+    run_fields_of,
+    skipped,
     write_note,
 )
 from forge.domain.types import Type
@@ -41,7 +39,6 @@ from forge.domain.uploads import (
     pointer_text,
     read_pointer,
 )
-from tests.conftest import sibling
 
 
 @pytest.mark.parametrize(
@@ -111,33 +108,32 @@ def test_a_digest_is_lowercase_hex_of_the_right_length() -> None:
 # The form
 
 
-CONTESTANT = {
-    "submission": ContestantInput(type=Type.FILE),
-    "language": ContestantInput(type=Type.ENUM, options=("c", "cpp", "java", "python")),
-    "alpha": ContestantInput(type=Type.NUMBER),
-    "fast": ContestantInput(type=Type.BOOLEAN),
-    "note": ContestantInput(type=Type.TEXT),
-    "weights": ContestantInput(type=Type.FOLDER),
-    "answers": ContestantInput(type=Type.FILE, per_test=True),
+ENTRANT = {
+    "submission": EntrantEntry(type=Type.FILE),
+    "language": EntrantEntry(type=Type.ENUM, options=("c", "cpp", "java", "python")),
+    "alpha": EntrantEntry(type=Type.NUMBER),
+    "fast": EntrantEntry(type=Type.BOOLEAN),
+    "note": EntrantEntry(type=Type.TEXT),
+    "weights": EntrantEntry(type=Type.FOLDER),
 }
-"""A plan's contestant inputs, one of every kind."""
+"""A plan's entrant inputs, one of every kind."""
 
 INPUTS: dict[str, Any] = {
     "time_limit": 2,
-    "language": {"options": ["python", "cpp"], "default": "python", "label": "Language"},
-    "submission": {"label": "Your solution", "max_size": "1KB"},
-    "alpha": {"min": 0, "max": 1, "default": 0.5},
-    "fast": {"default": False},
-    "weights": {"max_size": "1KB"},
+    "language": {
+        "entrant": {"options": ["python", "cpp"], "default": "python", "label": "Language"}
+    },
+    "submission": {"entrant": {"label": "Your solution", "max_size": "1KB"}},
+    "alpha": {"entrant": {"min": 0, "max": 1, "default": 0.5}},
+    "fast": {"entrant": {"default": False}},
+    "weights": {"entrant": {"max_size": "1KB"}},
 }
-"""The task's `inputs`: a value for an input the contestant does not give,
+"""The task's `inputs`: a value for an input the entrant does not give,
 and form details for some they do."""
-
-TESTS = ("main/1", "main/2", "samples/1")
 
 
 def test_the_form_is_the_plans_inputs_with_the_tasks_details_in_its_order() -> None:
-    fields = fields_of(CONTESTANT, INPUTS)
+    fields = run_fields_of(ENTRANT, INPUTS)
 
     assert [field.id for field in fields] == [
         "language",
@@ -145,7 +141,6 @@ def test_the_form_is_the_plans_inputs_with_the_tasks_details_in_its_order() -> N
         "alpha",
         "fast",
         "weights",
-        "answers",
         "note",
     ]
     by_id = {field.id: field for field in fields}
@@ -158,70 +153,43 @@ def test_the_form_is_the_plans_inputs_with_the_tasks_details_in_its_order() -> N
     )
     assert by_id["submission"].max_size == 1024 and by_id["submission"].label == "Your solution"
     assert (by_id["alpha"].min, by_id["alpha"].max, by_id["alpha"].default) == (0, 1, 0.5)
-    assert by_id["answers"].per_test and by_id["answers"].files
     assert (by_id["note"].label, by_id["note"].max_size) == ("note", DEFAULT_MAX_SIZE)
-    workflows = fields_of({"language": CONTESTANT["language"]}, {})
+    workflows = run_fields_of({"language": ENTRANT["language"]}, {})
     assert workflows[0].options == ("c", "cpp", "java", "python")
 
 
-def test_an_input_is_labelled_by_the_task_else_the_workflows_title_else_its_key() -> None:
-    titles = {"submission": "Solution", "note": "A note"}
-
-    labels = {field.id: field.label for field in fields_of(CONTESTANT, INPUTS, titles)}
-
-    assert (labels["submission"], labels["note"], labels["answers"]) == (
-        "Your solution",
-        "A note",
-        "answers",
-    )
-
-
-FIELDS = fields_of(CONTESTANT, INPUTS)
-SOURCE, W1, W2, A1, A2, S1 = (uuid.uuid4() for _ in range(6))
+FIELDS = run_fields_of(ENTRANT, INPUTS)
+SOURCE, W1, W2 = (uuid.uuid4() for _ in range(3))
 UPLOADS = {
     SOURCE: UploadedFile(SOURCE, "submission", "main.py", 10),
     W1: UploadedFile(W1, "weights", "layers/b.bin", 300),
     W2: UploadedFile(W2, "weights", "a.bin", 300),
-    A1: UploadedFile(A1, "answers", "main/1.txt", 5),
-    A2: UploadedFile(A2, "answers", "main/2", 5),
-    S1: UploadedFile(S1, "answers", "samples/1.out", 5),
 }
 COMPLETE = {
     "submission": SubmittedInput(uploads=(SOURCE,)),
     "language": SubmittedInput(value="cpp"),
     "note": SubmittedInput(value="hello"),
     "weights": SubmittedInput(uploads=(W1, W2)),
-    "answers": SubmittedInput(uploads=(A1, A2, S1)),
 }
 
 
 def test_a_submission_lays_out_its_files_and_names_them_in_submission_json() -> None:
-    layout = lay_out(FIELDS, TESTS, COMPLETE, UPLOADS)
+    layout = lay_out_runs(FIELDS, {}, COMPLETE, UPLOADS)
 
     assert layout.files == {
         "files/submission/main.py": SOURCE,
         "files/weights/a.bin": W2,
         "files/weights/layers/b.bin": W1,
-        "files/answers/main/1.txt": A1,
-        "files/answers/main/2": A2,
-        "files/answers/samples/1.out": S1,
     }
     document = json.loads(layout.document)
     assert document == {
-        "schema_version": 5,
+        "schema_version": 6,
         "inputs": {
             "language": {"value": "cpp"},
             "submission": {"files": ["files/submission/main.py"]},
             "alpha": {"value": 0.5},
             "fast": {"value": False},
             "weights": {"files": ["files/weights/a.bin", "files/weights/layers/b.bin"]},
-            "answers": {
-                "files": [
-                    "files/answers/main/1.txt",
-                    "files/answers/main/2",
-                    "files/answers/samples/1.out",
-                ]
-            },
             "note": {"value": "hello"},
         },
     }
@@ -230,7 +198,7 @@ def test_a_submission_lays_out_its_files_and_names_them_in_submission_json() -> 
 
 
 def test_a_left_out_input_takes_its_default() -> None:
-    layout = lay_out(FIELDS, TESTS, {**COMPLETE, "language": SubmittedInput()}, UPLOADS)
+    layout = lay_out_runs(FIELDS, {}, {**COMPLETE, "language": SubmittedInput()}, UPLOADS)
 
     assert json.loads(layout.document)["inputs"]["language"] == {"value": "python"}
 
@@ -243,7 +211,7 @@ def test_a_left_out_number_takes_its_decimal_default_to_the_digit() -> None:
         default=Decimal("0.123456789012345678901234567891"),
     )
 
-    layout = lay_out((ratio,), TESTS, {}, {})
+    layout = lay_out_runs((ratio,), {}, {}, {})
 
     assert exact_json.loads(layout.document)["inputs"]["ratio"] == {
         "value": Decimal("0.123456789012345678901234567891")
@@ -258,7 +226,7 @@ THIRTY = "0.123456789012345678901234567891"
 def test_a_number_given_as_its_digits_reaches_submission_json_to_the_digit() -> None:
     ratio = Field(id="ratio", type=Type.NUMBER, label="ratio", max=Decimal(THIRTY))
 
-    layout = lay_out((ratio,), TESTS, {"ratio": SubmittedInput(value=THIRTY)}, {})
+    layout = lay_out_runs((ratio,), {}, {"ratio": SubmittedInput(value=THIRTY)}, {})
 
     assert exact_json.loads(layout.document)["inputs"]["ratio"] == {"value": Decimal(THIRTY)}
     assert f'"value": {THIRTY}'.encode() in layout.document
@@ -269,34 +237,26 @@ def test_a_number_one_past_a_bound_of_thirty_digits_is_refused() -> None:
     past = THIRTY[:-1] + "2"
 
     with pytest.raises(InvalidInputs) as refused:
-        lay_out((ratio,), TESTS, {"ratio": SubmittedInput(value=past)}, {})
+        lay_out_runs((ratio,), {}, {"ratio": SubmittedInput(value=past)}, {})
 
     assert refused.value.extra["errors"] == [
         {"input": "ratio", "message": f"This must be at most {THIRTY}."}
     ]
 
 
-def test_a_per_test_input_may_answer_some_tests_only() -> None:
-    layout = lay_out(FIELDS, TESTS, {**COMPLETE, "answers": SubmittedInput(uploads=(A2,))}, UPLOADS)
-
-    assert json.loads(layout.document)["inputs"]["answers"] == {"files": ["files/answers/main/2"]}
-
-
 def refusal(given: dict[str, SubmittedInput], uploads: dict[uuid.UUID, UploadedFile]) -> Any:
     with pytest.raises(InvalidInputs) as refused:
-        lay_out(FIELDS, TESTS, {**COMPLETE, **given}, {**UPLOADS, **uploads})
+        lay_out_runs(FIELDS, {}, {**COMPLETE, **given}, {**UPLOADS, **uploads})
     return refused.value.extra["errors"]
 
 
-EXTRA, BIG, TWIN, NOT_A_TEST, SECOND_1, INSIDE, GIT = (uuid.uuid4() for _ in range(7))
+EXTRA, BIG, TWIN, INSIDE, GIT = (uuid.uuid4() for _ in range(5))
 MORE = {
     INSIDE: UploadedFile(INSIDE, "weights", "a.bin/b.bin", 1),
     GIT: UploadedFile(GIT, "weights", ".git/config", 1),
     EXTRA: UploadedFile(EXTRA, "submission", "other.py", 10),
     BIG: UploadedFile(BIG, "submission", "big.py", 1025),
     TWIN: UploadedFile(TWIN, "weights", "a.bin", 1),
-    NOT_A_TEST: UploadedFile(NOT_A_TEST, "answers", "main/3.txt", 1),
-    SECOND_1: UploadedFile(SECOND_1, "answers", "main/1", 1),
 }
 
 
@@ -361,17 +321,6 @@ MORE = {
             "weights",
             "Two files have the same name. Rename one of them.",
         ),
-        (
-            {"answers": SubmittedInput(uploads=(NOT_A_TEST,))},
-            "answers",
-            "There is a problem with the file main/3.txt: Name each file of this input after "
-            "a test, as <group>/<test>, such as main/1.txt.",
-        ),
-        (
-            {"answers": SubmittedInput(uploads=(A1, SECOND_1))},
-            "answers",
-            "Two files are for the same test. Give one file for each test.",
-        ),
         ({"ghost": SubmittedInput(value="1")}, "ghost", "The task has no such input."),
         (
             {"weights": SubmittedInput(uploads=(W2, INSIDE))},
@@ -408,8 +357,6 @@ MORE = {
         "same-path-twice",
         "same-upload-twice",
         "same-path-among-three",
-        "not-a-plan-test",
-        "one-test-twice",
         "unknown-input",
         "file-and-folder-at-once",
         "git-folder",
@@ -428,63 +375,11 @@ def test_a_submission_that_would_break_the_contract_is_refused_at_its_input() ->
     oddly_named = Field(id="Note", type=Type.TEXT, label="Note")
 
     with pytest.raises(InvalidInputs) as refused:
-        lay_out((oddly_named,), TESTS, {"Note": SubmittedInput(value="hi")}, {})
+        lay_out_runs((oddly_named,), {}, {"Note": SubmittedInput(value="hi")}, {})
 
     (error,) = refused.value.extra["errors"]
     assert error["input"] == ""
     assert error["message"].startswith("Unicon cannot grade this submission as it is (at inputs:")
-
-
-PER_TEST_NAMES = [
-    ("main/1", True),
-    ("main/1.txt", True),
-    ("main/1.out.txt", True),
-    ("main_2/test-3.a", True),
-    ("main/1.", False),
-    ("main/1/", False),
-    ("main", False),
-    ("main/1/x", False),
-    ("main/1.a/b", False),
-    ("/main/1", False),
-    ("main.1", False),
-    ("ma in/1", False),
-    ("main/.txt", False),
-]
-
-
-def _runners_per_test_file() -> re.Pattern[str]:
-    """The harness's own rule for a per-test file's name, read from the
-    runner's source beside this repo.
-    """
-    source = sibling("runner", "harness", "unicon_harness", "submission.py").read_text("utf-8")
-    for node in ast.parse(source).body:
-        if (
-            isinstance(node, ast.Assign)
-            and [getattr(target, "id", None) for target in node.targets] == ["PER_TEST_FILE"]
-            and isinstance(node.value, ast.Call)
-        ):
-            pattern = node.value.args[0]
-            assert isinstance(pattern, ast.Constant) and isinstance(pattern.value, str)
-            return re.compile(pattern.value)
-    raise AssertionError("the runner's submission.py has no PER_TEST_FILE")
-
-
-@pytest.mark.parametrize(("name", "fine"), PER_TEST_NAMES)
-def test_a_per_test_files_name_follows_the_harnesss_rule(name: str, fine: bool) -> None:
-    runners = _runners_per_test_file()
-
-    assert (TEST_FILE.match(name) is not None) is fine
-    assert (runners.match(name) is not None) is fine
-
-
-def test_a_per_test_file_with_an_empty_ending_is_refused() -> None:
-    dotted = uuid.uuid4()
-    uploads = {dotted: UploadedFile(dotted, "answers", "main/1.", 1)}
-
-    errors = refusal({"answers": SubmittedInput(uploads=(dotted,))}, uploads)
-
-    assert [error["input"] for error in errors] == ["answers"]
-    assert errors[0]["message"].startswith("There is a problem with the file main/1.: ")
 
 
 def test_a_folders_files_together_are_within_its_size() -> None:
@@ -522,16 +417,138 @@ def test_a_key_is_short_random_text_and_its_note_reads_back() -> None:
     assert read_note("idempotency_key: 7") is None
 
 
-def test_a_gradings_secrets_are_its_own_and_only_the_hash_is_kept() -> None:
-    key = b"\x01" * 32
-    one, two = uuid.uuid4(), uuid.uuid4()
+ROUTE1, ROUTE3, CODE = (uuid.uuid4() for _ in range(3))
+RUN_UPLOADS = {
+    ROUTE1: UploadedFile(ROUTE1, "route", "route.txt", 10),
+    ROUTE3: UploadedFile(ROUTE3, "route", "route.txt", 12),
+    CODE: UploadedFile(CODE, "code", "main.py", 10),
+}
+RUN_FIELDS = (
+    Field(id="code", type=Type.FILE, label="code"),
+    Field(id="route", type=Type.FILE, label="route"),
+    Field(id="guess", type=Type.NUMBER, label="guess"),
+)
+PARTS = {"route": 3, "guess": 2}
+TOUR_RUNS = [
+    Run(f"r{part}", {"input": f"parts/{part}.in", "route": Part(part)}, False) for part in (1, 2, 3)
+]
 
-    token = callback_token(key, one)
-    assert token == callback_token(key, one)
-    assert token != callback_token(key, two)
-    assert token != callback_token(b"\x02" * 32, one)
-    assert token != envelope_key(key, one)
-    assert envelope_key(key, one) != envelope_key(key, two)
-    assert "=" not in token and len(token) == 43
-    assert len(token_hash(token)) == 32
-    assert token_hash(token) != token.encode()
+
+def test_an_input_given_in_untitled_parts_is_served_one_part_each() -> None:
+    """A plan names part titles and sizes only when a part has its own; the
+    page still needs one place per part."""
+    fields = run_fields_of(
+        {
+            "route": EntrantEntry(type=Type.FILE, parts=3, max_size=1000),
+            "guess": EntrantEntry(type=Type.NUMBER, parts=2),
+            "code": EntrantEntry(type=Type.FILE, max_size=1000),
+        },
+        {},
+    )
+
+    parts = {field.id: field.parts for field in fields}
+    assert parts["route"] == (FieldPart(None, 1000),) * 3
+    assert parts["guess"] == (FieldPart(None, DEFAULT_MAX_SIZE),) * 2
+    assert parts["code"] is None
+
+
+def test_a_run_submission_lays_out_each_part_under_its_number() -> None:
+    given = {
+        "code": SubmittedInput(uploads=(CODE,)),
+        "route": SubmittedInput(
+            parts={1: SubmittedInput(uploads=(ROUTE1,)), 3: SubmittedInput(uploads=(ROUTE3,))}
+        ),
+        "guess": SubmittedInput(parts={2: SubmittedInput(value="7")}),
+    }
+
+    layout = lay_out_runs(RUN_FIELDS, PARTS, given, RUN_UPLOADS)
+
+    assert layout.files == {
+        "files/code/main.py": CODE,
+        "files/route/1/route.txt": ROUTE1,
+        "files/route/3/route.txt": ROUTE3,
+    }
+    document = json.loads(layout.document)
+    assert document == {
+        "schema_version": 6,
+        "inputs": {
+            "code": {"files": ["files/code/main.py"]},
+            "route": {
+                "parts": {
+                    "1": {"files": ["files/route/1/route.txt"]},
+                    "3": {"files": ["files/route/3/route.txt"]},
+                }
+            },
+            "guess": {"parts": {"2": {"value": 7}}},
+        },
+    }
+    assert violation(document, "submission") is None
+
+
+def test_a_part_left_out_skips_the_runs_made_from_its_tuple() -> None:
+    given = {
+        "code": SubmittedInput(uploads=(CODE,)),
+        "route": SubmittedInput(parts={1: SubmittedInput(uploads=(ROUTE1,))}),
+        "guess": SubmittedInput(parts={2: SubmittedInput(value="7")}),
+    }
+
+    layout = lay_out_runs(RUN_FIELDS, PARTS, given, RUN_UPLOADS)
+
+    assert skipped(TOUR_RUNS, layout.inputs) == {"r2", "r3"}
+
+
+def test_a_folder_part_is_held_to_its_own_size_not_the_largest_parts() -> None:
+    small = (FieldPart(title="Small", max_size=15), FieldPart(title="Big", max_size=100))
+    maps = Field(id="maps", type=Type.FOLDER, label="maps", max_size=100, parts=small)
+    a, b = uuid.uuid4(), uuid.uuid4()
+    files = {
+        a: UploadedFile(a, "maps", "maps/a.txt", 10),
+        b: UploadedFile(b, "maps", "maps/b.txt", 10),
+    }
+
+    def given(number: int) -> dict[str, SubmittedInput]:
+        return {"maps": SubmittedInput(parts={number: SubmittedInput(uploads=(a, b))})}
+
+    with pytest.raises(InvalidInputs, match=r"Part 1: .*more than the 15 bytes"):
+        lay_out_runs((maps,), {"maps": 2}, given(1), files)
+    laid = lay_out_runs((maps,), {"maps": 2}, given(2), files)
+    assert sorted(laid.files) == ["files/maps/2/maps/a.txt", "files/maps/2/maps/b.txt"]
+
+
+@pytest.mark.parametrize(
+    ("given", "input_", "words"),
+    [
+        ({"route": SubmittedInput()}, "route", "Give at least one part"),
+        ({"route": SubmittedInput(uploads=(ROUTE1,))}, "route", "part by part"),
+        (
+            {"route": SubmittedInput(parts={4: SubmittedInput(uploads=(ROUTE1,))})},
+            "route",
+            "no part 4",
+        ),
+        ({"route": SubmittedInput(parts={1: SubmittedInput(value="x")})}, "route", "Part 1:"),
+        (
+            {"code": SubmittedInput(parts={1: SubmittedInput(uploads=(CODE,))})},
+            "code",
+            "given once",
+        ),
+        (
+            {"guess": SubmittedInput(parts={1: SubmittedInput(value="seven")})},
+            "guess",
+            "plain digits",
+        ),
+    ],
+)
+def test_a_run_submission_that_does_not_fit_is_refused_at_its_input(
+    given: dict[str, SubmittedInput], input_: str, words: str
+) -> None:
+    complete = {
+        "code": SubmittedInput(uploads=(CODE,)),
+        "route": SubmittedInput(parts={1: SubmittedInput(uploads=(ROUTE1,))}),
+        "guess": SubmittedInput(parts={2: SubmittedInput(value="7")}),
+    }
+
+    with pytest.raises(InvalidInputs) as raised:
+        lay_out_runs(RUN_FIELDS, PARTS, {**complete, **given}, RUN_UPLOADS)
+
+    errors = raised.value.extra["errors"]
+    assert any(error["input"] == input_ and words in error["message"] for error in errors), errors

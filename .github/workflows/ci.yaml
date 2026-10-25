@@ -38,42 +38,46 @@ jobs:
     steps:
       # The tests compare the package's copies with their originals in the
       # repos beside it: the contract schemas with the runner's, the classic
-      # workflow with the one deploy seeds, and the three primitives'
-      # declarations with their repos'. They fail in CI when a checkout is
+      # workflow with the one deploy seeds, each primitive version deploy's
+      # images.json pins read at its tag (so those checkouts fetch every
+      # tag), and the contract 6 primitives' declarations and name rules
+      # with exec's and compile's own. They fail in CI when a checkout is
       # missing, so the repos sit beside each other the way they do on a
-      # laptop. The runner's tag is the release whose contracts the package
-      # copies, and each primitive's the release whose declaration it copies,
-      # and each moves when its copy does: they release a contract change
-      # first, so their main would turn this red before the copy can follow.
-      - uses: actions/checkout@v7
+      # laptop. Deploy is main, which carries the workflows before this
+      # repo is tagged. The runner and the primitives are the releases
+      # those copies were taken from.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: forge
-      - uses: actions/checkout@v7
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: uniconhq/runner
-          ref: v0.9.0
+          ref: v0.10.0
           path: runner
-      - uses: actions/checkout@v7
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: uniconhq/deploy
+          ref: main
           path: deploy
-      - uses: actions/checkout@v7
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: uniconhq/primitive-compile
-          ref: v2.2.0
+          ref: v3.0.0
           path: primitive-compile
-      - uses: actions/checkout@v7
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: uniconhq/primitive-sandbox-run
-          ref: v2.2.0
-          path: primitive-sandbox-run
-      - uses: actions/checkout@v7
-        with:
-          repository: uniconhq/primitive-diff-check
-          ref: v2.2.0
-          path: primitive-diff-check
+          repository: uniconhq/primitive-exec
+          ref: v1.0.1
+          path: primitive-exec
+          fetch-depth: 0
+          persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: 0.12.13
           enable-cache: true
@@ -88,8 +92,10 @@ jobs:
       # The test server keeps nothing worth a crash: a commit need not wait
       # for the disk.
       - name: test Postgres without waiting on the disk
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
-          docker exec ${{ job.services.postgres.id }} psql -U postgres \
+          docker exec "$POSTGRES_CONTAINER" psql -U postgres \
             -c "ALTER SYSTEM SET fsync = off" \
             -c "ALTER SYSTEM SET synchronous_commit = off" \
             -c "ALTER SYSTEM SET full_page_writes = off" \
@@ -99,8 +105,10 @@ jobs:
   package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: 0.12.13
       - run: uv build
@@ -108,3 +116,19 @@ jobs:
         run: |
           declared="$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)"
           ls dist/unicon_forge-"$declared"-py3-none-any.whl dist/unicon_forge-"$declared".tar.gz
+
+  workflows:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: 0.12.13
+      - name: zizmor
+        run: uvx zizmor@1.31.1 --offline --format github .github/workflows
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color

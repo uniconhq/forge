@@ -30,6 +30,13 @@ class ContentPort(Protocol):
         """
         ...
 
+    async def create_dispatch(self, org: OrgId) -> None:
+        """Make the org's dispatch place, private, with one first commit,
+        as the platform: where a task's grading runs start at the CI
+        (phase 4.9). One made already changes nothing.
+        """
+        ...
+
     async def secure(self, place: ContentPlace) -> int:
         """Give the place what keeps it right, as the platform: the roles of
         its contest and, for a task, of the task itself reach it; its files

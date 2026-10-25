@@ -91,8 +91,8 @@ async def test_a_declaration_is_read_as_the_organiser_at_its_version(fake: FakeF
     ada = AsUser(7, fake.mint(7))
 
     assert (
-        await fake.primitives.read_declaration(ada, PrimitiveId("compile"), "v2")
-        == (PRIMITIVES["compile"])
+        await fake.primitives.read_declaration(ada, PrimitiveId("compile"), "v3")
+        == (PRIMITIVES["unicon/compile@v3"])
     )
     assert await fake.primitives.read_declaration(ada, PrimitiveId("scorer"), "v1") == b"one"
     assert fake.calls_to("read_declaration")[0].identity == ada

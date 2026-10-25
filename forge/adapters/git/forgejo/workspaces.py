@@ -1,14 +1,16 @@
 """The workspace area over Forgejo. A workspace is a desk repository plus one
-submission repository per task, each attached to the contest's role teams so
-its organisers can read it, with the members as collaborators: read on the
-desk, write on a submission repository, since a submit is recorded there as
-the contestant. Each is
+submission repository per task. The desk is attached to the contest's role
+teams. A submission repository is attached to those and to its task's, so
+the task's organisers can read it. The members are collaborators: read on
+the desk, write on a submission repository, since a submit is recorded
+there as the contestant. Each is
 made on its own, and every part of making one checks before it acts, so a
 try that stopped halfway is finished by the next. Anyone on one who is not
 a member of the entrant now is taken off first, and the members are given
-their access last, so a repository whose members all hold it is finished,
-and making it again costs two calls, the repository and who is on it, and
-two a member: their name, and what they may do there. A submission and a
+their access last, so a repository whose members all hold it is finished.
+Making a desk again costs two calls, the repository and who is on it, and
+two a member: their name, and what they may do there. A submission
+repository also gets its task's teams attached. A submission and a
 publication are tags under a reserved prefix that only the platform account
 may create, each pointing at the exact commit the files went in with. A
 publication is an annotated tag whose message is its note.
@@ -44,7 +46,7 @@ from forge.domain.ids import (
     WorkspaceId,
 )
 from forge.domain.names import WorkspaceOwner
-from forge.domain.publications import Publication, read_note
+from forge.domain.publication_record import Publication, read_note
 from forge.domain.roles import Scope
 from forge.domain.submissions import Submitted, write_note
 from forge.domain.submissions import read_note as read_submission_note
@@ -86,7 +88,13 @@ class ForgejoWorkspaces:
         task_ref = parse_task(task)
         if (task_ref.org, task_ref.contest) != (ref.org, ref.contest):
             raise NotFound(f"{task} is not a task of the contest {workspace} is in")
-        await self._open(ref, ref.submission_repo(task_ref.task), member_ids, reserve=True)
+        await self._open(
+            ref,
+            ref.submission_repo(task_ref.task),
+            member_ids,
+            reserve=True,
+            scope=Scope(task_ref.org, task_ref.contest, task_ref.task),
+        )
 
     async def delete_submission_place(self, workspace: WorkspaceId, task: TaskId) -> None:
         ref = parse_workspace(workspace)
@@ -107,6 +115,7 @@ class ForgejoWorkspaces:
         *,
         reserve: bool = False,
         permission: str = WRITE,
+        scope: Scope | None = None,
     ) -> None:
         """Make one repository of the workspace, empty and private, unless it
         is there: only the platform makes repositories, so one of that name
@@ -114,8 +123,10 @@ class ForgejoWorkspaces:
         contest's roles, with `reserve` keep its submissions for the platform,
         and only then give the members access, write unless `permission` says
         read, so nobody can write a place whose submissions anyone may name.
-        Each leaves what is already right alone, and when every member holds
-        that access already nothing else is asked.
+        Each leaves what is already right alone. When every member holds
+        that access already, a desk is left as it is, and a submission
+        repository still gets its task's teams, so one opened before those
+        teams existed picks them up the next time.
 
         Only the platform makes these repositories and only an entrant's
         members are put on them, so a collaborator who is not one of the
@@ -124,7 +135,12 @@ class ForgejoWorkspaces:
         """
         usernames = await self._usernames(member_ids)
         await self._shed_former_members(ref.org, repo, usernames)
+        attached = scope or Scope(ref.org, ref.contest)
         if usernames and await self._finished(ref.org, repo, usernames, permission):
+            # A submission repository opened before it carried the task's
+            # teams gets them the next time, even when its members are done.
+            if scope is not None and await self._repos.exists(ref.org, repo):
+                await self._teams.attach_scope(attached, repo)
             return
         if not await self._repos.exists(ref.org, repo):
             try:
@@ -133,7 +149,7 @@ class ForgejoWorkspaces:
                 if not await self._repos.exists(ref.org, repo):
                     raise
         await self._repos.protect_branch(ref.org, repo)
-        await self._teams.attach_scope(Scope(ref.org, ref.contest), repo)
+        await self._teams.attach_scope(attached, repo)
         if reserve:
             await self._repos.reserve_versions(ref.org, repo, SUBMISSION_PREFIX)
         for username in usernames:
@@ -277,10 +293,7 @@ class ForgejoWorkspaces:
                     grading_changed=note.grading_changed,
                     changes=note.changes,
                     workflows=note.workflows,
-                    sealed=note.sealed,
-                    measures=note.measures,
-                    titles=note.titles,
-                    meanings=note.meanings,
+                    checked_first=note.checked_first,
                     at=datetime.fromisoformat(str(commit["created"])),
                 )
             )

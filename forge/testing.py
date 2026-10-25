@@ -26,10 +26,13 @@ rows that put people in an entrant of a contest, for a test of what
 registration decides; `name_places` gives the org,
 contest and task ids a test made straight at the fake the names a route
 finds them by, each its own last part; and `seed_classic` puts the
-built-in workflow `unicon/classic@v2` at the fake the way deploy's bootstrap
-puts it at a real forge, from `CLASSIC`, a copy of that file,
-`deploy/workflows/classic/v2/workflow.yaml`. The package's own tests check the
-two agree when the deploy repo is checked out beside this one.
+built-in workflow `unicon/classic@v3` and the primitives it uses at the fake
+the way deploy's bootstrap puts them at a real forge, from `CLASSIC`, a copy
+of `deploy/workflows/classic/v3`, and `PRIMITIVES`, copies of each
+primitive's `primitive.yaml`. The package's own tests check the copies
+agree with their repos when those are checked out beside this one.
+`RUN_WORKFLOWS` names the folder in deploy's checkout of each built-in
+workflow, by its reference, for a test that reads one with its own files.
 """
 
 import hashlib
@@ -52,6 +55,7 @@ from forge.domain.clock import FakeClock
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId
 from forge.domain.keys import key_from_name, random_key
+from forge.domain.workflow_definition import classic_files
 from forge.domain.workflows import Visibility
 from forge.log import JsonFormatter
 from forge.runtime.context import Context
@@ -67,6 +71,7 @@ __all__ = [
     "FORGE_URL",
     "PLACEHOLDER_DIGEST",
     "PRIMITIVES",
+    "RUN_WORKFLOWS",
     "AsUser",
     "FakeClock",
     "FakeForge",
@@ -89,230 +94,64 @@ CALLBACK = f"{APP_URL}{CALLBACK_PATH}"
 
 _FORMATTER = JsonFormatter()
 
-CLASSIC = b"""\
-# unicon/classic@v2, the built-in workflow for a task judged by comparing
-# output with an answer: compile the submission once, run the program on
-# every test under the task's limits, and compare each run's output with
-# that test's answer. Seeded by `uv run bootstrap` into the repository
-# unicon/classic.workflow at the forge, at the tag v2. The format is
-# TASK-FORMAT.md section 1.3.
-inputs:
-  submission:
-    type: file
-    contestant: true
-    title: Solution
-    help: The source file the contestant submits.
-  language:
-    type: enum
-    options: [c, cpp, java, python]
-    contestant: true
-    title: Language
-    help: The languages a contestant may write their solution in.
-  time_limit:
-    type: number
-    title: Time limit
-    unit: seconds
-    help: The CPU time the program may use on each test.
-  memory_limit:
-    type: number
-    title: Memory limit
-    unit: MB
-    help: The memory the program may use on each test.
-test:
-  input: file
-  answer: file
-steps:
-  - id: compile
-    use: unicon/compile@v2
-    with:
-      source: ${{ inputs.submission }}
-      language: ${{ inputs.language }}
-  - id: run
-    use: unicon/sandbox-run@v2
-    per_test: true
-    with:
-      binary: ${{ steps.compile.binary }}
-      input: ${{ test.input }}
-      time_limit: ${{ inputs.time_limit }}
-      memory_limit: ${{ inputs.memory_limit }}
-  - id: check
-    use: unicon/diff-check@v2
-    per_test: true
-    with:
-      actual: ${{ steps.run.output }}
-      expected: ${{ test.answer }}
-report:
-  time_ms:
-    from: ${{ steps.run.time_ms }}
-    title: Run time
-    unit: ms
-    better: lower
-    at_least: 0
-  memory_kb:
-    from: ${{ steps.run.memory_kb }}
-    title: Memory used
-    unit: KB
-    better: lower
-    at_least: 0
-  log:
-    from: ${{ steps.compile.compile_log }}
-    title: Compile log
-"""
+CLASSIC = classic_files()
+"""`unicon/classic@v3`'s files, by their paths in the workflow, as deploy's
+bootstrap seeds them from `deploy/workflows/classic/v3`."""
+
+RUN_WORKFLOWS = {
+    "unicon/classic@v3": "workflows/classic/v3",
+    "unicon/interactive@v1": "workflows/interactive/v1",
+}
+"""Where deploy keeps each built-in workflow, by the reference it has at the
+forge: a folder holding its `workflow.yaml` and the files it reads, under
+deploy's top, for a test that reads one from deploy's checkout."""
 
 PLACEHOLDER_DIGEST = "sha256:" + "0" * 64
 """The digest the fake's primitives name. Bootstrap writes each primitive's
 real digest from the release manifest; nothing in a test runs an image."""
 
+_SEEDS = Path(__file__).parent / "seeds"
 
-def _declared(name: str, rest: str) -> bytes:
+
+def _declared(name: str) -> bytes:
     """A primitive's declaration under the platform's org, its image named by
     the placeholder digest on the first line, where bootstrap writes it.
     """
-    return (f"image: ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}\n" + rest).encode()
+    image = f"image: ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}\n".encode()
+    return image + (_SEEDS / f"{name}.yaml").read_bytes()
 
 
 PRIMITIVES: dict[str, bytes] = {
-    "compile": _declared(
-        "compile",
-        """\
-title: Compile
-description: Compiles the contestant's source files into one program.
-batch: false
-network: false
-limits: {time_ms: 60000, cpu_ms: 60000, memory_mb: 1024, pids: 128, output_mb: 64, gpus: 0}
-inputs:
-  source:
-    type: folder
-    runs: true
-    description: The source files to compile, with their layout.
-  language:
-    type: enum
-    options: [c, cpp, java, python]
-    description: The language the source files are written in.
-  entry:
-    type: text
-    optional: true
-    description: The file the program starts from, such as src/Main.java.
-outputs:
-  binary:
-    type: file
-    description: The compiled program, ready to run.
-  compile_log:
-    type: text
-    description: Everything the compiler printed.
-  outcome:
-    type: outcome
-    description: Whether the source compiled.
-    outcomes:
-      accepted: the source compiles
-      compile_error: it does not compile, or the compiler goes over a limit
-""",
-    ),
-    "sandbox-run": _declared(
-        "sandbox-run",
-        """\
-title: Run program
-description: Runs a program on each test's input and records its output, time and memory.
-batch: true
-network: false
-limits: {time_ms: 2000, cpu_ms: 2000, memory_mb: 256, pids: 128, output_mb: 64, gpus: 0}
-limits_from:
-  time_ms: {input: time_limit, scale: 2000, add: 3000}
-  cpu_ms: {input: time_limit, scale: 2000, add: 3000}
-  memory_mb: {input: memory_limit, add: 256}
-inputs:
-  binary:
-    type: file
-    runs: true
-    description: The program to run.
-  input:
-    type: file
-    runs: false
-    description: What the program reads on standard input.
-  args:
-    type: text
-    optional: true
-    description: Arguments added to the program's command line, split on spaces.
-  time_limit:
-    type: number
-    description: Seconds of CPU time the program may use on each test.
-  memory_limit:
-    type: number
-    description: Megabytes of memory the program may use on each test.
-outputs:
-  output:
-    type: file
-    description: What the program printed on standard output.
-  time_ms:
-    type: number
-    description: The CPU time the program used, in milliseconds.
-  memory_kb:
-    type: number
-    description: The most memory the program used, in kilobytes.
-  outcome:
-    type: outcome
-    description: How the program's run ended.
-    outcomes:
-      accepted: the program finishes within its limits
-      time_limit: it runs out of time
-      memory_limit: it uses more memory than allowed
-      output_limit: it prints more than allowed
-      runtime_error: it crashes or exits with an error
-""",
-    ),
-    "diff-check": _declared(
-        "diff-check",
-        """\
-title: Compare with the answer
-description: Compares a program's output with the answer, ignoring trailing whitespace.
-batch: true
-network: false
-limits: {time_ms: 2000, cpu_ms: 2000, memory_mb: 256, pids: 32, output_mb: 1, gpus: 0}
-inputs:
-  actual:
-    type: file
-    runs: false
-    description: What the program printed.
-  expected:
-    type: file
-    runs: false
-    description: The expected answer, from the task.
-outputs:
-  outcome:
-    type: outcome
-    description: Whether the output matches the answer.
-    outcomes:
-      accepted: the output matches the answer, ignoring trailing whitespace
-      wrong_answer: it does not
-""",
-    ),
+    "unicon/compile@v3": _declared("compile"),
+    "unicon/exec@v1": _declared("exec"),
 }
-"""The declarations of the three primitives the built-in workflow uses, at
-`v2`: each primitive repo's own `primitive.yaml` as it is, with the `image`
-line deploy's bootstrap writes at its top, carrying a placeholder digest in
-place of the image's own. The package's own tests check each against its
-repo's when that is checked out beside this one."""
+"""The declarations of the two primitives the built-in workflow uses, by
+their references: each primitive repo's own `primitive.yaml`, copied under
+`forge/seeds/`, with the `image` line deploy's bootstrap writes at its top,
+carrying a placeholder digest in place of the image's own. The package's own
+tests check each copy against its repo when that is checked out beside this
+one."""
 
 
 async def seed_primitives(fake: FakeForge) -> None:
-    """`unicon/compile`, `unicon/sandbox-run` and `unicon/diff-check` at `v2`
-    at the fake, from `PRIMITIVES`, as bootstrap mirrors them into a real
-    forge.
+    """`unicon/compile@v3` and `unicon/exec@v1` at the fake, from
+    `PRIMITIVES`, as bootstrap mirrors them into a real forge.
     """
-    for name, declaration in PRIMITIVES.items():
-        fake.primitives.add(name, {"v2": declaration})
+    for reference, declaration in PRIMITIVES.items():
+        name, version = reference.removeprefix("unicon/").split("@")
+        fake.primitives.add(name, {version: declaration})
 
 
 async def seed_classic(fake: FakeForge) -> None:
-    """`unicon/classic@v2` public at the fake, and the three primitives it
+    """`unicon/classic@v3` public at the fake, and the two primitives it
     uses, as bootstrap makes them at a real forge, so a task's first save
     finds a workflow its organiser can read and every step's image.
     """
     await seed_primitives(fake)
     workflow = await fake.workflows.create_workflow(
-        PLATFORM, "unicon", "classic", {"workflow.yaml": CLASSIC}, Visibility.PUBLIC
+        PLATFORM, "unicon", "classic", CLASSIC, Visibility.PUBLIC
     )
-    await fake.workflows.create_workflow_version(PLATFORM, workflow, "v2")
+    await fake.workflows.create_workflow_version(PLATFORM, workflow, "v3")
 
 
 def logged(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]:

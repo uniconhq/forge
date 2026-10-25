@@ -10,8 +10,8 @@ contest has started such a save asks to be confirmed; a change to how it
 scores changes nothing that grades, and a published change to how it grades
 queues every submission to be graded again. Once the task has a done
 grading, a group's `show` neither hides what any graded publication showed
-nor is left unsaid on a new group. A task left giving no points is refused
-while its contest's entry gives it a worth or a due.
+nor is left unsaid on a new group. A task left giving no points may keep
+its due.
 """
 
 import asyncio
@@ -22,7 +22,7 @@ from typing import Any
 from unittest.mock import ANY
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from forge.db.tables import Grading
 from forge.domain.content import Edit
@@ -38,18 +38,20 @@ from forge.domain.errors import (
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, TaskId
-from forge.domain.plans import PLAN_PATH, Plan
-from forge.domain.publications import write_note
+from forge.domain.plan_basics import PLAN_PATH
 from forge.domain.roles import Role, RoleGrant, Scope, contest_id_of, task_scope
+from forge.domain.run_plan import RunPlan
+from forge.domain.run_task import RUNS_PATH
 from forge.domain.save_effect import SaveEffect
 from forge.domain.submissions import SubmittedInput
+from forge.domain.workflow_definition import WORKFLOW_FILE
 from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
-from forge.services import gradings, publications, submissions, tasks, timelines
+from forge.services import gradings, submissions, task_save, tasks, timelines
 from forge.services.access import Organiser
-from forge.services.publications import Draft, Published
+from forge.services.task_save import Draft, Published
 from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES, FakeClock
-from tests.services.conftest import Acme, Entered, organiser, upload, write_contest
+from tests.services.conftest import Acme, Entered, checked, organiser, upload, write_contest
 
 RUNNING = """\
 name: Spring 2026
@@ -60,6 +62,12 @@ visibility: everyone
 tasks:
   - id: sum
 """
+
+WORKFLOW = CLASSIC[WORKFLOW_FILE]
+"""The built-in workflow's `workflow.yaml`."""
+ONE_RUN = b"      - [tests/1.in, tests/1.ans]\n"
+"""The starter's one run, as its `repeat` lists it."""
+SECOND_RUN = ONE_RUN + b"      - [tests/2.in, tests/2.ans]\n"
 
 OLD_CLASSIC = b"""\
 name: unicon/classic
@@ -125,9 +133,12 @@ async def _save(
     who: Organiser | None = None,
     **options: Any,
 ) -> Published | Draft:
-    return await publications.save(
+    result = await task_save.save(
         setup, who or acme.ada, task, await _edits(acme, task, contents), **options
     )
+    if isinstance(result, Published):
+        await checked(setup, task)
+    return result
 
 
 def _written(acme: Acme) -> list[str]:
@@ -149,9 +160,10 @@ async def _published(setup: Setup, acme: Acme, task: TaskId) -> Published:
 
 
 async def _workflow(acme: Acme, name: str, content: bytes, owner: str = "unicon") -> None:
-    """A public workflow at `v1` with `content` as its `workflow.yaml`."""
+    """A public workflow at `v1` with `content` as its `workflow.yaml`, beside
+    the built-in workflow's other files."""
     made = await acme.fake.workflows.create_workflow(
-        PLATFORM, owner, name, {"workflow.yaml": content}, Visibility.PUBLIC
+        PLATFORM, owner, name, {**CLASSIC, WORKFLOW_FILE: content}, Visibility.PUBLIC
     )
     await acme.fake.workflows.create_workflow_version(PLATFORM, made, "v1")
 
@@ -163,62 +175,47 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
 
     assert isinstance(result, Published)
     assert (result.number, result.grading_changed, result.changes) == (1, False, ())
-    # The save says what it did, in the words a running contest asks with.
-    assert result.notes == ()
+    # The save says what it did, in the words a running contest asks with,
+    # and that what is shown at once reads runs beside hidden files.
+    assert [note.split(" ", 1)[0] for note in result.notes] == ["score", "all"]
     assert result.effect == SaveEffect(
         results_change=False,
         summary="Nobody's result changes.",
         runs_again=("No submission runs again: this is the task's first publication.",),
-        scores=("Points: main is worth up to 100.", "sum now counts on the leaderboard Standings."),
+        scores=("No score changes.",),
         reading=("Entrants read the task from its release.",),
     )
     (saved,) = acme.fake.calls_to("save_files")
     # The platform writes it, with ada as its author (#443).
     assert (saved.identity, saved.arguments["author"]) == (PLATFORM, acme.ada.user.id)
-    assert saved.arguments["paths"] == ["plans/plan.json", "statement.md"]
+    assert saved.arguments["paths"] == [PLAN_PATH, RUNS_PATH, "statement.md"]
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
     head = repo.history[-1]
     assert (head.author_id, head.message) == (7, "Save")
     assert repo.versions == {"published/1": head.version}
-    assert sorted(path for path in repo.files if path.startswith("plans/")) == ["plans/plan.json"]
-    document = json.loads(repo.files["plans/plan.json"])
-    assert violation(document, "plan") is None
-    plan = Plan.from_bytes(repo.files["plans/plan.json"])
-    assert plan.schema_version == 5
-    assert [step.primitive for step in plan.steps] == [
-        "unicon/compile@v2",
-        "unicon/sandbox-run@v2",
-        "unicon/diff-check@v2",
+    assert sorted(path for path in repo.files if path.startswith("plans/")) == [
+        PLAN_PATH,
+        RUNS_PATH,
     ]
-    assert plan.tests == ("main/1",)
-    assert set(plan.contestant) == {"submission", "language"}
-    # The workflow's declaration; the task's narrower options are its form's.
-    assert plan.contestant["language"].options == ("c", "cpp", "java", "python")
-    assert set(plan.report) == {"time_ms", "memory_kb", "log"}
-    assert plan.task_paths() == ("tests/main/1/answer", "tests/main/1/input")
-    assert plan.harness_image == setup.settings.harness_image
+    document = json.loads(repo.files[PLAN_PATH])
+    assert violation(document, "plan") is None
+    plan = RunPlan.from_bytes(repo.files[PLAN_PATH])
+    assert document["schema_version"] == 6
+    assert plan.workflow.ref == "unicon/classic@v3"
+    assert [run.id for run in plan.runs] == ["r1"]
+    assert sorted(plan.task_files) == ["tests/1.ans", "tests/1.in"]
     reads = acme.fake.calls_to("read_declaration")
-    assert {call.arguments["primitive"] for call in reads} == {
-        "compile",
-        "sandbox-run",
-        "diff-check",
-    }
+    assert {call.arguments["primitive"] for call in reads} == {"compile", "exec"}
     assert all(call.identity == acme.ada.identity for call in reads)
     (published,) = acme.fake.calls_to("publish")
     assert published.identity == PLATFORM
-    (listed,) = await publications.list(setup, acme.ada, sum_task)
+    (listed,) = await task_save.list_publications(setup, acme.ada, sum_task)
     assert (listed.id, listed.number, listed.version) == (result.publication, 1, head.version)
     assert (listed.grading_changed, listed.changes) == (False, ())
     assert set(listed.workflows) == {"unicon/classic"}
-    # Each reported value's words are frozen with it, in the report's order.
-    assert [(each.name, each.title, each.unit) for each in listed.meanings] == [
-        ("time_ms", "Run time", "ms"),
-        ("memory_kb", "Memory used", "KB"),
-        ("log", "Compile log", None),
-    ]
 
 
-async def test_each_publication_is_numbered_after_the_last_and_none_touches_the_ci(
+async def test_each_publication_is_numbered_after_the_last(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     first = await _save(setup, acme, sum_task, {"statement.md": b"One.\n"})
@@ -226,7 +223,6 @@ async def test_each_publication_is_numbered_after_the_last_and_none_touches_the_
 
     assert isinstance(first, Published) and isinstance(second, Published)
     assert (first.number, second.number) == (1, 2)
-    assert acme.fake.calls_to("activate") == []
 
 
 async def test_a_save_that_changes_nothing_since_the_publication_publishes_nothing_new(
@@ -234,7 +230,7 @@ async def test_a_save_that_changes_nothing_since_the_publication_publishes_nothi
 ) -> None:
     first = await _published(setup, acme, sum_task)
 
-    again = await publications.save(setup, acme.ada, sum_task, {})
+    again = await task_save.save(setup, acme.ada, sum_task, {})
 
     assert isinstance(again, Published)
     assert (again.publication, again.number) == (first.publication, 1)
@@ -256,7 +252,7 @@ async def test_a_stale_token_is_a_conflict_and_nothing_is_written(
     acme.fake.reset_calls()
 
     with pytest.raises(Conflict):
-        await publications.save(setup, acme.ada, sum_task, stale)
+        await task_save.save(setup, acme.ada, sum_task, stale)
     assert acme.fake.calls_to("publish") == []
     assert len(acme.fake.state.repos[("acme", "spring.sum.task")].versions) == 1
 
@@ -291,8 +287,16 @@ async def test_a_plan_file_the_compiler_no_longer_writes_is_removed_in_the_same_
 
     assert isinstance(result, Published)
     (saved,) = acme.fake.calls_to("save_files")
-    assert saved.arguments["paths"] == ["plans/default.json", "plans/plan.json", "statement.md"]
-    assert sorted(path for path in repo.files if path.startswith("plans/")) == ["plans/plan.json"]
+    assert saved.arguments["paths"] == [
+        "plans/default.json",
+        PLAN_PATH,
+        RUNS_PATH,
+        "statement.md",
+    ]
+    assert sorted(path for path in repo.files if path.startswith("plans/")) == [
+        PLAN_PATH,
+        RUNS_PATH,
+    ]
 
 
 async def test_a_save_inside_plans_is_refused_and_writes_nothing(
@@ -325,12 +329,12 @@ async def manager(setup: Setup, acme: Acme, sum_task: TaskId) -> Organiser:
     [
         ({"statement.md": b"Mine.\n"}, ["statement.md"]),
         ({"task.yaml": (b'name: "Sum of Two"', b'name: "Mine"')}, ["name"]),
-        ({"task.yaml": (b"test_groups:", b"submissions: {max: 5}\ntest_groups:")}, ["submissions"]),
+        ({"task.yaml": (b"scoring:", b"submissions: {max: 5}\nscoring:")}, ["submissions"]),
         (
             {
                 "task.yaml": (
-                    b"test_groups:",
-                    b"submissions:\n  rate: {count: 2, per: 30}\ntest_groups:",
+                    b"scoring:",
+                    b"submissions:\n  rate: {count: 2, per: 30}\nscoring:",
                 ),
                 "statement.md": b"Mine.\n",
             },
@@ -373,12 +377,12 @@ async def test_a_managers_save_of_everything_else_publishes(
         sum_task,
         {
             "task.yaml": task_yaml.replace(b"time_limit: 2", b"time_limit: 3").replace(
-                b"main: {each: 100}", b"main: {pass: 100, show: verdict}"
+                b"now: [score, all, public/]", b"now: [score, public/]"
             ),
             "statement.md": statement,
-            "tests/main/2/input": b"2 2\n",
-            "tests/main/2/answer": b"4\n",
-            "public/notes.txt": b"Read me.\n",
+            "tests/2.in": b"2 2\n",
+            "tests/2.ans": b"4\n",
+            "notes.txt": b"Read me.\n",
         },
         manager,
     )
@@ -396,22 +400,26 @@ async def test_a_save_needs_the_manager_role_at_the_task(
 
     with pytest.raises(Forbidden, match="manager role at acme/spring/sum"):
         await _save(setup, acme, sum_task, {"statement.md": b"x"}, bob)
-    assert await publications.list(setup, bob, sum_task) == ()
+    assert await task_save.list_publications(setup, bob, sum_task) == ()
 
 
-async def test_a_group_with_no_tests_is_a_draft_and_the_state_recomputes_its_errors(
+async def test_a_run_naming_files_the_task_lacks_is_a_draft_and_the_state_recomputes_its_errors(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     published = await _published(setup, acme, sum_task)
-    broken = _with(acme, b"  main: {each: 100}\n", b"  samples: {}\n  main: {each: 100}\n")
+    broken = _with(acme, ONE_RUN, SECOND_RUN)
 
     draft = await _save(setup, acme, sum_task, broken)
 
     assert isinstance(draft, Draft)
     assert draft.errors == (
         {
-            "path": "test_groups.samples",
-            "message": "The test group samples has no tests. Add a test to it.",
+            "path": "repeat[0].tuples[1][0]",
+            "message": "The task has no file tests/2.in. Add it, or give another file.",
+        },
+        {
+            "path": "repeat[0].tuples[1][1]",
+            "message": "The task has no file tests/2.ans. Add it, or give another file.",
         },
     )
     assert draft.held_back == ()
@@ -428,199 +436,29 @@ async def test_a_group_with_no_tests_is_a_draft_and_the_state_recomputes_its_err
     assert state.latest is not None
     assert state.latest.id == published.publication
 
-    fixed = await _save(
-        setup, acme, sum_task, {"tests/samples/1/input": b"1 2\n", "tests/samples/1/answer": b"3\n"}
-    )
-    assert isinstance(fixed, Published)
+    fixed = await _save(setup, acme, sum_task, SECOND_TEST)
+    assert isinstance(fixed, Published), fixed
     assert fixed.number == 2
     later = await tasks.state(setup, acme.ada, sum_task)
     assert (later.draft, later.errors) == (False, ())
 
 
-@pytest.mark.parametrize(
-    ("files", "path", "said"),
-    [
-        (
-            {"tests/main/2/input": b"2 2\n"},
-            "tests/main/2/",
-            "The test main/2 has no answer. Add it.",
-        ),
-        (
-            {"tests/main/1/notes": b"x\n"},
-            "tests/main/1/notes",
-            "The test main/1 has notes, which is none of the workflow's test fields. Rename it "
-            "after one, or remove it.",
-        ),
-        (
-            {"tests/main/1/answer.txt": b"3\n"},
-            "tests/main/1/",
-            "The test main/1 has answer more than once: answer, answer.txt. Keep one.",
-        ),
-        (
-            {"tests/other/1/input": b"1 2\n", "tests/other/1/answer": b"3\n"},
-            "tests/other/",
-            "other holds tests but is not one of the task's test groups. Add a test group "
-            "called other, or move its tests.",
-        ),
-    ],
-    ids=["missing-field", "no-such-field", "field-twice", "unlisted-group"],
-)
-async def test_a_test_out_of_its_layout_is_a_draft_at_its_folder(
-    setup: Setup,
-    acme: Acme,
-    sum_task: TaskId,
-    files: dict[str, bytes],
-    path: str,
-    said: str,
-) -> None:
-    draft = await _save(setup, acme, sum_task, files)
-
-    assert isinstance(draft, Draft)
-    assert [(error["path"], error["message"]) for error in draft.errors] == [(path, said)]
-    assert acme.fake.calls_to("publish") == []
+SECOND_TEST = {"tests/2.in": b"1 1\n", "tests/2.ans": b"2\n"}
 
 
-SECOND_TEST = {"tests/main/2/input": b"1 1\n", "tests/main/2/answer": b"2\n"}
-
-
-async def test_a_removed_test_is_gone_from_the_change_and_the_grading_comparison_names_it(
-    setup: Setup, acme: Acme, sum_task: TaskId
-) -> None:
-    await _published(setup, acme, sum_task)
-    added = await _save(setup, acme, sum_task, SECOND_TEST)
-    assert isinstance(added, Published), added
-    acme.fake.reset_calls()
-
-    removed = await _save(setup, acme, sum_task, dict.fromkeys(SECOND_TEST))
-
-    assert isinstance(removed, Published), removed
-    assert (removed.number, removed.grading_changed) == (3, True)
-    assert removed.changes == (
-        "The way the task grades changed.",
-        "The answer of test 2 in the group main was removed.",
-        "The input of test 2 in the group main was removed.",
-    )
-    (saved,) = acme.fake.calls_to("save_files")
-    assert saved.arguments["paths"] == [
-        "plans/plan.json",
-        "tests/main/2/answer",
-        "tests/main/2/input",
-    ]
-    repo = acme.fake.state.repos[("acme", "spring.sum.task")]
-    assert not any(path.startswith("tests/main/2/") for path in repo.files)
-    assert Plan.from_bytes(repo.files["plans/plan.json"]).tests == ("main/1",)
-
-
-async def test_a_test_is_replaced_by_one_with_other_entry_names_in_one_save(
+async def test_removing_a_file_a_run_names_is_a_draft_naming_it(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     await _published(setup, acme, sum_task)
 
-    result = await _save(
-        setup,
-        acme,
-        sum_task,
-        {
-            "tests/main/1/input": None,
-            "tests/main/1/answer": None,
-            "tests/main/1/input.txt": b"4 5\n",
-            "tests/main/1/answer.txt": b"9\n",
-        },
-    )
-
-    assert isinstance(result, Published), result
-    assert result.changes == (
-        "The way the task grades changed.",
-        "The answer of test 1 in the group main changed.",
-        "The input of test 1 in the group main changed.",
-    )
-    plan = Plan.from_bytes(acme.fake.state.repos[("acme", "spring.sum.task")].files[PLAN_PATH])
-    assert plan.task_paths() == ("tests/main/1/answer.txt", "tests/main/1/input.txt")
-
-
-async def test_removing_a_groups_last_test_is_a_draft_at_the_group(
-    setup: Setup, acme: Acme, sum_task: TaskId
-) -> None:
-    samples = {"tests/samples/1/input": b"1 2\n", "tests/samples/1/answer": b"3\n"}
-    first = await _save(
-        setup,
-        acme,
-        sum_task,
-        {
-            **_with(acme, b"  main: {each: 100}\n", b"  samples: {}\n  main: {each: 100}\n"),
-            **samples,
-        },
-    )
-    assert isinstance(first, Published), first
-    acme.fake.reset_calls()
-
-    draft = await _save(setup, acme, sum_task, dict.fromkeys(samples))
+    draft = await _save(setup, acme, sum_task, {"tests/1.ans": None})
 
     assert isinstance(draft, Draft)
     assert [(error["path"], error["message"]) for error in draft.errors] == [
-        ("test_groups.samples", "The test group samples has no tests. Add a test to it.")
-    ]
-    assert acme.fake.calls_to("publish") == []
-    repo = acme.fake.state.repos[("acme", "spring.sum.task")]
-    assert not any(path.startswith("tests/samples/") for path in repo.files)
-    assert len(repo.versions) == 1
-
-
-async def test_removing_every_test_is_a_draft_saying_the_task_has_none(
-    setup: Setup, acme: Acme, sum_task: TaskId
-) -> None:
-    draft = await _save(
-        setup, acme, sum_task, {"tests/main/1/input": None, "tests/main/1/answer": None}
-    )
-
-    assert isinstance(draft, Draft)
-    assert [(error["path"], error["message"]) for error in draft.errors] == [
-        ("test_groups", "The task has no tests yet. Add a test to each test group.")
-    ]
-
-
-async def test_removing_one_field_of_a_test_is_a_draft_at_the_test(
-    setup: Setup, acme: Acme, sum_task: TaskId
-) -> None:
-    draft = await _save(setup, acme, sum_task, {"tests/main/1/answer": None})
-
-    assert isinstance(draft, Draft)
-    assert [(error["path"], error["message"]) for error in draft.errors] == [
-        ("tests/main/1/", "The test main/1 has no answer. Add it.")
-    ]
-
-
-FIXED_ANSWER = (
-    CLASSIC.replace(b"  answer: file\n", b"")
-    .replace(b"expected: ${{ test.answer }}", b"expected: ${{ inputs.expected }}")
-    .replace(b"\ntest:\n", b"\n  expected:\n    type: file\ntest:\n")
-)
-"""Classic with one answer for every test, a file the task names."""
-
-
-async def test_removing_a_file_an_input_names_is_a_draft_at_that_input(
-    setup: Setup, acme: Acme, sum_task: TaskId
-) -> None:
-    await _workflow(acme, "fixed", FIXED_ANSWER)
-    task_yaml = (
-        _task_yaml(acme)
-        .replace(b"unicon/classic@v2", b"unicon/fixed@v1")
-        .replace(b"  time_limit: 2\n", b"  time_limit: 2\n  expected: data/answer.txt\n")
-    )
-    first = await _save(
-        setup,
-        acme,
-        sum_task,
-        {"task.yaml": task_yaml, "data/answer.txt": b"3\n", "tests/main/1/answer": None},
-    )
-    assert isinstance(first, Published), first
-    acme.fake.reset_calls()
-
-    draft = await _save(setup, acme, sum_task, {"data/answer.txt": None})
-
-    assert isinstance(draft, Draft)
-    assert [(error["path"], error["message"]) for error in draft.errors] == [
-        ("inputs.expected", "The task has no file data/answer.txt. Add it, or give another file.")
+        (
+            "repeat[0].tuples[0][1]",
+            "The task has no file tests/1.ans. Add it, or give another file.",
+        )
     ]
     assert acme.fake.calls_to("publish") == []
 
@@ -629,18 +467,18 @@ async def test_a_removal_with_a_stale_token_is_a_conflict_and_nothing_is_written
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     await _published(setup, acme, sum_task)
-    await _save(setup, acme, sum_task, {"public/hint.txt": b"One.\n"})
-    stale = await _edits(acme, sum_task, {"public/hint.txt": None})
-    await _save(setup, acme, sum_task, {"public/hint.txt": b"Two.\n"})
+    await _save(setup, acme, sum_task, {"notes/hint.txt": b"One.\n"})
+    stale = await _edits(acme, sum_task, {"notes/hint.txt": None})
+    await _save(setup, acme, sum_task, {"notes/hint.txt": b"Two.\n"})
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
     head = repo.head
     acme.fake.reset_calls()
 
     with pytest.raises(Conflict):
-        await publications.save(setup, acme.ada, sum_task, stale)
+        await task_save.save(setup, acme.ada, sum_task, stale)
 
     assert acme.fake.calls_to("publish") == []
-    assert (repo.head, repo.files["public/hint.txt"]) == (head, b"Two.\n")
+    assert (repo.head, repo.files["notes/hint.txt"]) == (head, b"Two.\n")
 
 
 async def test_a_removal_of_a_file_that_is_not_there_is_a_conflict(
@@ -652,7 +490,7 @@ async def test_a_removal_of_a_file_that_is_not_there_is_a_conflict(
     head = repo.head
 
     with pytest.raises(Conflict):
-        await publications.save(setup, acme.ada, sum_task, {"public/gone.txt": Edit(None, token)})
+        await task_save.save(setup, acme.ada, sum_task, {"notes/gone.txt": Edit(None, token)})
 
     assert acme.fake.calls_to("publish") == []
     assert repo.head == head
@@ -662,15 +500,15 @@ async def test_a_removal_without_its_token_is_refused_naming_it(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     with pytest.raises(InvalidInputs) as refused:
-        await publications.save(
+        await task_save.save(
             setup,
             acme.ada,
             sum_task,
-            {"tests/main/1/input": Edit(None), "statement.md": Edit(b"x\n")},
+            {"tests/1.in": Edit(None), "statement.md": Edit(b"x\n")},
         )
 
     assert refused.value.extra["errors"] == [
-        {"input": "tests/main/1/input", "message": "Reload the files, then remove this one again."}
+        {"input": "tests/1.in", "message": "Reload the files, then remove this one again."}
     ]
     assert _written(acme) == []
 
@@ -715,25 +553,25 @@ async def test_removing_an_admins_file_is_the_admins_alone(
 async def test_a_manager_removes_tests_and_public_files(
     setup: Setup, acme: Acme, sum_task: TaskId, manager: Organiser
 ) -> None:
-    await _save(setup, acme, sum_task, {**SECOND_TEST, "public/hint.txt": b"Add.\n"})
+    await _save(setup, acme, sum_task, {**SECOND_TEST, "notes/hint.txt": b"Add.\n"})
     acme.fake.reset_calls()
 
     result = await _save(
-        setup, acme, sum_task, {**dict.fromkeys(SECOND_TEST), "public/hint.txt": None}, manager
+        setup, acme, sum_task, {**dict.fromkeys(SECOND_TEST), "notes/hint.txt": None}, manager
     )
 
     assert isinstance(result, Published), result
     (saved,) = acme.fake.calls_to("save_files")
     assert (saved.identity, saved.arguments["author"]) == (PLATFORM, manager.user.id)
     files = acme.fake.state.repos[("acme", "spring.sum.task")].files
-    assert "public/hint.txt" not in files and "tests/main/2/input" not in files
+    assert "notes/hint.txt" not in files and "tests/2.in" not in files
 
 
 @pytest.mark.parametrize(
     ("change", "named"),
     [
-        ((b"workflow: unicon/classic@v2", b"workflow: unicon/classic@v9"), "unicon/classic@v9"),
-        ((b"workflow: unicon/classic@v2", b"workflow: bob/mine@v1"), "bob/mine@v1"),
+        ((b"workflow: unicon/classic@v3", b"workflow: unicon/classic@v9"), "unicon/classic@v9"),
+        ((b"workflow: unicon/classic@v3", b"workflow: bob/mine@v1"), "bob/mine@v1"),
     ],
     ids=["no-such-version", "not-shared"],
 )
@@ -746,7 +584,7 @@ async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_line_nami
 ) -> None:
     bob = AsUser(8, acme.fake.mint(8))
     mine = await acme.fake.workflows.create_workflow(
-        bob, "bob", "mine", {"workflow.yaml": CLASSIC}, Visibility.PRIVATE
+        bob, "bob", "mine", CLASSIC, Visibility.PRIVATE
     )
     await acme.fake.workflows.create_workflow_version(bob, mine, "v1")
 
@@ -758,8 +596,8 @@ async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_line_nami
     assert "Unicon cannot open the workflow" in error["message"]
     assert named in error["message"]
     assert acme.fake.calls_to("publish") == []
-    reads = acme.fake.calls_to("read_workflow_file")
-    assert {call.identity for call in reads} == {acme.ada.identity}
+    reads = acme.fake.calls_to("workflow_version")
+    assert reads and {call.identity for call in reads} == {acme.ada.identity}
 
 
 async def test_a_workflow_in_an_old_format_is_refused_at_its_line_for_its_owner_to_retag(
@@ -771,7 +609,7 @@ async def test_a_workflow_in_an_old_format_is_refused_at_its_line_for_its_owner_
         setup,
         acme,
         sum_task,
-        _with(acme, b"workflow: unicon/classic@v2", b"workflow: unicon/old@v1"),
+        _with(acme, b"workflow: unicon/classic@v3", b"workflow: unicon/old@v1"),
     )
 
     assert isinstance(draft, Draft)
@@ -788,14 +626,14 @@ async def test_a_workflow_that_does_not_check_as_a_version_is_refused_at_its_lin
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     await _workflow(
-        acme, "broken", CLASSIC.replace(b"steps.compile.binary", b"steps.compile.nothing")
+        acme, "broken", WORKFLOW.replace(b"steps.compile.program", b"steps.compile.nothing")
     )
 
     draft = await _save(
         setup,
         acme,
         sum_task,
-        _with(acme, b"workflow: unicon/classic@v2", b"workflow: unicon/broken@v1"),
+        _with(acme, b"workflow: unicon/classic@v3", b"workflow: unicon/broken@v1"),
     )
 
     assert isinstance(draft, Draft)
@@ -816,24 +654,19 @@ async def test_a_workflow_that_does_not_check_as_a_version_is_refused_at_its_lin
             "unicon/compile@v7: there is no such primitive or workflow at that version, or it is "
             "not shared with you.",
         ),
-        (
-            b"unicon/classic@v2",
-            "In the workflow unicon/custom@v1, the step compile cannot run: unicon/classic@v2 is "
-            "a workflow, and a step can only use a primitive.",
-        ),
     ],
-    ids=["no-such-version", "a-workflow"],
+    ids=["no-such-version"],
 )
 async def test_a_step_whose_use_is_no_primitive_the_organiser_reads_is_an_error_naming_it(
     setup: Setup, acme: Acme, sum_task: TaskId, use: bytes, said: str
 ) -> None:
-    await _workflow(acme, "custom", CLASSIC.replace(b"use: unicon/compile@v2", b"use: " + use))
+    await _workflow(acme, "custom", WORKFLOW.replace(b"use: unicon/compile@v3", b"use: " + use, 1))
 
     draft = await _save(
         setup,
         acme,
         sum_task,
-        _with(acme, b"workflow: unicon/classic@v2", b"workflow: unicon/custom@v1"),
+        _with(acme, b"workflow: unicon/classic@v3", b"workflow: unicon/custom@v1"),
     )
 
     assert isinstance(draft, Draft)
@@ -846,16 +679,16 @@ async def test_a_step_whose_use_is_no_primitive_the_organiser_reads_is_an_error_
 async def test_a_primitive_in_an_old_format_is_refused_naming_it(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    acme.fake.primitives.add("odd", {"v1": OLD_COMPILE, "v2": PRIMITIVES["compile"]})
+    acme.fake.primitives.add("odd", {"v1": OLD_COMPILE, "v2": PRIMITIVES["unicon/compile@v3"]})
     await _workflow(
-        acme, "custom", CLASSIC.replace(b"use: unicon/compile@v2", b"use: unicon/odd@v1")
+        acme, "custom", WORKFLOW.replace(b"use: unicon/compile@v3", b"use: unicon/odd@v1", 1)
     )
 
     draft = await _save(
         setup,
         acme,
         sum_task,
-        _with(acme, b"workflow: unicon/classic@v2", b"workflow: unicon/custom@v1"),
+        _with(acme, b"workflow: unicon/classic@v3", b"workflow: unicon/custom@v1"),
     )
 
     assert isinstance(draft, Draft)
@@ -873,7 +706,7 @@ async def test_an_invalid_task_yaml_and_an_uncovered_input_are_drafts_with_their
 ) -> None:
     invalid = _with(acme, b"time_limit: 2", b"time_limit: x")
     uncovered = _with(acme, b"  memory_limit: 256\n", b"")
-    given = _with(acme, b"  submission: {label: Your solution}", b"  submission: main.py")
+    given = _with(acme, b"  code: {entrant: {label: Your solution}}", b"  code: main.py")
     unknown = _with(acme, b"  time_limit: 2\n", b"  time_limit: 2\n  speed: 3\n")
 
     drafts = [
@@ -886,42 +719,10 @@ async def test_an_invalid_task_yaml_and_an_uncovered_input_are_drafts_with_their
     assert paths == [
         ["inputs.time_limit"],
         ["inputs.memory_limit"],
-        ["inputs.submission"],
+        ["inputs.code"],
         ["inputs.speed"],
     ]
     assert acme.fake.calls_to("publish") == []
-
-
-async def _secret_workflow(acme: Acme) -> None:
-    """`unicon/args@v1`: classic with a text input handed to the run."""
-    await _workflow(
-        acme,
-        "args",
-        CLASSIC.replace(b"\ntest:\n", b"\n  args: text\ntest:\n").replace(
-            b"      memory_limit: ${{ inputs.memory_limit }}\n",
-            b"      memory_limit: ${{ inputs.memory_limit }}\n      args: ${{ inputs.args }}\n",
-        ),
-    )
-
-
-async def test_a_secret_is_refused_since_the_org_holds_none_and_a_plain_text_publishes(
-    setup: Setup, acme: Acme, sum_task: TaskId
-) -> None:
-    await _secret_workflow(acme)
-    task_yaml = _task_yaml(acme).replace(
-        b"workflow: unicon/classic@v2", b"workflow: unicon/args@v1"
-    )
-    secret = task_yaml.replace(b"  time_limit: 2\n", b"  time_limit: 2\n  args: {secret: k}\n")
-    plain = task_yaml.replace(b"  time_limit: 2\n", b"  time_limit: 2\n  args: '-v'\n")
-
-    refused = await _save(setup, acme, sum_task, {"task.yaml": secret})
-    published = await _save(setup, acme, sum_task, {"task.yaml": plain})
-
-    assert isinstance(refused, Draft)
-    assert [(error["path"], error["message"]) for error in refused.errors] == [
-        ("inputs.args", "The org has no secret called k. Choose one it has, or add it to the org.")
-    ]
-    assert isinstance(published, Published), published
 
 
 async def test_scoring_changes_never_change_grading_and_a_test_or_a_limit_does(
@@ -930,46 +731,42 @@ async def test_scoring_changes_never_change_grading_and_a_test_or_a_limit_does(
     await _published(setup, acme, sum_task)
 
     text = await _save(setup, acme, sum_task, {"statement.md": b"Clearer.\n"})
-    rules = await _save(setup, acme, sum_task, _with(acme, b"{each: 100}", b"{pass: 100}"))
+    rules = await _save(
+        setup, acme, sum_task, _with(acme, b"now: [score, all, public/]", b"now: [score, public/]")
+    )
     caps = await _save(
         setup,
         acme,
         sum_task,
-        _with(
-            acme, b"test_groups:", b"submissions: {max: 9, rate: {count: 2, per: 60}}\ntest_groups:"
-        ),
+        _with(acme, b"scoring:", b"submissions: {max: 9, rate: {count: 2, per: 60}}\nscoring:"),
     )
-    public = await _save(setup, acme, sum_task, {"public/hint.txt": b"Add.\n"})
+    public = await _save(setup, acme, sum_task, {"notes/hint.txt": b"Add.\n"})
     limit = await _save(setup, acme, sum_task, _with(acme, b"time_limit: 2", b"time_limit: 3"))
-    edited = await _save(setup, acme, sum_task, {"tests/main/1/input": b"2 3\n"})
-    same = await _save(setup, acme, sum_task, {"tests/main/1/input": b"2 3\n"})
-    added = await _save(
-        setup, acme, sum_task, {"tests/main/2/input": b"1 1\n", "tests/main/2/answer": b"2\n"}
-    )
+    edited = await _save(setup, acme, sum_task, {"tests/1.in": b"2 3\n"})
+    same = await _save(setup, acme, sum_task, {"tests/1.in": b"2 3\n"})
+    added = await _save(setup, acme, sum_task, {**SECOND_TEST, **_with(acme, ONE_RUN, SECOND_RUN)})
 
     results = [
         result
         for result in (text, rules, caps, public, limit, edited, same, added)
         if isinstance(result, Published)
     ]
+    added_run = (
+        "The run r2 was added.",
+        "The file tests/2.ans was added.",
+        "The file tests/2.in was added.",
+    )
     assert [(result.grading_changed, result.changes) for result in results] == [
         (False, ()),
         (False, ()),
         (False, ()),
         (False, ()),
-        (True, ("The way the task grades changed.",)),
-        (True, ("The input of test 1 in the group main changed.",)),
+        (True, ("The inputs of the step solution changed.",)),
+        (True, ("The file tests/1.in changed.",)),
         (False, ()),
-        (
-            True,
-            (
-                "The way the task grades changed.",
-                "The answer of test 2 in the group main was added.",
-                "The input of test 2 in the group main was added.",
-            ),
-        ),
+        (True, added_run),
     ]
-    history = await publications.list(setup, acme.ada, sum_task)
+    history = await task_save.list_publications(setup, acme.ada, sum_task)
     assert [entry.grading_changed for entry in history] == [
         False,
         False,
@@ -981,7 +778,7 @@ async def test_scoring_changes_never_change_grading_and_a_test_or_a_limit_does(
         False,
         True,
     ]
-    assert history[5].changes == ("The way the task grades changed.",)
+    assert history[5].changes == ("The inputs of the step solution changed.",)
 
 
 @pytest.fixture
@@ -995,8 +792,8 @@ async def running(setup: Setup, acme: Acme, sum_task: TaskId) -> TaskId:
 @pytest.mark.parametrize(
     ("change", "listed"),
     [
-        ((b"time_limit: 2", b"time_limit: 1"), ["The way the task grades changed."]),
-        (None, ["The input of test 1 in the group main changed."]),
+        ((b"time_limit: 2", b"time_limit: 1"), ["The inputs of the step solution changed."]),
+        (None, ["The file tests/1.in changed."]),
     ],
     ids=["limit", "test"],
 )
@@ -1007,7 +804,7 @@ async def test_a_grading_change_once_the_contest_has_started_asks_first_and_writ
     change: tuple[bytes, bytes] | None,
     listed: list[str],
 ) -> None:
-    files = _with(acme, *change) if change else {"tests/main/1/input": b"5 5\n"}
+    files = _with(acme, *change) if change else {"tests/1.in": b"5 5\n"}
 
     with pytest.raises(ConfirmationRequired) as asked:
         await _save(setup, acme, running, files)
@@ -1039,13 +836,13 @@ async def test_a_confirmation_stands_only_for_the_files_and_publication_it_was_a
     files = {"statement.md": b"Typo fixed.\n"}
     with pytest.raises(ConfirmationRequired) as first:
         await _save(setup, acme, running, files)
-    await _save(setup, acme, running, {"tests/main/1/input": b"5 5\n"}, keep_as_draft=True)
+    await _save(setup, acme, running, {"tests/1.in": b"5 5\n"}, keep_as_draft=True)
     acme.fake.reset_calls()
 
     with pytest.raises(ConfirmationRequired) as again:
         await _save(setup, acme, running, files, confirm=True, asked=first.value.extra["asked"])
 
-    assert again.value.extra["changes"] == ["The input of test 1 in the group main changed."]
+    assert again.value.extra["changes"] == ["The file tests/1.in changed."]
     assert again.value.extra["asked"] != first.value.extra["asked"]
     assert _written(acme) == []
     confirmed = await _save(
@@ -1059,17 +856,7 @@ async def test_a_confirmation_stands_only_for_the_files_and_publication_it_was_a
     ("files", "scores", "reading"),
     [
         (
-            (b"{each: 100}", b"{each: 60, pass: 50}"),
-            [
-                "Points: main is now worth up to 110 (was 100).",
-                "How main earns its points: 60 shared over its tests and 50 when every test "
-                "passes (was 100 shared over its tests).",
-                "Every result is scored again.",
-            ],
-            ["Nothing entrants read changes."],
-        ),
-        (
-            (b"test_groups:", b"submissions: {max: 3, rate: {count: 2, per: 600}}\ntest_groups:"),
+            (b"scoring:", b"submissions: {max: 3, rate: {count: 2, per: 600}}\nscoring:"),
             [
                 "Submission limit: 3 per entrant (was 50).",
                 "Submission rate: 2 every 10 minutes (was 1 every 30 seconds).",
@@ -1077,15 +864,12 @@ async def test_a_confirmation_stands_only_for_the_files_and_publication_it_was_a
             ["Nothing entrants read changes."],
         ),
         (
-            {"statement.md": b"Typo fixed.\n", "public/figure.png": b"\x89PNG"},
+            {"statement.md": b"Typo fixed.\n"},
             ["No score changes."],
-            [
-                "The statement changes.",
-                "The pictures and files beside the statement change.",
-            ],
+            ["The statement changes."],
         ),
     ],
-    ids=["points", "limits", "statement"],
+    ids=["limits", "statement"],
 )
 async def test_every_save_that_publishes_once_the_contest_has_started_asks_first(
     setup: Setup,
@@ -1133,26 +917,6 @@ async def test_a_save_of_what_is_published_asks_nothing_and_a_draft_save_asks_no
     assert back.effect.reading == ("Nothing entrants read changes.",)
 
 
-async def test_a_save_that_changes_only_the_words_of_the_values_publishes_with_no_regrade(
-    setup: Setup, acme: Acme, running: TaskId
-) -> None:
-    # A publication made before the words were frozen notes none.
-    (latest,) = await acme.fake.workspaces.list_publications(running)
-    await acme.fake.workspaces.publish(running, latest.version, write_note(False, ()))
-
-    with pytest.raises(ConfirmationRequired) as asked:
-        await _save(setup, acme, running, {})
-    saved = await _save(setup, acme, running, {}, confirm=True)
-
-    assert (asked.value.extra["changes"], asked.value.extra["regrades"]) == ([], 0)
-    assert asked.value.extra["reading"] == ["The names and units results give their values change."]
-    assert isinstance(saved, Published)
-    assert (saved.number, saved.grading_changed, saved.regraded) == (3, False, 0)
-    *_, newest = await acme.fake.workspaces.list_publications(running)
-    assert newest.meanings == latest.meanings
-    assert isinstance(await _save(setup, acme, running, {}), Published)
-
-
 async def test_a_grading_change_kept_as_a_draft_is_written_and_not_published(
     setup: Setup, acme: Acme, running: TaskId
 ) -> None:
@@ -1161,15 +925,15 @@ async def test_a_grading_change_kept_as_a_draft_is_written_and_not_published(
     )
 
     assert isinstance(kept, Draft)
-    assert (kept.errors, kept.held_back) == ((), ("The way the task grades changed.",))
+    assert (kept.errors, kept.held_back) == ((), ("The inputs of the step solution changed.",))
     assert _written(acme) == ["save_files"]
     (saved,) = acme.fake.calls_to("save_files")
     assert saved.arguments["paths"] == ["task.yaml"]
     state = await tasks.state(setup, acme.ada, running)
     assert (state.draft, state.errors) == (True, ())
-    published = await publications.save(setup, acme.ada, running, {}, confirm=True)
+    published = await task_save.save(setup, acme.ada, running, {}, confirm=True)
     assert isinstance(published, Published)
-    assert published.changes == ("The way the task grades changed.",)
+    assert published.changes == ("The inputs of the step solution changed.",)
 
 
 @pytest.mark.parametrize("confirm", [False, True], ids=["alone", "with-confirm"])
@@ -1189,8 +953,9 @@ async def test_a_save_kept_as_a_draft_never_publishes_whatever_else_holds(
     assert (first.errors, first.held_back) == ((), ())
     assert (later.errors, later.held_back) == ((), ())
     assert _written(acme) == ["save_files"]
-    assert acme.fake.calls_to("activate") == []
-    assert [entry.number for entry in await publications.list(setup, acme.ada, sum_task)] == [1]
+    assert [
+        entry.number for entry in await task_save.list_publications(setup, acme.ada, sum_task)
+    ] == [1]
     state = await tasks.state(setup, acme.ada, sum_task)
     assert (state.draft, state.errors) == (True, ())
 
@@ -1223,190 +988,25 @@ async def _graded(setup: Setup, acme: Acme, entered: Entered, key: str = "key-00
         entered.session,
         entered.task,
         {
-            "submission": SubmittedInput(uploads=(made.id,)),
+            "code": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key=key,
     )
     async with setup.unit_of_work() as ctx:
-        await ctx.db.execute(update(Grading).values(status=GradingStatus.DONE))
+        await ctx.db.execute(
+            update(Grading).where(Grading.pipeline != "save").values(status=GradingStatus.DONE)
+        )
     acme.fake.reset_calls()
-
-
-@pytest.mark.parametrize(
-    ("before", "after", "refused"),
-    [
-        (b"{each: 100}", b"{each: 100, show: after_close}", "main as soon as a grading ends"),
-        (b"{each: 100}", b"{pass: 100, show: verdict}", "main as soon as a grading ends"),
-        (
-            b"{pass: 100, show: verdict}",
-            b"{pass: 100, show: after_close}",
-            "main as an outcome before the reveal",
-        ),
-        (b"{each: 100, show: after_close}", b"{each: 100}", None),
-        (b"{each: 100, show: after_close}", b"{pass: 100, show: verdict}", None),
-        (b"{pass: 100, show: verdict}", b"{pass: 100}", None),
-    ],
-    ids=[
-        "always-to-after-close",
-        "always-to-verdict",
-        "verdict-to-after-close",
-        "after-close-to-always",
-        "after-close-to-verdict",
-        "verdict-to-always",
-    ],
-)
-async def test_once_graded_what_was_shown_is_not_hidden_again_and_the_other_way_is_allowed(
-    setup: Setup,
-    acme: Acme,
-    entered: Entered,
-    before: bytes,
-    after: bytes,
-    refused: str | None,
-) -> None:
-    if before != b"{each: 100}":
-        first = await _save(
-            setup, acme, entered.task, _with(acme, b"{each: 100}", before), confirm=True
-        )
-        assert isinstance(first, Published), first
-    await _graded(setup, acme, entered)
-
-    result = await _save(setup, acme, entered.task, _with(acme, before, after), confirm=True)
-
-    if refused is None:
-        assert isinstance(result, Published), result
-        return
-    assert isinstance(result, Draft)
-    assert [(error["path"], error["message"]) for error in result.errors] == [
-        (
-            "test_groups.main.show",
-            f"Entrants have seen the results of {refused}, and what they have seen cannot be "
-            "hidden again.",
-        )
-    ]
-    assert acme.fake.calls_to("publish") == []
-
-
-async def test_before_any_grading_is_done_a_group_may_be_hidden(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    result = await _save(
-        setup,
-        acme,
-        entered.task,
-        _with(acme, b"{each: 100}", b"{each: 100, show: after_close}"),
-        confirm=True,
-    )
-
-    assert isinstance(result, Published), result
-
-
-NEW_GROUP = {"tests/large/1/input": b"5 6\n", "tests/large/1/answer": b"11\n"}
-
-
-async def test_once_graded_a_new_group_must_say_its_show(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    before = await publications.workflow_form(setup, acme.ada, entered.task)
-    await _graded(setup, acme, entered)
-    # The form hears of it, so it asks for the show of a group the save adds.
-    after = await publications.workflow_form(setup, acme.ada, entered.task)
-    assert (before.graded, after.graded) == (False, True)
-    unsaid = _with(acme, b"  main: {each: 100}\n", b"  main: {each: 100}\n  large: {each: 50}\n")
-
-    draft = await _save(setup, acme, entered.task, {**unsaid, **NEW_GROUP})
-    said = await _save(
-        setup,
-        acme,
-        entered.task,
-        {"task.yaml": unsaid["task.yaml"].replace(b"{each: 50}", b"{each: 50, show: always}")},
-        confirm=True,
-    )
-
-    assert isinstance(draft, Draft)
-    assert [(error["path"], error["message"]) for error in draft.errors] == [
-        (
-            "test_groups.large",
-            "large is a new test group, and the task has graded submissions, so choose when "
-            "entrants see its results.",
-        )
-    ]
-    assert isinstance(said, Published), said
-
-
-async def test_before_any_grading_is_done_a_new_group_needs_no_show(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    added = _with(acme, b"  main: {each: 100}\n", b"  main: {each: 100}\n  large: {each: 50}\n")
-
-    result = await _save(setup, acme, entered.task, {**added, **NEW_GROUP}, confirm=True)
-
-    assert isinstance(result, Published), result
-
-
-async def _removed(acme: Acme, task: TaskId, paths: list[str]) -> None:
-    """`paths` taken out of the task at the forge, as the file editor's
-    removal leaves them.
-    """
-    head = await acme.fake.content.list_files(PLATFORM, task)
-    await acme.fake.content.save_files(
-        PLATFORM,
-        task,
-        dict.fromkeys(paths),
-        expected={path: head.tokens[path] for path in paths},
-        message="Remove",
-    )
-
-
-async def test_what_any_graded_publication_showed_is_not_hidden_when_its_group_comes_back(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    with_large = _with(
-        acme, b"  main: {each: 100}\n", b"  main: {each: 100}\n  large: {each: 50}\n"
-    )
-    first = await _save(setup, acme, entered.task, {**with_large, **NEW_GROUP}, confirm=True)
-    assert isinstance(first, Published), first
-    await _graded(setup, acme, entered)
-    await _removed(acme, entered.task, sorted(NEW_GROUP))
-    without = await _save(
-        setup,
-        acme,
-        entered.task,
-        _with(acme, b"  large: {each: 50}\n", b""),
-        confirm=True,
-    )
-    assert isinstance(without, Published), without
-    hidden = _with(
-        acme,
-        b"  main: {each: 100}\n",
-        b"  main: {each: 100}\n  large: {each: 50, show: after_close}\n",
-    )
-
-    refused = await _save(setup, acme, entered.task, {**hidden, **NEW_GROUP}, confirm=True)
-    shown = await _save(
-        setup,
-        acme,
-        entered.task,
-        {"task.yaml": hidden["task.yaml"].replace(b"after_close", b"always"), **NEW_GROUP},
-        confirm=True,
-    )
-
-    assert isinstance(refused, Draft)
-    assert [(error["path"], error["message"]) for error in refused.errors] == [
-        (
-            "test_groups.large.show",
-            "Entrants have seen the results of large as soon as a grading ends, and what they "
-            "have seen cannot be hidden again.",
-        )
-    ]
-    assert isinstance(shown, Published), shown
 
 
 async def _attempts(setup: Setup) -> list[tuple[int, int, str, GradingStatus]]:
     async with setup.unit_of_work() as ctx:
         rows = (
             await ctx.db.execute(
-                select(Grading).order_by(Grading.submission_number, Grading.attempt)
+                select(Grading)
+                .where(Grading.pipeline != "save")
+                .order_by(Grading.submission_number, Grading.attempt)
             )
         ).scalars()
         return [
@@ -1437,19 +1037,30 @@ async def test_the_confirmation_counts_the_submissions_the_save_regrades_and_no_
 
     assert asked.value.extra == {
         "asked": ANY,
-        "changes": ["The way the task grades changed."],
+        "changes": ["The inputs of the step solution changed."],
         "regrades": 2,
         "results_change": True,
         "summary": "Results change.",
-        "runs_again": ["2 submissions are graded again: the way the task grades changed."],
+        "runs_again": [
+            "Once the save's check passes, 2 submissions are graded again, running solution and "
+            "compare again: the inputs of the step solution changed."
+        ],
         "scores": ["No score changes."],
         "reading": ["Nothing entrants read changes."],
     }
     assert isinstance(confirmed, Published)
-    assert confirmed.regraded == 2
     assert confirmed.effect.runs_again == (
-        "2 submissions are graded again: the way the task grades changed.",
+        "Once the save's check passes, 2 submissions are graded again, running solution and "
+        "compare again: the inputs of the step solution changed.",
     )
+    # Nothing is graded again until the save's check passes and its
+    # publication takes over, which grades the two again.
+    assert (confirmed.regraded, confirmed.regrade, confirmed.check) == (0, None, "checking")
+    async with setup.unit_of_work() as ctx:
+        queued = await ctx.db.scalar(
+            select(func.count()).select_from(Grading).where(Grading.regrade_id.is_not(None))
+        )
+    assert queued == 2
 
 
 async def test_a_grading_change_with_every_submission_cancelled_says_none_is_graded_again(
@@ -1458,9 +1069,9 @@ async def test_a_grading_change_with_every_submission_cancelled_says_none_is_gra
     await _graded(setup, acme, entered)
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(
-            update(Grading).values(
-                status=GradingStatus.CANCELLED, cancel_reason="The machine broke."
-            )
+            update(Grading)
+            .where(Grading.pipeline != "save")
+            .values(status=GradingStatus.CANCELLED, cancel_reason="The machine broke.")
         )
 
     with pytest.raises(ConfirmationRequired) as asked:
@@ -1468,7 +1079,7 @@ async def test_a_grading_change_with_every_submission_cancelled_says_none_is_gra
 
     assert asked.value.extra["runs_again"] == [
         "No submission runs again: none of those made is graded again.",
-        "The way the task grades changed.",
+        "The inputs of the step solution changed.",
     ]
 
 
@@ -1480,7 +1091,7 @@ async def test_a_latest_publication_whose_settings_no_longer_read_is_not_called_
     async def unread(*_: object) -> None:
         return None
 
-    monkeypatch.setattr(publications, "_definition_of", unread)
+    monkeypatch.setattr(task_save.sources, "_definition_of", unread)
 
     with pytest.raises(ConfirmationRequired) as asked:
         await _save(setup, acme, running, {"statement.md": b"Typo fixed.\n"})
@@ -1496,12 +1107,12 @@ async def test_a_save_that_picks_up_a_moved_image_names_it_beside_the_regrade_co
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await _graded(setup, acme, entered)
-    repo = acme.fake.state.repos[("unicon", "sandbox-run.primitive")]
-    declaration = acme.fake.state.version_files(repo, "v2")["primitive.yaml"]
+    repo = acme.fake.state.repos[("unicon", "exec.primitive")]
+    declaration = acme.fake.state.version_files(repo, "v1")["primitive.yaml"]
     moved = declaration.replace(PLACEHOLDER_DIGEST.encode(), b"sha256:" + b"7" * 64)
     assert moved != declaration
     acme.fake.state.commit(repo, {"primitive.yaml": moved}, "Release 2.0.1", None)
-    repo.versions["v2"] = repo.head
+    repo.versions["v1"] = repo.head
     statement = {"statement.md": b"Add two numbers, now said more plainly.\n"}
 
     with pytest.raises(ConfirmationRequired) as asked:
@@ -1509,158 +1120,164 @@ async def test_a_save_that_picks_up_a_moved_image_names_it_beside_the_regrade_co
 
     assert asked.value.extra == {
         "asked": ANY,
-        "changes": [
-            "The way the task grades changed.",
-            "A release updated sandbox-run@v2 in place.",
-        ],
+        "changes": ["A release updated exec@v1 in place."],
         "regrades": 1,
         "results_change": True,
         "summary": "Results change.",
         "runs_again": [
-            "1 submission is graded again, for these changes:",
-            "The way the task grades changed.",
-            "A release updated sandbox-run@v2 in place.",
+            "Once the save's check passes, 1 submission is graded again, running "
+            "solution and compare again: a release updated exec@v1 in place."
         ],
         "scores": ["No score changes."],
         "reading": ["The statement changes."],
     }
 
 
-async def test_a_published_grading_change_regrades_every_submission_and_a_scoring_one_none(
+TOTAL = b"values:\n    total: {block: count, over: {runs: all}}\n"
+
+
+async def test_a_published_grading_change_regrades_every_submission_and_a_points_one_none(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
     await _graded(setup, acme, entered)
     (graded,) = await _attempts(setup)
 
-    scoring = await _save(
-        setup, acme, entered.task, _with(acme, b"{each: 100}", b"{pass: 100}"), confirm=True
-    )
+    points = await _save(setup, acme, entered.task, _with(acme, b"values:\n", TOTAL), confirm=True)
     unchanged = await _attempts(setup)
     grading = await _save(
         setup, acme, entered.task, _with(acme, b"time_limit: 2", b"time_limit: 1"), confirm=True
     )
 
-    assert isinstance(scoring, Published) and isinstance(grading, Published)
-    assert (scoring.regraded, unchanged) == (0, [graded])
-    # Nothing runs again, but the graded submission's points move.
-    assert (scoring.effect.results_change, scoring.effect.runs_again) == (
+    assert isinstance(points, Published) and isinstance(grading, Published)
+    assert unchanged == [graded]
+    # Nothing runs again, though every result is scored as the save says.
+    assert (points.effect.results_change, points.effect.runs_again) == (
         True,
         ("No submission runs again: the tests and how they run are the same.",),
     )
-    assert grading.regraded == 1
     first, again = await _attempts(setup)
     assert first == graded
     assert again[:3] == (1, 2, grading.publication)
     assert again[3] in (GradingStatus.QUEUED, GradingStatus.DISPATCHED)
 
 
-WORTH = RUNNING + "    worth: 50\n"
+class _Stopped(Exception):
+    """The process stopping in the middle of a save."""
+
+
+async def test_a_grading_change_whose_take_over_stopped_before_its_regrade_is_regraded_once(
+    setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The save's check passed, but its take-over stopped before the
+    regrade: the take-over is undone whole, and the next one grades the
+    submissions again, once.
+    """
+    await _graded(setup, acme, entered)
+    (graded,) = await _attempts(setup)
+
+    async def stopped(*_args: Any, **_kwargs: Any) -> None:
+        raise _Stopped
+
+    monkeypatch.setattr(gradings, "regrade", stopped)
+    with pytest.raises(_Stopped):
+        await _save(
+            setup, acme, entered.task, _with(acme, b"time_limit: 2", b"time_limit: 1"), confirm=True
+        )
+    monkeypatch.undo()
+    assert await _attempts(setup) == [graded]
+
+    await checked(setup, entered.task)
+    await checked(setup, entered.task)
+
+    first, regraded = await _attempts(setup)
+    assert first == graded
+    assert regraded[:2] == (1, 2)
+
+
 DUE = RUNNING + "    due: 2026-09-26T14:00:00Z\n"
 
 
-@pytest.mark.parametrize(
-    ("contest", "line"),
-    [
-        (WORTH, "gives it a worth of 50"),
-        (DUE, "gives it a due time"),
-    ],
-    ids=["worth", "due"],
-)
-async def test_a_task_left_giving_no_points_is_refused_while_its_contest_entry_scores_it(
-    setup: Setup, acme: Acme, sum_task: TaskId, contest: str, line: str
-) -> None:
-    await _published(setup, acme, sum_task)
-    await write_contest(acme.fake, contest.format(state="draft"))
-
-    result = await _save(setup, acme, sum_task, _with(acme, b"{each: 100}", b"{}"))
-
-    assert isinstance(result, Draft)
-    assert [(error["path"], error["message"]) for error in result.errors] == [
-        (
-            "test_groups",
-            f"No test group gives points, so sum gives no points, but the contest {line}. Remove "
-            "that from the contest first.",
-        )
-    ]
-    await write_contest(acme.fake, RUNNING.format(state="draft"))
-    assert isinstance(await _save(setup, acme, sum_task, {}), Published)
-
-
-async def test_the_task_form_reads_the_inputs_and_test_fields_its_workflow_declares(
+async def test_a_task_left_giving_no_points_may_keep_its_due(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    await _published(setup, acme, sum_task)
+    await write_contest(acme.fake, DUE.format(state="draft"))
 
-    assert (form.workflow, form.problem) == ("unicon/classic@v2", None)
-    assert [(field.id, field.type, field.contestant) for field in form.inputs] == [
-        ("submission", "file", True),
-        ("language", "enum", True),
-        ("time_limit", "number", False),
-        ("memory_limit", "number", False),
+    current = _task_yaml(acme)
+    no_points = current[: current.index(b"scoring:")] + b"scoring: {}\n"
+    result = await _save(setup, acme, sum_task, {"task.yaml": no_points})
+
+    # Any task may have a due (stage 5, phase 5.7).
+    assert isinstance(result, Published), result
+
+
+async def test_the_task_form_reads_the_inputs_its_workflow_declares(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
+
+    assert (form.workflow, form.problem, form.text_values) == ("unicon/classic@v3", None, ())
+    assert [(field.id, field.type) for field in form.inputs] == [
+        ("code", "folder"),
+        ("language", "enum"),
+        ("input", "file"),
+        ("answer", "file"),
+        ("time_limit", "number"),
+        ("memory_limit", "number"),
     ]
     assert form.inputs[1].options == ("c", "cpp", "java", "python")
     assert [(field.title, field.unit) for field in form.inputs] == [
         ("Solution", None),
         ("Language", None),
+        ("Input", None),
+        ("Answer", None),
         ("Time limit", "seconds"),
         ("Memory limit", "MB"),
     ]
-    assert form.inputs[3].help == "The memory the program may use on each test."
-    assert [(field.name, field.type) for field in form.test] == [
-        ("input", "file"),
-        ("answer", "file"),
-    ]
-    reads = acme.fake.calls_to("read_workflow_file")
-    assert {call.identity for call in reads} == {acme.ada.identity}
+    reads = [*acme.fake.calls_to("workflow_version"), *acme.fake.calls_to("read_workflow_at")]
+    assert reads and {call.identity for call in reads} == {acme.ada.identity}
 
 
-async def test_a_task_on_a_version_made_with_a_unit_on_a_file_saves_and_reads_without_it(
+async def test_a_task_on_a_version_made_with_a_unit_on_a_folder_saves_and_its_form_reads(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     # A version made before a unit was refused on anything but a number.
-    stray = CLASSIC.replace(b"    title: Solution\n", b"    title: Solution\n    unit: seconds\n")
-    assert stray != CLASSIC
+    stray = WORKFLOW.replace(b"title: Solution}", b"title: Solution, unit: seconds}")
+    assert stray != WORKFLOW
     await _workflow(acme, "united", stray)
-    current = acme.fake.state.repos[("acme", "spring.sum.task")].files["task.yaml"]
 
     saved = await _save(
-        setup,
-        acme,
-        sum_task,
-        {"task.yaml": current.replace(b"unicon/classic@v2", b"unicon/united@v1")},
+        setup, acme, sum_task, _with(acme, b"unicon/classic@v3", b"unicon/united@v1")
     )
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
     assert isinstance(saved, Published), saved
     assert form.problem is None
-    assert [(field.id, field.unit) for field in form.inputs][:1] == [("submission", None)]
 
 
 async def test_the_task_form_names_a_newer_version_and_the_task_keeps_its_own(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    assert (await publications.workflow_form(setup, acme.ada, sum_task)).newer is None
+    assert (await task_save.workflow_form(setup, acme.ada, sum_task)).newer is None
     classic = acme.fake.state.repos[("unicon", "classic.workflow")]
-    acme.fake.state.create_version(PLATFORM, classic, "v3")
+    acme.fake.state.create_version(PLATFORM, classic, "v4")
 
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
-    assert (form.workflow, form.newer) == ("unicon/classic@v2", "v3")
-    assert len(form.inputs) == 4
+    assert (form.workflow, form.newer) == ("unicon/classic@v3", "v4")
+    assert len(form.inputs) == 6
 
 
 async def test_a_draft_still_shows_its_workflows_inputs(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    draft = await _save(
-        setup, acme, sum_task, _with(acme, b"test_groups:", b"credit: 7\ntest_groups:")
-    )
+    draft = await _save(setup, acme, sum_task, _with(acme, b"scoring:", b"credit: 7\nscoring:"))
     assert isinstance(draft, Draft)
 
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
     assert form.problem is None
-    assert len(form.inputs) == 4
+    assert len(form.inputs) == 6
 
 
 @pytest.mark.parametrize(
@@ -1678,9 +1295,9 @@ async def test_a_task_form_without_a_workflow_it_can_read_says_why(
 ) -> None:
     await _save(setup, acme, sum_task, {"task.yaml": b"name: Sum\n" + workflow})
 
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
-    assert (form.inputs, form.test) == ((), ())
+    assert form.inputs == ()
     assert form.problem is not None and problem in form.problem
 
 
@@ -1688,9 +1305,9 @@ async def test_a_workflow_in_an_old_format_gives_the_form_its_reason(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     await _workflow(acme, "old", b"inputs: {}\nstages: []\n")
-    await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v2", b"unicon/old@v1"))
+    await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v3", b"unicon/old@v1"))
 
-    form = await publications.workflow_form(setup, acme.ada, sum_task)
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
     assert form.workflow == "unicon/old@v1"
     assert form.problem is not None and "an older form that Unicon no longer reads" in form.problem
@@ -1703,7 +1320,27 @@ async def test_a_workflow_in_an_old_format_gives_the_form_its_reason(
         identity=acme.ada.identity,
     )
     with pytest.raises(Forbidden):
-        await publications.workflow_form(setup, stranger, sum_task)
+        await task_save.workflow_form(setup, stranger, sum_task)
+
+
+async def test_a_workflow_gives_the_form_its_inputs_with_their_titles_and_units(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await _workflow(
+        acme,
+        "run",
+        b"inputs:\n  code: {type: folder, title: Code}\n  seed: {type: number, unit: s}\n"
+        b"steps:\n  - {id: a, use: unicon/compile@v3}\n",
+    )
+    await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v3", b"unicon/run@v1"))
+
+    form = await task_save.workflow_form(setup, acme.ada, sum_task)
+
+    assert (form.workflow, form.problem) == ("unicon/run@v1", None)
+    assert [(each.id, each.type, each.title, each.unit) for each in form.inputs] == [
+        ("code", "folder", "Code", None),
+        ("seed", "number", None, "s"),
+    ]
 
 
 async def test_a_submit_in_flight_while_a_grading_change_publishes_is_graded_against_it(
@@ -1729,7 +1366,7 @@ async def test_a_submit_in_flight_while_a_grading_change_publishes_is_graded_aga
         entered.session,
         entered.task,
         {
-            "submission": SubmittedInput(uploads=(made.id,)),
+            "code": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key="key-0001-aaaa",
@@ -1767,7 +1404,7 @@ async def test_a_save_of_another_task_never_holds_up_a_submit(
                 entered.session,
                 entered.task,
                 {
-                    "submission": SubmittedInput(uploads=(made.id,)),
+                    "code": SubmittedInput(uploads=(made.id,)),
                     "language": SubmittedInput(value="python"),
                 },
                 idempotency_key="key-0001-aaaa",
@@ -1803,7 +1440,7 @@ async def test_a_submission_is_stamped_when_it_was_checked_open_not_when_the_for
         entered.session,
         entered.task,
         {
-            "submission": SubmittedInput(uploads=(made.id,)),
+            "code": SubmittedInput(uploads=(made.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key="key-0001-aaaa",
@@ -1815,9 +1452,9 @@ async def test_a_submission_is_stamped_when_it_was_checked_open_not_when_the_for
 async def test_a_rejudge_in_flight_and_a_saves_regrade_give_each_submission_its_own_attempt(
     setup: Setup, acme: Acme, entered: Entered, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A rejudge holds the task alone, as a save does, so a save that
-    publishes a grading change regrades after it, from every attempt the
-    rejudge made, rather than from rows read before it committed."""
+    """A rejudge holds the task alone, as a save's take-over does, so a save
+    that publishes a grading change regrades after it, from every attempt
+    the rejudge made, rather than from rows read before it committed."""
     await _graded(setup, acme, entered)
     regrade = gradings.regrade
     calls = 0
@@ -1838,6 +1475,7 @@ async def test_a_rejudge_in_flight_and_a_saves_regrade_give_each_submission_its_
         held.set()
 
     monkeypatch.setattr(gradings, "regrade", slow_first)
+    monkeypatch.setattr(gradings.regrading, "regrade", slow_first)
     monkeypatch.setattr(timelines, "hold_task", hold_then_say)
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring", "sum"), Role.MANAGER)
     rejudging = asyncio.create_task(gradings.rejudge(setup, manager, entered.task))
@@ -1849,7 +1487,7 @@ async def test_a_rejudge_in_flight_and_a_saves_regrade_give_each_submission_its_
     saved = await _save(setup, acme, entered.task, change, confirm=True)
     await rejudging
 
-    assert isinstance(saved, Published) and saved.regraded == 1
+    assert isinstance(saved, Published)
     assert [(number, attempt) for number, attempt, *_ in await _attempts(setup)] == [
         (1, 1),
         (1, 2),

@@ -3,23 +3,23 @@ The git host is reached only through the `CiHost` it is paired with, and
 the clock, the record of calls and the outage switch are the world's it
 shares with the other fakes.
 
-The fake CI keeps every run it was asked to start with its variables, and
-signs the question it asks the platform about one the way a real CI signs
-its questions, with a key of its own: `config_request` is that question,
-which a test hands to `answer` as the CI would.
-`X-Fake-Signature` is the hex
-HMAC-SHA256 of the key over the creation time, a newline and the body, and
-`X-Fake-Created` that time; a
+The fake CI keeps every pipeline it was asked to start with its variables,
+on the org's dispatch repository, `<org>/unicon-dispatch`, which
+`activate_dispatch` switches on, and signs the question it asks the
+platform about one the way a real CI signs its questions, with a key of its
+own: `config_request` is that question, which a test hands to `answer` as
+the CI would. `X-Fake-Signature` is the hex HMAC-SHA256 of the key over the
+creation time, a newline and the body, and `X-Fake-Created` that time; a
 request whose signature is wrong, or made more than five minutes from now,
 is refused like one the CI did not sign. `refuse_starts` makes that many
 starts answer without a run, as the real CI does when the platform's
-extension refuses to say what the run is, and
-`lose_start_answer` starts the next run and then fails as if its answer
-were lost. A CI credential in `revoked_ci_tokens` is refused, as the CI
-refuses one it no longer holds, and a run of a task not in `activated` is
-not found, as the CI knows no such task.
+extension refuses to say what the run is, and `lose_start_answer` starts
+the next run and then fails as if its answer were lost. A CI credential in
+`revoked_ci_tokens` is refused, as the CI refuses one it no longer holds,
+and a pipeline of a dispatch repository not in `activated` is not found,
+as the CI knows no such repository.
 
-With `asks` off the fake CI is handed every run whole, as a CI that is
+With `asks` off the fake CI is handed every pipeline whole, as a CI that is
 pushed to is, and never asks what one is: its `answer` is `NotFound`, so
 the services are tested both with and without the question.
 
@@ -42,27 +42,19 @@ import httpx
 from forge.adapters.browser import open_browser
 from forge.adapters.ci.host import CiHost
 from forge.adapters.fake_world import FakeWorld
-from forge.adapters.ids import (
-    PUBLISHED_PREFIX,
-    SUBMISSION_PREFIX,
-    location,
-    parse_publication,
-    parse_submission,
-    parse_task,
-)
+from forge.adapters.ids import DISPATCH_REPO
 from forge.domain.errors import Forbidden, NotFound, Rejected, Unavailable, VariablesDiffer
 from forge.domain.grading import (
     Enrolment,
-    GradingRun,
     InboundAnswer,
     InboundRequest,
-    RunLookup,
-    RunPlaces,
-    RunSpec,
+    PipelineLookup,
+    PipelineRun,
+    PipelineSpec,
     RunState,
 )
 from forge.domain.identity import PLATFORM, AsOrgAccount, CiState, OrgAccountRef, User
-from forge.domain.ids import AgentId, OrgId, RunId, TaskId
+from forge.domain.ids import AgentId, OrgId, RunId
 from forge.domain.names import service_account_name
 
 GRADING_VARIABLE = "UNICON_GRADING_ID"
@@ -70,8 +62,6 @@ SIGNATURE_HEADER = "X-Fake-Signature"
 CREATED_HEADER = "X-Fake-Created"
 FRESHNESS = timedelta(minutes=5)
 CLONE_URL = "http://forge.test"
-TASK_CHECKOUT = "/woodpecker/task"
-SUBMISSION_CHECKOUT = "/woodpecker/submission"
 SIGN_IN_SHARE = 2 / 3
 
 NOWHERE = httpx.MockTransport(lambda request: httpx.Response(404))
@@ -81,8 +71,8 @@ sign-in takes no pages."""
 
 @dataclass
 class StartedRun:
-    """A run the fake CI was asked to start: the task it is of, the variables
-    it was started with, when, whether it was cancelled, and where the CI
+    """A pipeline the fake CI was asked to start: the dispatch repository it
+    is on, the variables it was started with, when, whether it was cancelled, and where the CI
     has it, queued until a test says otherwise.
     """
 
@@ -124,22 +114,29 @@ class FakeCi:
 
 @dataclass(frozen=True, slots=True)
 class _Ask:
-    task: TaskId
+    org: OrgId
     grading: str | None
     variables: Mapping[str, str]
     clone_url: str
 
 
-def run_variables(run: GradingRun) -> dict[str, str]:
-    """The variables the fake CI starts `run` with."""
-    return {
+def pipeline_variables(run: PipelineRun) -> dict[str, str]:
+    """The variables the fake CI starts a task's pipeline with."""
+    variables = {
         GRADING_VARIABLE: str(run.grading),
-        "UNICON_ENVELOPE_URL": run.envelope_url,
+        "UNICON_PIPELINE": run.pipeline,
         "UNICON_PUBLICATION_COMMIT": str(run.publication_version),
-        "UNICON_SUBMISSION": str(run.submission),
-        "UNICON_SUBMISSION_COMMIT": str(run.submission_version),
         "UNICON_COMPUTE": run.compute,
     }
+    if run.submission is not None:
+        variables["UNICON_SUBMISSION"] = str(run.submission)
+        variables["UNICON_SUBMISSION_COMMIT"] = str(run.submission_version)
+    return variables
+
+
+def dispatch_of(org: str) -> str:
+    """Where the fake CI keeps the org's dispatch repository's runs."""
+    return f"{org}/{DISPATCH_REPO}"
 
 
 def token_in(state: CiState) -> str:
@@ -233,33 +230,28 @@ class FakeGrading:
         self._ci.ci_tokens[token] = username
         return token
 
-    async def activate(self, as_: AsOrgAccount, task: TaskId) -> bool:
-        self._world.record("activate", as_, task=task)
-        _acting_for(self._ci, as_, task)
-        await self._task_repo(task)
-        known = task in self._ci.activated
-        self._ci.activated.add(task)
+    async def activate_dispatch(self, as_: AsOrgAccount, org: OrgId) -> bool:
+        self._world.record("activate_dispatch", as_, org=org)
+        _acting_for_org(self._ci, as_, org)
+        await self._host.repo_id(org, DISPATCH_REPO)
+        place = dispatch_of(org)
+        known = place in self._ci.activated
+        self._ci.activated.add(place)
         return not known
 
-    async def deactivate(self, as_: AsOrgAccount, task: TaskId) -> None:
-        self._world.record("deactivate", as_, task=task)
+    async def start_pipeline(self, as_: AsOrgAccount, run: PipelineRun) -> RunId:
+        variables = pipeline_variables(run)
+        self._world.record("start_pipeline", as_, org=run.org, variables=variables)
         self._world.check_up()
-        _acting_for(self._ci, as_, task)
-        self._ci.activated.discard(task)
-
-    async def start_run(self, as_: AsOrgAccount, run: GradingRun, spec: RunSpec) -> RunId:
-        variables = run_variables(run)
-        self._world.record("start_run", as_, task=run.task, variables=variables, spec=spec)
-        self._world.check_up()
-        _acting_for(self._ci, as_, run.task)
-        await self._task_repo(run.task)
-        if run.task not in self._ci.activated:
-            raise NotFound(f"the CI does not know {run.task}")
+        _acting_for_org(self._ci, as_, run.org)
+        place = dispatch_of(run.org)
+        if place not in self._ci.activated:
+            raise NotFound(f"the CI does not know {place}")
         if self._ci.refuse_starts > 0:
             self._ci.refuse_starts -= 1
             raise Rejected("the CI answered 204 without a run")
-        made = RunId(f"{run.task}/{len(self._ci.runs) + 1}")
-        self._ci.runs[made] = StartedRun(str(run.task), variables, self._world.clock.now())
+        made = RunId(f"{place}/{len(self._ci.runs) + 1}")
+        self._ci.runs[made] = StartedRun(place, variables, self._world.clock.now())
         if self._ci.lose_start_answer:
             self._ci.lose_start_answer = False
             raise Unavailable("the CI's answer to the start was lost")
@@ -280,18 +272,18 @@ class FakeGrading:
         self._ci.runs[run].cancelled = True
 
     async def answer(
-        self, request: InboundRequest, lookup: RunLookup, *, now: datetime
+        self, request: InboundRequest, lookup: PipelineLookup, *, now: datetime
     ) -> InboundAnswer:
         self._world.record("answer", PLATFORM)
         if not self.asks:
             raise NotFound("this CI is handed every run whole and never asks")
         ask = self._ask(request, now)
-        run, spec = await lookup(ask.grading, ask.task)
-        if dict(ask.variables) != run_variables(run):
+        pipeline, steps = await lookup(ask.grading, ask.org)
+        if dict(ask.variables) != pipeline_variables(pipeline):
             raise VariablesDiffer(
-                "the run was not started with the variables its grading starts it with"
+                "the pipeline was not started with the variables its grading starts it with"
             )
-        return self._answer(run, ask, spec)
+        return _pipeline_answer(pipeline, ask, steps)
 
     def _ask(self, request: InboundRequest, now: datetime) -> _Ask:
         headers = {name.lower(): value for name, value in request.headers.items()}
@@ -306,80 +298,34 @@ class FakeGrading:
             document = json.loads(request.body)
         except ValueError:
             raise Rejected("the CI's request is not JSON") from None
-        if not isinstance(document, dict) or not isinstance(document.get("task"), str):
-            raise Rejected("the CI's request names no task")
+        if not isinstance(document, dict) or not isinstance(document.get("org"), str):
+            raise Rejected("the CI's request names no repository")
         variables = document.get("variables") or {}
         return _Ask(
-            task=TaskId(document["task"]),
+            org=OrgId(document["org"]),
             grading=variables.get(GRADING_VARIABLE),
             variables=variables,
             clone_url=document["clone_url"],
         )
 
-    def _answer(self, run: GradingRun, ask: _Ask, spec: RunSpec) -> InboundAnswer:
-        places = self.run_places(run)
-        clone_image, harness_image = spec.clone_image, spec.harness_image
-        cache = [f"unicon-lfs-{places.task['org']}:/lfs-cache"]
-        document = {
-            "labels": run.compute,
-            "clone": [
-                {
-                    "name": "task",
-                    "image": clone_image,
-                    **places.task,
-                    **places.publication,
-                    "volumes": cache,
-                },
-                {"name": "submission", "image": clone_image, **places.submission, "volumes": cache},
-            ],
-            "steps": [
-                {
-                    "name": "grade",
-                    "image": harness_image,
-                    "volumes": ["unicon-filter:/run/unicon:ro"],
-                }
-            ],
-            "clone_url": ask.clone_url,
-        }
-        return InboundAnswer(
-            body=json.dumps(document, sort_keys=True).encode(), content_type="application/json"
-        )
-
-    def run_places(self, run: GradingRun) -> RunPlaces:
-        task, publication = parse_publication(run.publication)
-        workspace, task_name, number = parse_submission(run.submission)
-        return RunPlaces(
-            task={"org": task.org, "repo": task.repo},
-            publication={
-                "tag": f"{PUBLISHED_PREFIX}{publication}",
-                "commit": str(run.publication_version),
-            },
-            submission={
-                "org": workspace.org,
-                "repo": workspace.submission_repo(task_name),
-                "tag": f"{SUBMISSION_PREFIX}{number}",
-                "commit": str(run.submission_version),
-            },
-            checkouts={"task": TASK_CHECKOUT, "submission": SUBMISSION_CHECKOUT},
-        )
-
     def config_request(
         self,
-        task: TaskId,
+        org: OrgId,
         variables: Mapping[str, str],
         *,
         now: datetime,
         body: bytes | None = None,
         key: bytes | None = None,
     ) -> InboundRequest:
-        """The question the fake CI asks the platform about a run of the task
-        started with `variables`, signed at `now`, as the platform's extension
-        receives it; the CI asks it while the start is under way. `body`
-        replaces what is sent after it is signed, and `key` signs with
-        another key, for a test of a request the CI did not make.
+        """The question the fake CI asks the platform about a pipeline on
+        the org's dispatch repository started with `variables`, signed at
+        `now`, as the platform's extension receives it; the CI asks it while
+        the start is under way. `body` replaces what is sent after it is
+        signed, and `key` signs with another key, for a test of a request
+        the CI did not make.
         """
         sent = json.dumps(
-            {"task": str(task), "variables": dict(variables), "clone_url": CLONE_URL}
+            {"org": str(org), "variables": dict(variables), "clone_url": CLONE_URL}
         ).encode()
         created = str(int(now.timestamp()))
         return InboundRequest(
@@ -393,16 +339,45 @@ class FakeGrading:
             body=sent if body is None else body,
         )
 
-    async def _task_repo(self, task: TaskId) -> None:
-        await self._host.repo_id(*location(task))
-
 
 def _sign(key: bytes, created: str, body: bytes) -> str:
     return hmac.new(key, created.encode() + b"\n" + body, hashlib.sha256).hexdigest()
 
 
-def _acting_for(ci: FakeCi, as_: AsOrgAccount, task: TaskId) -> None:
-    org = parse_task(task).org
+def _pipeline_answer(run: PipelineRun, ask: _Ask, spec: PipelineSpec) -> InboundAnswer:
+    """What the fake CI is answered for a pipeline: its labels, its
+    checkout and each step as the spec gives it."""
+    document = {
+        "labels": list(spec.labels),
+        "clone": (
+            None
+            if run.submission is None or not spec.clones
+            else {
+                "image": spec.clone_image,
+                "submission": str(run.submission),
+                "commit": str(run.submission_version),
+            }
+        ),
+        "steps": [
+            {
+                "name": step.name,
+                "image": step.image,
+                "settings": dict(step.settings),
+                "depends_on": list(step.depends_on),
+                "cache": step.cache,
+                "user": step.user,
+                "always": step.always,
+            }
+            for step in spec.steps
+        ],
+        "clone_url": ask.clone_url,
+    }
+    return InboundAnswer(
+        body=json.dumps(document, sort_keys=True).encode(), content_type="application/json"
+    )
+
+
+def _acting_for_org(ci: FakeCi, as_: AsOrgAccount, org: str) -> None:
     if as_.org != org:
         raise Forbidden(f"the org account of {as_.org} does not act for {org}")
     if as_.ci_state and token_in(as_.ci_state) in ci.revoked_ci_tokens:

@@ -5,8 +5,9 @@ true and false, so a group named `no` or the country code `NO` is text, and
 `1_000`, `1:30` and a date are text too. Every number with a point or an
 exponent is read as the exact `Decimal` it is written as, never a float, so
 no digit of a bound is lost on its way to a score. The loader refuses a key
-given twice, and the document is then validated by a pydantic model that refuses any key it does not
-know, so a typo is an error rather than a setting silently left out. Every
+given twice, and an anchor or an alias (`&`, `*`), and the document is
+then validated by a pydantic model that refuses any key it does not know,
+so a typo is an error rather than a setting silently left out. Every
 problem is reported as a path into the YAML and a sentence a person reads:
 `leaderboards[0].order[1].direction`, `This must be one of asc or desc.` A form
 shows the sentence beside the field the path names.
@@ -19,13 +20,15 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Annotated, Any, NoReturn, TypedDict
+from typing import Annotated, Any, NoReturn, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, PlainValidator, ValidationError
 from pydantic_core import ErrorDetails, PydanticCustomError
 from ruamel.yaml import YAML
+from ruamel.yaml.composer import Composer, ComposerError
 from ruamel.yaml.constructor import ConstructorError, SafeConstructor
 from ruamel.yaml.error import YAMLError as YAMLError
+from ruamel.yaml.events import AliasEvent
 from ruamel.yaml.nodes import ScalarNode
 from ruamel.yaml.representer import SafeRepresenter
 from ruamel.yaml.resolver import BaseResolver
@@ -36,11 +39,22 @@ from forge.domain.names import validate_name
 Path = tuple[str | int, ...]
 
 
+def joined(items: Sequence[str]) -> str:
+    """`items` as one sentence: one as it is, or the rest with `and` before the last."""
+    if len(items) == 1:
+        return items[0]
+    return f"{', '.join(items[:-1])} and {items[-1]}"
+
+
 class Problem(TypedDict):
-    """One thing wrong with a definition file: where, and what."""
+    """One thing wrong with a definition file: where, and what. `step` is the
+    flat step a problem inside a box belongs to, when the path can only name
+    the box.
+    """
 
     path: str
     message: str
+    step: NotRequired[str]
 
 
 class InvalidDefinition(ServiceError):
@@ -184,23 +198,48 @@ for _other in ("timestamp", "binary", "set", "omap", "pairs", "merge", "value"):
     _ExactConstructor.add_constructor(_TAG + _other, _ExactConstructor.construct_not_core)
 
 
+class _PlainComposer(Composer):
+    """The composer, refusing an anchor (`&`) and an alias (`*`): an alias
+    makes two parts of the file one object, so what is read of one, such
+    as the mark entered for a value, would be read of the other, and a few
+    aliases of aliases could stand for millions of parts."""
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        event = self.parser.peek_event()
+        if isinstance(event, AliasEvent) or event.anchor is not None:
+            raise ComposerError(
+                None,
+                None,
+                "a part is named with & or repeated with *, which Unicon does not read; "
+                "write each part out in full",
+                event.start_mark,
+            )
+        return super().compose_node(parent, index)
+
+
 def _reader() -> YAML:
     reader = YAML(typ="safe", pure=True)
     reader.Resolver = _CoreResolver
     reader.Constructor = _ExactConstructor
+    reader.Composer = _PlainComposer
     return reader
 
 
 def load_yaml(text: bytes | str) -> object:
     """The document in `text`, read as YAML 1.2's core schema with every
-    number that is not whole a `Decimal`. Raises `YAMLError` when it does
-    not parse.
+    number that is not whole a `Decimal`, and no anchor or alias. Raises
+    `YAMLError` when it does not parse.
     """
     return _reader().load(text)
 
 
 class _ExactRepresenter(SafeRepresenter):
-    """The safe representer, writing a `Decimal` as the digits it holds."""
+    """The safe representer, writing a `Decimal` as the digits it holds,
+    and a part given twice out in full each time, since the reader
+    refuses an alias."""
+
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
 
     def represent_decimal(self, data: Decimal) -> ScalarNode:
         """Its digits, under the int tag when they are a whole number with
@@ -279,6 +318,9 @@ class Model(BaseModel):
 
 ANY = object()
 """A part of a `Retired` path that matches any key or index."""
+ANY_KEY = object()
+"""A part of a `Retired` path that matches any key of a mapping, never a
+list's index."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,7 +352,8 @@ def _at(node: object, pattern: tuple[object, ...], path: Path) -> list[tuple[Pat
         return [(path, node)]
     head, rest = pattern[0], pattern[1:]
     if isinstance(node, dict):
-        keys = [key for key in node if isinstance(key, str | int)] if head is ANY else [head]
+        every = head is ANY or head is ANY_KEY
+        keys = [key for key in node if isinstance(key, str | int)] if every else [head]
         return [
             found
             for key in keys
@@ -568,7 +611,7 @@ def _iso_time(text: str) -> datetime | None:
         return None
 
 
-def _aware_time(value: object) -> datetime:
+def aware_time(value: object) -> datetime:
     if isinstance(value, str):
         read = read_time(value)
         if read is None:
@@ -603,7 +646,7 @@ Number = Annotated[int | Decimal, PlainValidator(_number)]
 """A whole number as an int or a decimal one as its exact `Decimal`, and
 never true or false."""
 
-AwareTime = Annotated[datetime, PlainValidator(_aware_time)]
+AwareTime = Annotated[datetime, PlainValidator(aware_time)]
 """A date and time with a timezone, written as YAML writes one or as ISO 8601 text."""
 
 _SIZE = re.compile(r"^\s*(\d+)\s*(B|KB|MB|GB)\s*$", re.IGNORECASE)

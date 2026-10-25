@@ -1,0 +1,272 @@
+"""A task's grading worked out (SIMPLER-CORE.md 9.2, 9.3 and 11.3):
+its runs, read from both its rows, its facts, and its values.
+
+A submission's grading is its early row and, when its plan has late runs,
+the late row that follows it. Its runs are the task's live publication's,
+each read by its id from whichever row ran it, the early row first. A run
+neither row holds **waits** (`SYSTEM_ERROR`) only when it is one of
+`waiting`: the runs a row's own plan put in a pipeline still to give them
+(`scores.run_scored`), so a run a later save added, which no row's plan
+holds, **never ran** (`NOT_RUN`) whatever the late row is doing: its
+reports are missing and it never passed, until the regrade that save
+started gives it. No value shows a number built on runs that have not
+run, and none waits on a row whose plan never held the run.
+
+A run that faulted keeps its `system_error` verdict, and waits too. Each
+run reads the reports of the steps done once beside its own: an early
+run the early row's, a late run both rows', since a late run goes through
+the steps done once early. A run a row holds that the live publication
+dropped is kept apart (`dropped`), for organisers.
+
+The facts (`facts_of`): `seconds_late` and `seconds`
+(`forge.domain.release`), and `compiled`, 0 when a step done once that is
+not tainted returned `compile_error`, which the plan's steps and each
+row's `once` outcomes say, else 1. As a run does, `compiled` **waits**
+while such a step has no outcome in either row and its row's own plan put
+it in a pipeline still to give it (`compiling_waiting`), so nothing reads
+it as 1 before its compile has run. Nothing here is stored: a value is
+worked out on every read.
+
+A check's runs are worked out the same way, from what its copies of the
+steps got at the save, with `seconds_late` and `seconds` 0, and read
+against what it expects (`check_failing`).
+
+Every value is worked out here, one reading an `entered` mark among them;
+what an entrant is served of them is `forge.domain.run_showing`'s.
+"""
+
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime
+from fractions import Fraction
+from typing import Any
+
+from forge.domain.blocks.catalogue import ALL
+from forge.domain.blocks.evaluate import (
+    SYSTEM_ERROR,
+    Column,
+    Outcome,
+    RunResult,
+    evaluate,
+)
+from forge.domain.blocks.numbers import exact, written
+from forge.domain.checks import MOST_FAILING, VERDICT, failing_words
+from forge.domain.definitions import Scoring
+from forge.domain.release import seconds, seconds_late
+from forge.domain.run_plan import COMPILE_ERROR, RunPlan
+from forge.domain.run_task import Run, holds
+
+NOT_RUN = "not_run"
+"""The verdict a run reads with when the grading never ran it."""
+
+
+@dataclass(frozen=True, slots=True)
+class RunGrading:
+    """A grading's runs as its values and its readers read them: each run
+    of the live publication a row holds, as that row's result has it, by
+    id; the ids the early row holds; every run as a fold reads it; what the
+    steps done once reported and returned, the early row's and the late
+    row's; the `compiled` fact, none while it waits; each run a row holds
+    that the live publication no longer has, by id; the number each value's
+    program reported, by the value's name; and the values whose program
+    waits.
+    """
+
+    results: Mapping[str, Mapping[str, Any]]
+    early: frozenset[str]
+    read: Mapping[str, RunResult]
+    once_early: Mapping[str, Any]
+    once_late: Mapping[str, Any]
+    compiled: int | None
+    dropped: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    programs: Mapping[str, Fraction] = field(default_factory=dict)
+    programs_waiting: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class Worked:
+    """A grading and what it works out to: each value's outcome and the
+    facts it read."""
+
+    grading: RunGrading
+    outcomes: Mapping[str, Outcome]
+    facts: Mapping[str, Fraction]
+
+
+def compilers(plan: RunPlan) -> frozenset[str]:
+    """The steps done once that are not tainted, whose `compile_error` makes
+    `compiled` 0 (stage 4 open 79): a workflow's, never a value's
+    program's nor a check's copy."""
+    return frozenset(
+        name
+        for name, step in plan.steps.items()
+        if step.once and step.tainted is None and step.value is None and step.check is None
+    )
+
+
+def run_grading(
+    runs: Sequence[Run],
+    early: Mapping[str, Any] | None,
+    late: Mapping[str, Any] | None,
+    *,
+    waiting: Collection[str],
+    compiling: Collection[str],
+    programs_waiting: Collection[str] = (),
+    compiling_waiting: Collection[str] = (),
+) -> RunGrading:
+    """The grading of the live publication's `runs` from its early row's
+    result and its late row's, none for a row with none; `waiting` the runs
+    that wait when neither row holds them; `compiling` the steps `compiled`
+    reads; `programs_waiting` the values whose program neither row gives,
+    while a row whose plan runs it is still to give it; and
+    `compiling_waiting` those of `compiling` that wait, the same way, when
+    neither row gives their outcome.
+    """
+    live = {run.id for run in runs}
+    early_runs = {str(run["id"]): run for run in (early or {}).get("runs", ())}
+    late_runs = {str(run["id"]): run for run in (late or {}).get("runs", ())}
+    held = late_runs | early_runs
+    once_early = (early or {}).get("once") or {}
+    once_late = (late or {}).get("once") or {}
+    reports_early = once_early.get("reports") or {}
+    reports_late = {**reports_early, **(once_late.get("reports") or {})}
+    read: dict[str, RunResult] = {}
+    for run in runs:
+        entry = held.get(run.id)
+        if entry is None:
+            verdict = SYSTEM_ERROR if run.id in waiting else NOT_RUN
+            read[run.id] = RunResult(run.id, verdict, run.key)
+            continue
+        once = reports_early if run.id in early_runs else reports_late
+        reports = {**once, **(entry.get("reports") or {})}
+        read[run.id] = RunResult(run.id, str(entry["verdict"]), run.key, reports)
+    programs: dict[str, Fraction] = {}
+    for result in (early, late):
+        for name, number in ((result or {}).get("values") or {}).items():
+            found = exact(number)
+            if found is not None:
+                programs[str(name)] = found
+    outcomes = [once.get("outcomes") or {} for once in (once_early, once_late)]
+    stopped = any(found.get(step) == COMPILE_ERROR for found in outcomes for step in compiling)
+    coming = any(all(step not in found for found in outcomes) for step in compiling_waiting)
+    return RunGrading(
+        {name: entry for name, entry in held.items() if name in live},
+        frozenset(name for name in early_runs if name in live),
+        read,
+        once_early,
+        once_late,
+        0 if stopped else None if coming else 1,
+        {name: entry for name, entry in held.items() if name not in live},
+        programs,
+        frozenset(name for name in programs_waiting if name not in programs),
+    )
+
+
+def facts_of(
+    due: datetime | None, start: datetime, at: datetime, compiled: int | None
+) -> dict[str, Fraction]:
+    """The facts of a submission made `at`, against the row's `due` and the
+    contest's `start`, with `compiled`, left out while it waits."""
+    return {
+        "seconds_late": seconds_late(due, at),
+        "seconds": seconds(start, at),
+        **({"compiled": Fraction(compiled)} if compiled is not None else {}),
+    }
+
+
+def worked_out(
+    scoring: Scoring,
+    runs: Sequence[Run],
+    grading: RunGrading,
+    facts: Mapping[str, Fraction],
+    columns: Mapping[str, Column],
+    entered: Mapping[str, Fraction] | None = None,
+) -> dict[str, Outcome]:
+    """Each of the scoring's values over the grading, its groups' runs in
+    the task's order, `all` among them, `columns` each report's bounds as
+    the live plan gives them, and `entered` the mark entered for each value
+    of the submission; a value reading `compiled` waits while it does.
+    """
+    groups = {ALL: [grading.read[run.id] for run in runs]}
+    for name, picked in scoring.groups.items():
+        groups[name] = [grading.read[run.id] for run in runs if holds(picked, run.key)]
+    return evaluate(
+        scoring.values,
+        groups,
+        facts,
+        columns,
+        entered=entered,
+        programs=grading.programs,
+        programs_waiting=grading.programs_waiting,
+        facts_waiting=("compiled",) if grading.compiled is None else (),
+    )
+
+
+def check_failing(
+    scoring: Scoring,
+    runs: Sequence[Run],
+    columns: Mapping[str, Column],
+    compiling: Collection[str],
+    result: Mapping[str, Any],
+    expect: Mapping[str, object],
+) -> list[str]:
+    """What a check's `result` did not get of what it expects, a sentence
+    each, at most `MOST_FAILING` and one saying how many more: a run of the
+    task's `runs` with another verdict than `expect`'s, and a value whose
+    number is not the one expected, worked out from the check's runs as a
+    submission's are, with `seconds_late` and `seconds` 0 (stage 5 section
+    6 item 9) and `compiled` from the check's own steps done once; none when
+    it got all of it."""
+    grading = run_grading(runs, result, None, waiting=(), compiling=compiling)
+    assert grading.compiled is not None, "nothing of a check waits"
+    found: list[str] = []
+    verdict = expect.get(VERDICT)
+    if isinstance(verdict, str):
+        found += [
+            failing_words(run.id, grading.read[run.id].verdict, verdict)
+            for run in runs
+            if grading.read[run.id].verdict != verdict
+        ]
+    wanted = {
+        name: number
+        for name, raw in expect.items()
+        if name != VERDICT and (number := exact(raw)) is not None
+    }
+    wanted_text = {
+        name: raw for name, raw in expect.items() if name != VERDICT and isinstance(raw, str)
+    }
+    if wanted or wanted_text:
+        facts = {
+            "seconds_late": Fraction(0),
+            "seconds": Fraction(0),
+            "compiled": Fraction(grading.compiled),
+        }
+        outcomes = worked_out(scoring, runs, grading, facts, columns)
+        for name, number in wanted.items():
+            outcome = outcomes.get(name)
+            if outcome is None or outcome.number is None:
+                found.append(f"{name} has no number, where {written(number)} is expected.")
+            elif outcome.number != number:
+                found.append(f"{name} is {written(outcome.number)}, not {written(number)}.")
+        for name, text in wanted_text.items():
+            outcome = outcomes.get(name)
+            if outcome is None or outcome.text is None:
+                found.append(f"{name} has no text, where {text} is expected.")
+            elif outcome.text != text:
+                found.append(f"{name} is {outcome.text}, not {text}.")
+    if len(found) > MOST_FAILING:
+        more = len(found) - MOST_FAILING + 1
+        found = [*found[: MOST_FAILING - 1], f"And {more} more like these."]
+    return found
+
+
+__all__ = [
+    "NOT_RUN",
+    "RunGrading",
+    "Worked",
+    "check_failing",
+    "compilers",
+    "facts_of",
+    "run_grading",
+    "worked_out",
+]

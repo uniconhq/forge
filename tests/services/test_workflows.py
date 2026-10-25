@@ -18,10 +18,10 @@ import pytest
 from forge.domain.errors import Conflict, Forbidden, InvalidName, Unavailable
 from forge.domain.identity import AsUser
 from forge.domain.ids import ContestId, WorkflowId
-from forge.domain.plans import check_workflow
 from forge.domain.primitives import parse_primitive
 from forge.domain.roles import Role, Scope
-from forge.domain.workflow_definition import parse_workflow
+from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
+from forge.domain.workflow_definition import WORKFLOW_FILE, parse_run_workflow
 from forge.runtime.setup import Setup
 from forge.services import workflows
 from forge.services.workflows import NewWorkflow
@@ -40,7 +40,7 @@ async def test_a_person_makes_a_workflow_under_their_own_name(setup: Setup, acme
     assert repo.readers == set()
     assert [change.author_id for change in repo.history] == [8]
     assert repo.files["workflow.yaml"].startswith(b"# bob/tuned, a workflow.")
-    parse_workflow(repo.files["workflow.yaml"])
+    parse_run_workflow(repo.files["workflow.yaml"])
     (call,) = acme.fake.calls_to("create_workflow")
     assert isinstance(call.identity, AsUser)
     assert call.identity.user_id == 8
@@ -54,13 +54,12 @@ async def test_the_starter_workflow_is_the_built_in_one_and_checks_as_a_version(
     await workflows.create(setup, bob, "bob", "tuned")
 
     repo = acme.fake.state.repos[("bob", "tuned.workflow")]
-    starter = parse_workflow(repo.files["workflow.yaml"])
-    assert starter == parse_workflow(CLASSIC)
-    declarations = {
-        f"unicon/{name}@v2": parse_primitive(declaration)
-        for name, declaration in PRIMITIVES.items()
-    }
-    assert check_workflow(starter, declarations) == []
+    files = dict(repo.files)
+    starter = parse_run_workflow(files[WORKFLOW_FILE])
+    assert starter == parse_run_workflow(CLASSIC[WORKFLOW_FILE])
+    declarations = {ref: parse_primitive(declaration) for ref, declaration in PRIMITIVES.items()}
+    held = WorkflowFiles(frozenset(files), files)
+    assert check_run_workflow(starter, declarations, held).problems == []
 
 
 async def test_ones_own_name_is_matched_whatever_its_case(setup: Setup, acme: Acme) -> None:

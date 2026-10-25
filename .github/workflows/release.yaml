@@ -12,7 +12,7 @@ jobs:
   # same workflow rather than copying its steps keeps "the same checks as CI"
   # true when CI changes: a tag on a red commit never becomes a release.
   checks:
-    uses: ./.github/workflows/ci.yaml
+    uses: ./.github/workflows/ci.yaml # zizmor: ignore[self-repository] actionlint does not read the $/ form yet
 
   release:
     needs: checks
@@ -20,10 +20,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The ancestry check below needs main's history, not the tag alone.
           fetch-depth: 0
+          persist-credentials: false
 
       # Whatever depends on this package pins a release, so a release comes
       # from the reviewed branch only. A tag on any other branch publishes
@@ -51,14 +52,15 @@ jobs:
           fi
           echo "number=$tagged" >> "$GITHUB_OUTPUT"
 
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: 0.12.13
       - run: uv build
 
       # The release carries the wheel and the sdist. A dependant pins one
       # release by its tag and installs the wheel from it.
-      - uses: softprops/action-gh-release@v3
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        # zizmor: ignore[superfluous-actions] one step writes the body and uploads the files
         with:
           body: |
             `unicon-forge` ${{ github.ref_name }}. Install the wheel below, or

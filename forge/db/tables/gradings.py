@@ -11,14 +11,16 @@ against it. `submitted_at` is when the submit was taken, by the package's
 clock, which is what a task's rate is counted by. `idempotency_key` is the
 key the submit that made the row was sent with, on the row a submit makes
 and on no retry or rejudge, unique for a workspace and task.
-`callback_token_hash` is the SHA-256 of the one token its run reports back
-with, stored at the insert.
+`callback_token_hash` is the SHA-256 of the one token a run of the grading
+format before pipelines reported back with, kept on the rows that had one
+and written on no new row.
 
 `queued_at` is when the row was made, by the package's clock. `run_id` is
 its run at the CI, `dispatched_at` when that run was started,
-`started_at` when its harness fetched the envelope and `deadline_at` the
-run's deadline from then. `progress` is the last progress its run reported,
-`{"step", "done", "total"}`, and `error` a line for staff about a grading
+`started_at` when its first step asked for its job and `deadline_at` the
+run's deadline from then. `progress` is the last progress a run of the
+grading format before pipelines reported, `{"step", "done", "total"}`,
+written on no new row, and `error` a line for staff about a grading
 that ended in `system_error`, kept when staff then cancel it with
 `cancel_reason`, the sentence its contestant reads. `automatic` marks the
 attempt the platform made by itself when the one before it ended in
@@ -27,13 +29,36 @@ itself, but waits for staff. `submission_limit` is the task's
 `submissions.max` an `over_limit` attempt ended against, none on any other.
 `regrade_id` names the regrade of many (`Regrade`) the attempt belongs to:
 one it made, or a retry of one of those; none on any other.
+
+A grading is a row per pipeline (`pipeline`): `early`, `late`, with
+`early_id` naming the early row it follows, none on a lone late row, and
+`save`, a publication's own checking, which has no submission, so the
+submission's columns are empty on it and on no other. A submission's
+attempts are counted per pipeline (its line), a publication's save attempts
+once each. `run_user` is the user the row's steps run as, while it is not
+finished unique among the rows not finished. `taken_over_at` is when a save
+row that passed let its publication take over, the task graded again when
+that changed how it grades; none while that waits. `released_split` says the
+grading takes its plan's released split (`RunPlan.for_split`): its early row
+was made while the task's results were released, and its late row and
+retries keep what their grading was made with.
 """
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
-from sqlalchemy import BigInteger, CheckConstraint, Index, UniqueConstraint, func, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    Index,
+    UniqueConstraint,
+    and_,
+    func,
+    literal_column,
+    not_,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.db.base import Base, Timestamped
@@ -41,6 +66,15 @@ from forge.domain.grading import GradingStatus
 from forge.domain.ids import new_id
 
 STATUSES = tuple(status.value for status in GradingStatus)
+EARLY: Final = "early"
+LATE: Final = "late"
+SAVE: Final = "save"
+PIPELINES = f"pipeline in ('{SAVE}', '{EARLY}', '{LATE}')"
+SUBMISSION = (
+    f"(pipeline = '{SAVE}') = (submission_id is null) and (pipeline = '{SAVE}' or ("
+    "workspace_id is not null and submission_number is not null "
+    "and submission_version is not null and submitted_at is not null))"
+)
 
 
 class Grading(Base, Timestamped):
@@ -48,13 +82,20 @@ class Grading(Base, Timestamped):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=new_id)
     task_id: Mapped[str]
-    workspace_id: Mapped[str]
+    # Empty on a save row only, which the check `submission` keeps. Typed as
+    # set, since every reader of them reads rows that are not a save's.
+    workspace_id: Mapped[str] = mapped_column(nullable=True)
     submitted_by: Mapped[int | None] = mapped_column(BigInteger)
-    submission_id: Mapped[str]
-    submission_number: Mapped[int]
-    submission_version: Mapped[str]
-    submitted_at: Mapped[datetime]
+    submission_id: Mapped[str] = mapped_column(nullable=True)
+    submission_number: Mapped[int] = mapped_column(nullable=True)
+    submission_version: Mapped[str] = mapped_column(nullable=True)
+    submitted_at: Mapped[datetime] = mapped_column(nullable=True)
     publication_id: Mapped[str]
+    pipeline: Mapped[str] = mapped_column(server_default=text(f"'{EARLY}'"))
+    early_id: Mapped[uuid.UUID | None]
+    released_split: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    run_user: Mapped[int | None]
+    taken_over_at: Mapped[datetime | None]
     attempt: Mapped[int] = mapped_column(server_default=text("1"))
     idempotency_key: Mapped[str | None]
 
@@ -78,7 +119,24 @@ class Grading(Base, Timestamped):
 
     __table_args__ = (
         CheckConstraint(f"status in {STATUSES}", name="status"),
-        UniqueConstraint("submission_id", "attempt"),
+        CheckConstraint(PIPELINES, name="pipeline"),
+        CheckConstraint(SUBMISSION, name="submission"),
+        UniqueConstraint("submission_id", "pipeline", "attempt"),
+        Index(
+            "ix_gradings_publication_id_attempt",
+            "publication_id",
+            "attempt",
+            unique=True,
+            postgresql_where=text(f"pipeline = '{SAVE}'"),
+        ),
+        Index(
+            "ix_gradings_run_user",
+            "run_user",
+            unique=True,
+            postgresql_where=text(
+                "run_user is not null and status in ('queued', 'dispatched', 'running')"
+            ),
+        ),
         Index("ix_gradings_workspace_id", "workspace_id"),
         Index("ix_gradings_task_id_workspace_id", "task_id", "workspace_id"),
         Index("ix_gradings_regrade_id", "regrade_id"),
@@ -91,3 +149,33 @@ class Grading(Base, Timestamped):
             postgresql_where=text("idempotency_key is not null"),
         ),
     )
+
+
+FRONT = Grading.pipeline == EARLY
+"""The rows that are a submission's grading as its entrant knows it: its
+early row; not a late row, which follows one, nor a save row, which has no
+submission."""
+
+
+def _failing(holds: str, items: str) -> str:
+    """A path to each of `items` for which `holds` is false or unknown,
+    unknown being a value of another type, so it fails as in Python."""
+    return f"{items} ? (!({holds}) || ({holds}) is unknown)"
+
+
+PASSED = and_(
+    Grading.status == GradingStatus.DONE,
+    *(
+        not_(func.jsonb_path_exists(Grading.result, literal_column(f"'{path}'::jsonpath")))
+        for path in (
+            _failing('@.verdict == "accepted" || @.verdict == "skipped"', "$.runs[*]"),
+            _failing('@ == "accepted"', "$.once.outcomes.*"),
+            _failing("@.passed == true", "$.checks[*]"),
+        )
+    ),
+)
+"""The rows `done` whose result accepts every run, a skipped one among
+them, every step done once, and whose every check got what it expects,
+exactly as `step_data.all_accepted` tells it: a save row that lets its
+publication take over. A run with no verdict, or a check whose `passed`
+is missing or not `true`, fails it as it does in Python."""

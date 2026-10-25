@@ -1,7 +1,7 @@
-"""The submissions a row has marked for the `marked` boards, one set per row
-and task, shared by every board and by every member of the entrant. A mark
+"""The submissions a row has marked for the `marked` leaderboards, one set per row
+and task, shared by every leaderboard and by every member of the entrant. A mark
 names a submission by its number in the row's workspace, graded or not, so
-it is kept whatever becomes of the submission's grading; only a board reads
+it is kept whatever becomes of the submission's grading; only a leaderboard reads
 whether it is a candidate.
 """
 

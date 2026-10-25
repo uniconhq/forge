@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from forge.domain.clock import FakeClock
-from forge.domain.content import ConflictToken, FileSet, check_path
+from forge.domain.content import ConflictToken, FileSet, check_path, path_problem
 from forge.domain.contracts import _validator
 from forge.domain.errors import InvalidName, InvalidPath, NotFound
 from forge.domain.ids import ContestId, TaskId, VersionId
@@ -168,6 +168,36 @@ def test_a_path_that_could_leave_the_place_or_mean_something_else_is_refused(pat
     with pytest.raises(InvalidPath) as refused:
         check_path(path)
     assert refused.value.extra == {"path": path}
+
+
+@pytest.mark.parametrize(
+    ("path", "message"),
+    [
+        ("data /", "No part of the path can start or end with a space."),
+        (" data/1.in", "No part of the path can start or end with a space."),
+        ("data/\t1.in", "The path cannot hold a control character, such as a tab or a new line."),
+        ("data/1\x7f", "The path cannot hold a control character, such as a tab or a new line."),
+        ("a//b", "The path cannot have empty, . or .. parts."),
+    ],
+)
+def test_a_task_path_and_a_workflow_path_keep_one_rule(path: str, message: str) -> None:
+    assert path_problem(path, folder=None) == message
+    assert path_problem(path, folder=None, of="workflow") == message
+
+
+def test_a_path_names_a_file_or_a_folder_as_it_is_asked_for() -> None:
+    assert path_problem("data/", folder=True) is None
+    assert path_problem("data/", folder=None) is None
+    assert path_problem("data/1.in", folder=None) is None
+    assert path_problem("data", folder=True) == (
+        "This is a folder, so its path ends with /, such as data/."
+    )
+    assert path_problem("data/", folder=False) == (
+        "This is one file, so its path does not end with /."
+    )
+    assert path_problem("", folder=None, of="workflow") == (
+        "Give the path of a file or folder in the workflow, such as diff/ or diff/program.yaml."
+    )
 
 
 def test_a_file_set_has_a_file_and_a_folder_with_something_under_it() -> None:

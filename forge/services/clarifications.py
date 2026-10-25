@@ -70,7 +70,7 @@ from forge.domain.threads import Comment, Thread, ThreadKind
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import announcements, entrants, names, published, release, sessions
+from forge.services import announcements, entrant_view, entrants, names, release, sessions
 from forge.services.access import Organiser, require
 from forge.services.announcements import Announcement, AnsweredQuestion
 
@@ -168,9 +168,9 @@ async def ask(
     about: TaskId | None = None
     if task is not None:
         about = await names.task_id(ctx, contest, task)
-        found = await published.task(ctx, about, settings) if about is not None else None
+        found = await entrant_view.task(ctx, about, settings) if about is not None else None
         if found is None or not rules.visible(settings, found.name, ctx.now):
-            raise NotFound(published.NO_SUCH_TASK)
+            raise NotFound(entrant_view.NO_SUCH_TASK)
         body += f"\n\n<!-- unicon:task {about} -->"
     where = await names.scope_names(ctx, contest_scope(contest))
     as_ = AsUser(session.user_id, await sessions.credential_for(ctx, session.id))
@@ -500,7 +500,7 @@ def _about(thread: Thread, contest: ContestId) -> TaskId | None:
 async def _withdrawn(ctx: Context, contest: ContestId, task: TaskId) -> bool:
     """Whether the contest's settings mark the task withdrawn."""
     name = (await names.names_of(ctx, [task])).get(task)
-    entry = (await published.contest(ctx, contest)).entry(name) if name is not None else None
+    entry = (await entrant_view.contest(ctx, contest)).entry(name) if name is not None else None
     return entry is not None and entry.withdrawn
 
 

@@ -178,13 +178,17 @@ class AdminOnly(ServiceError):
 
 
 class ConfirmationRequired(ServiceError):
-    """A save during a running contest would publish. `changes` lists what
+    """An action that asks first was sent without its confirmation, and
+    nothing changed; the detail is the words to show. A release of a task's
+    results, or a take-back, carries `action`, which one. A save during a
+    running contest would publish. `changes` lists what
     would change how the task grades, in words a person reads, `regrades`
-    how many submissions the save would grade again, and `results_change`,
-    `summary`, `runs_again`, `scores` and `reading` what it does
-    (`domain.save_effect`), and `asked` the head and latest publication it
-    was worked out from; the same save sent again with the confirmation and
-    `asked` publishes it while neither has moved.
+    how many submissions the save would grade again once its save is
+    checked, and `results_change`, `summary`, `runs_again`,
+    `scores` and `reading` what it does (`domain.save_effect`), and `asked`
+    the head and latest publication it was worked out from; the same save
+    sent again with the confirmation and `asked` publishes it while neither
+    has moved.
     """
 
     code = "confirmation_required"
@@ -281,6 +285,15 @@ class InvalidExtension(ServiceError):
     code = "invalid_extension"
 
 
+class InvalidMark(ServiceError):
+    """A mark entered for a value that takes none in the task's live
+    publication, or that is not a number within the bounds its `entered`
+    block gives.
+    """
+
+    code = "invalid_mark"
+
+
 class SubmitRefused(ServiceError):
     """An upload or a submit the task's rules turn away before anything is
     written. Each rule has an error of its own below, and its `code` says
@@ -357,8 +370,9 @@ class RateLimited(SubmitRefused):
 
 class TooLarge(SubmitRefused):
     """A file, or the submission as a whole, is larger than the task allows.
-    `limit` is the most allowed in bytes, and `input` the input whose limit it
-    is, or none for the task's limit on a whole submission.
+    `limit` is the most allowed in bytes, `input` the input whose limit it
+    is, or none for the task's limit on a whole submission, and `part` the
+    part of that input, or none when no part was named.
     """
 
     code = "too_large"
@@ -401,16 +415,8 @@ class InvalidInputs(SubmitRefused):
     code = "invalid_inputs"
 
 
-class LogTooLarge(ServiceError):
-    """A run log is larger than the platform reads back for an organiser,
-    which no harness writes. `limit` is the most shown, in bytes.
-    """
-
-    code = "log_too_large"
-
-
 class PublicFileTooLarge(ServiceError):
-    """A file under a task's `public/` is larger than the platform serves
+    """A file a task shows its readers is larger than the platform serves
     of it to a reader. `limit` is the most served, in bytes.
     """
 
@@ -581,7 +587,8 @@ class EntrantChanged(ServiceError):
 
 
 class MarksOff(ServiceError):
-    """No board with `select: marked` covers the task, so it takes no marks."""
+    """No leaderboard reads which of the task's submissions an entrant marks, so it
+    takes no marks."""
 
     code = "marks_off"
 

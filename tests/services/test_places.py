@@ -1,6 +1,7 @@
 """Making places ahead: approving an entrant makes its place at every task
-the contest has published, a task's first publication makes it for every
-approved entrant, both once the request has committed and in turns of their
+the contest has published, a task's first live publication makes it for
+every approved entrant, once, though an earlier one still waits for its
+check, both once the request has committed and in turns of their
 own, none at a task released later until it is released, none for a contest
 that is a draft or over, and an entrant removed while its place is made has
 the access taken back. An entrant the forge refuses is passed over; a forge
@@ -20,12 +21,15 @@ from forge.adapters.fakes import FakeForge
 from forge.adapters.ids import parse_task, parse_workspace
 from forge.db.tables import EntrantMember
 from forge.domain.clock import FakeClock
+from forge.domain.content import Edit
 from forge.domain.errors import Conflict, Unavailable
+from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
+from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
-from forge.services import entrants, files, places, uploads
+from forge.services import entrants, files, places, task_save, uploads
 from forge.services.turns import Turns
 from forge.settings import Settings
 from forge.testing import APP_URL, FORGE_URL, logged
@@ -33,6 +37,7 @@ from tests.services.conftest import (
     RUNNING,
     SPRING,
     Acme,
+    checked,
     make_task,
     organiser,
     publish,
@@ -41,6 +46,30 @@ from tests.services.conftest import (
 )
 
 SOURCE = b"print(1)\n"
+UNCHECKED = b"""\
+inputs:
+  code: {type: folder, title: Solution}
+  language: {type: enum, options: [python], title: Language}
+  input: {type: file, title: Input}
+  answer: {type: file, title: Answer}
+  time_limit: {type: number, title: Time limit, unit: seconds}
+  memory_limit: {type: number, title: Memory limit, unit: MB}
+steps:
+  - id: compile
+    use: unicon/compile@v3
+    with: {source: "${{ inputs.code }}", language: "${{ inputs.language }}"}
+  - id: solution
+    use: unicon/exec@v1
+    with:
+      program: ${{ steps.compile.program }}
+      stdin: ${{ inputs.input }}
+      time_limit: ${{ inputs.time_limit }}
+      memory_limit: ${{ inputs.memory_limit }}
+outputs:
+  time_ms: ${{ steps.solution.time_ms }}
+"""
+"""A workflow whose every step reads the entrant's code, so a task on it has
+no save steps and its publication is live at once."""
 
 
 @pytest.fixture
@@ -86,6 +115,47 @@ def _made(fake: FakeForge) -> list[str]:
         for call in fake.state.calls
         if call.operation == "open_submission_place"
     ]
+
+
+async def test_a_first_live_publication_makes_the_places_though_an_earlier_one_waits_its_check(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
+    await _approve(setup, acme, 8)
+    workflow = await acme.fake.workflows.create_workflow(
+        PLATFORM, "unicon", "unchecked", {"workflow.yaml": UNCHECKED}, Visibility.PUBLIC
+    )
+    await acme.fake.workflows.create_workflow_version(PLATFORM, workflow, "v1")
+    head = await acme.fake.content.list_files(PLATFORM, sum_task)
+    starter = await acme.fake.content.read_file(PLATFORM, sum_task, "task.yaml")
+    waiting = await task_save.save(
+        setup,
+        acme.ada,
+        sum_task,
+        {"task.yaml": Edit(starter.content + b"# checked first\n", head.tokens["task.yaml"])},
+        confirm=True,
+    )
+    assert isinstance(waiting, task_save.Published), waiting
+    await setup.settle()
+    assert _made(acme.fake) == []
+
+    head = await acme.fake.content.list_files(PLATFORM, sum_task)
+    unchecked = starter.content.replace(b"unicon/classic@v3", b"unicon/unchecked@v1")
+    live = await task_save.save(
+        setup,
+        acme.ada,
+        sum_task,
+        {"task.yaml": Edit(unchecked, head.tokens["task.yaml"])},
+        confirm=True,
+    )
+    assert isinstance(live, task_save.Published), live
+    assert live.check is None
+    await setup.settle()
+    assert await _writers(setup, acme.fake, sum_task, 8) == {8}
+
+    await checked(setup, sum_task)
+
+    assert _made(acme.fake) == [sum_task]
 
 
 async def test_approving_an_entrant_makes_its_place_at_every_published_task(
@@ -188,7 +258,7 @@ async def test_a_forge_that_fails_stops_the_rest_and_the_first_upload_makes_the_
         setup,
         bob,
         sum_task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=len(SOURCE),
         sha256=hashlib.sha256(SOURCE).hexdigest(),
@@ -320,7 +390,7 @@ async def test_a_first_upload_to_a_place_made_ahead_is_answered(
         setup,
         bob,
         sum_task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=len(SOURCE),
         sha256=hashlib.sha256(SOURCE).hexdigest(),

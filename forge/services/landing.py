@@ -1,6 +1,6 @@
 """What a visitor with no session reads: the contests whose `visibility` is
 `everyone` and that are published, and the statements of their released
-tasks with the files under each one's `public/` (`public_file`), and nothing
+tasks with the files each one shows (`public_file`), and nothing
 else. A visitor has no credential, so everything is read as the
 platform, and the package applies the contest's visibility and the release
 rules before it hands anything on. A contest that is not for everyone, and a task
@@ -24,8 +24,8 @@ from forge.domain.names import ScopeNames
 from forge.domain.roles import contest_id_of, contest_scope, task_scope
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import names, published
-from forge.services.published import PublicFile, PublishedTask
+from forge.services import entrant_view, names, timelines
+from forge.services.entrant_view import PublicFile, PublishedTask
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +67,7 @@ class PublicStatement:
 @action
 async def contests(ctx: Context) -> tuple[PublicContest, ...]:
     """Every public contest, newest start first, without its tasks."""
-    public = [pair for pair in await published.every_contest_kept(ctx) if _public(pair[1])]
+    public = [pair for pair in await entrant_view.every_contest_kept(ctx) if _public(pair[1])]
     where = await names.places_named(ctx, [contest for contest, _ in public])
     return tuple(
         _contest(contest, where[contest], settings, ())
@@ -79,11 +79,11 @@ async def contests(ctx: Context) -> tuple[PublicContest, ...]:
 @action
 async def contest(ctx: Context, contest: ContestId) -> PublicContest:
     """A public contest with its released tasks. `NotFound` for any other."""
-    settings = await _public_settings(ctx, contest, published.NO_SUCH_CONTEST)
+    settings = await _public_settings(ctx, contest, entrant_view.NO_SUCH_CONTEST)
     now = ctx.now
     tasks = tuple(
         PublicTask(task.id, task.name, task.label or task.name, task.definition.name)
-        for task in await published.tasks(ctx, contest, settings)
+        for task in await entrant_view.tasks(ctx, contest, settings)
         if rules.visible(settings, task.name, now)
     )
     where = await names.scope_names(ctx, contest_scope(contest))
@@ -98,30 +98,40 @@ async def statement(ctx: Context, task: TaskId) -> PublicStatement:
     found = await _released(ctx, task)
     return PublicStatement(
         PublicTask(found.id, found.name, found.label or found.name, found.definition.name),
-        await published.statement(ctx, found),
+        await entrant_view.statement(ctx, found),
     )
 
 
 @action
 async def public_file(ctx: Context, task: TaskId, path: str) -> PublicFile:
-    """A file under `public/` of a released task of a public contest, by its
-    path in the task, as the task's latest publication holds it: whoever may
-    read its statement may read these. `NotFound` for any other task, and
-    for a path outside `public/` or not there; `PublicFileTooLarge` for one
-    larger than a page is served.
+    """A file a released task of a public contest shows, by its path in the
+    task, as the task's latest publication holds it (`published.public_file`):
+    whoever may read its statement may read these. `NotFound` for any other
+    task, and for a path the task does not show or not there;
+    `PublicFileTooLarge` for one larger than a page is served.
     """
-    path = published.public_path(path)
-    return await published.public_file(ctx, await _released(ctx, task), path)
+    path = entrant_view.public_path(path)
+    contest = contest_id_of(task_scope(task))
+    settings = await _public_settings(ctx, contest, entrant_view.NO_SUCH_TASK)
+    found = await _released(ctx, task, settings)
+    reveal = await timelines.reveal(ctx, contest, settings, found.name)
+    return await entrant_view.public_file(ctx, found, path, reveal=reveal)
 
 
-async def _released(ctx: Context, task: TaskId) -> PublishedTask:
+async def _released(
+    ctx: Context, task: TaskId, settings: ContestDefinition | None = None
+) -> PublishedTask:
     """The task at its latest publication, once it is released in a public
-    contest. `NotFound` otherwise.
+    contest, whose settings are `settings` when the caller read them.
+    `NotFound` otherwise.
     """
-    settings = await _public_settings(ctx, contest_id_of(task_scope(task)), published.NO_SUCH_TASK)
-    found = await published.task(ctx, task, settings)
+    if settings is None:
+        settings = await _public_settings(
+            ctx, contest_id_of(task_scope(task)), entrant_view.NO_SUCH_TASK
+        )
+    found = await entrant_view.task(ctx, task, settings)
     if found is None or not rules.visible(settings, found.name, ctx.now):
-        raise NotFound(published.NO_SUCH_TASK)
+        raise NotFound(entrant_view.NO_SUCH_TASK)
     return found
 
 
@@ -133,7 +143,7 @@ def _public(settings: ContestDefinition) -> bool:
 
 async def _public_settings(ctx: Context, contest: ContestId, missing: str) -> ContestDefinition:
     try:
-        settings = await published.contest(ctx, contest)
+        settings = await entrant_view.contest(ctx, contest)
     except NotFound as exc:
         raise NotFound(missing) from exc
     if not _public(settings):

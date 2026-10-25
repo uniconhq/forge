@@ -5,9 +5,9 @@ that account's sign-in at the CI included; as the org's admin they ask for a
 contest and a task and the poller makes those; they save the starter
 `task.yaml` with one change and the statement written, and it is
 published, its plan committed in the
-same commit, and the task is activated at the CI trusted for `volumes` and
-nothing else with no webhook left on its repository; a bad save is a draft
-with its errors and no new tag. Then the contest is published and running,
+same commit; a bad save is a draft
+with its errors and no new tag. Once that publication's check has passed,
+the contest is published and running,
 a second person registers and is approved, the poller opens their desk and a
 place for the published task that they write, they read the contest's home
 and the task's statement, a visitor reads the same statement, a task
@@ -22,9 +22,12 @@ from typing import Any
 
 import httpx
 import pytest
+from sqlalchemy import update
 
+from forge.db.tables import Grading
 from forge.domain.content import Edit
 from forge.domain.errors import NotFound
+from forge.domain.grading import GradingStatus
 from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.names import EntrantOwner, Named
 from forge.domain.registration import Status
@@ -39,13 +42,13 @@ from forge.services import (
     files,
     landing,
     orgs,
-    publications,
+    pipelines,
     sessions,
+    task_save,
     tasks,
 )
-from forge.services.publications import Draft, Published
+from forge.services.task_save import Draft, Published
 from tests.live.conftest import (
-    CI_PUBLIC_URL,
     LIVE,
     credential_of,
     delete_org,
@@ -64,10 +67,9 @@ def org(admin: httpx.Client, ci: httpx.Client, stamp: str) -> Iterator[str]:
     """
     name = f"live-path-{stamp}"
     yield name
-    for task in ("sum", "later"):
-        found = ci.get(f"/api/repos/lookup/{name}/spring.{task}.task")
-        if found.status_code == 200:
-            ci.delete(f"/api/repos/{found.json()['id']}", params={"remove": "true"})
+    found = ci.get(f"/api/repos/lookup/{name}/unicon-dispatch")
+    if found.status_code == 200:
+        ci.delete(f"/api/repos/{found.json()['id']}", params={"remove": "true"})
     found = ci.get(f"/api/orgs/lookup/{name}")
     if found.status_code == 200 and found.json().get("id"):
         ci.delete(f"/api/orgs/{found.json()['id']}")
@@ -113,6 +115,25 @@ def _running(title: str) -> bytes:
     ).encode()
 
 
+async def _checked(setup: Setup, task: TaskId) -> None:
+    """Each save row of `task` ended `done` with every run accepted, as its
+    save pipeline would, and the publication it checks taken over. A
+    publication whose plan checks at the save is not the task's until then,
+    and a contest will not open on it. The stack's CI asks the stack's own
+    platform what a run is, and this one runs beside it on its own
+    database, so the run is never started here; the browser tests check a
+    save for real."""
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Grading)
+            .where(Grading.task_id == task, Grading.pipeline == "save")
+            .values(status=GradingStatus.DONE, result={"schema_version": 6, "runs": []})
+        )
+    async with setup.unit_of_work() as ctx:
+        await pipelines.take_over(ctx, task)
+    await setup.settle()
+
+
 def _permission(admin: httpx.Client, org: str, repo: str, login: str) -> str:
     found = admin.get(f"/api/v1/repos/{org}/{repo}/collaborators/{login}/permission")
     assert found.status_code == 200, found.text
@@ -122,7 +143,6 @@ def _permission(admin: httpx.Client, org: str, repo: str, login: str) -> str:
 async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publishes(
     live_setup: Setup,
     admin: httpx.Client,
-    ci: httpx.Client,
     org: str,
     person: dict[str, Any],
     contestant: dict[str, Any],
@@ -136,12 +156,12 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     contest = ContestId(f"{org}/spring")
     await tasks.create(live_setup, organiser, contest, "sum", title="Sum of Two")
     task = TaskId(f"{org}/spring/sum")
-    assert await tasks.list(live_setup, organiser, contest) == (Named(task, "sum"),)
+    assert await tasks.list_tasks(live_setup, organiser, contest) == (Named(task, "sum"),)
 
     starter = await files.read(live_setup, organiser, task, "task.yaml")
     statement = await files.read(live_setup, organiser, task, "statement.md")
     # A contest opens only with every task's statement written (C5).
-    saved = await publications.save(
+    saved = await task_save.save(
         live_setup,
         organiser,
         task,
@@ -162,19 +182,12 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     assert commit["author"]["login"] == person["login"]
     assert sorted(entry["filename"] for entry in commit["files"]) == [
         "plans/plan.json",
+        "plans/runs.json",
         "statement.md",
         "task.yaml",
     ]
     plan = admin.get(f"{repo}/contents/plans/plan.json").json()
     assert plan["last_commit_sha"] == tags["published/1"]["commit"]["sha"]
-
-    activated = ci.get(f"/api/repos/lookup/{org}/spring.sum.task")
-    assert activated.status_code == 200, activated.text
-    assert activated.json()["trusted"] == {"network": False, "volumes": True, "security": False}
-    assert activated.json()["active"] is True
-    assert CI_PUBLIC_URL
-    hooks = admin.get(f"{repo}/hooks").json()
-    assert [hook for hook in hooks if hook["config"]["url"].startswith(CI_PUBLIC_URL)] == []
 
     current = await files.read(live_setup, organiser, task, "task.yaml")
     broken = await files.write(
@@ -182,7 +195,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
         organiser,
         task,
         "task.yaml",
-        current.content.replace(b"unicon/classic@v2", b"unicon/classic@v9"),
+        current.content.replace(b"unicon/classic@v3", b"unicon/classic@v9"),
         current.token,
     )
 
@@ -196,6 +209,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     with pytest.raises(NotFound):
         await files.read(live_setup, organiser, task, "plans/final.json")
 
+    await _checked(live_setup, task)
     settings = await files.read(live_setup, organiser, contest, "contest.yaml")
     await files.write(
         live_setup, organiser, contest, "contest.yaml", _running("Spring"), settings.token
@@ -222,7 +236,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     public = await landing.statement(live_setup, task)
     assert page.statement == public.statement
     assert page.submissions.max == 50
-    assert [field.id for field in page.inputs] == ["submission", "language"]
+    assert [field.id for field in page.inputs] == ["code", "language"]
 
     removed = await entrants.remove(live_setup, organiser, contest, registered.id)
     assert removed.status is Status.REMOVED

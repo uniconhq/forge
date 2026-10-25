@@ -4,17 +4,19 @@ made as the platform, holding no connection while the forge makes it, which
 takes it a quarter of a second or more, and the entrant's row is then held
 and read again: the place is held against the members as they stand then,
 so someone who joined meanwhile is added and someone who left loses the
-access just given (`entrants.settle`), and an entrant removed, rejected or deleted
+access just given (`member_lookup.settle`), and an entrant removed, rejected or deleted
 meanwhile has the access just given taken back from everyone.
 
 With `places_ahead` on, places are made before anyone needs them: approving
 an entrant starts making its places at every task the contest has
-published, and a task's first publication starts making it for every
-approved entrant. Each starts once the request that approved or published
-has committed, and that request answers without waiting for it
-(`Context.in_background`). The work takes `AHEAD_AT_ONCE` turns in a
-process, apart from the turns the first uploads take (`submitters`), so a
-crowd approved at once never holds an upload back, and the tasks it makes
+published, and a task's first live publication starts making it for every
+approved entrant: the save that publishes it, or, for one checked first,
+the take-over of its passed check (`pipelines.take_over`). Each starts
+once the request that approved, published or took over has committed, and
+that request answers without waiting for it (`Context.in_background`).
+The work takes `AHEAD_AT_ONCE` turns in a process, apart from the turns the
+first uploads take (`submitters`), so a crowd approved at once never holds
+an upload back, and the tasks it makes
 places at are read once a minute per contest and not once per entrant. The
 first upload to a task makes its place whenever it finds it missing, so
 work that a restart cuts short, or that stops at a forge that does not
@@ -50,7 +52,7 @@ from forge.domain.registration import Status
 from forge.domain.roles import contest_id_of, task_scope
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import entrants, published
+from forge.services import entrant_view, member_lookup
 from forge.services.turns import Turns
 
 log = get_logger(__name__)
@@ -81,14 +83,14 @@ async def make(
     entrant while it was made. `PortError` when the forge fails, with the
     entrant not held.
     """
-    members = tuple(await entrants.member_ids(ctx, entrant))
+    members = tuple(await member_lookup.member_ids(ctx, entrant))
     if not members:
         return False
     workspace = ctx.forge.workspaces.workspace_of(contest, EntrantOwner(entrant))
     await ctx.let_go()
     async with turn if turn is not None else nullcontext():
         await ctx.forge.workspaces.open_submission_place(workspace, task, list(members))
-    current = await entrants.settle(ctx, entrant, workspace, members)
+    current = await member_lookup.settle(ctx, entrant, workspace, members)
     status = await ctx.db.scalar(select(EntrantRow.status).where(EntrantRow.id == entrant))
     if status is None or status in (Status.REMOVED, Status.REJECTED):
         await ctx.forge.workspaces.close_workspace(workspace, sorted({*members, *current}))
@@ -137,7 +139,7 @@ def ahead_at(ctx: Context, task: TaskId) -> None:
             settings = await _settings_if_open(later, contest)
             if settings is None:
                 return
-            found = await published.task(later, task, settings)
+            found = await entrant_view.task(later, task, settings)
             if found is None or not made_ahead(settings, found.name, later.now):
                 return
             approved = await later.db.scalars(
@@ -163,7 +165,7 @@ async def _tasks(ctx: Context, contest: ContestId) -> tuple[TaskId, ...]:
             return ()
         return tuple(
             found.id
-            for found in await published.tasks(ctx, contest, settings)
+            for found in await entrant_view.tasks(ctx, contest, settings)
             if made_ahead(settings, found.name, ctx.now)
         )
 
@@ -188,7 +190,7 @@ def _tasks_name(contest: ContestId) -> str:
 
 async def _settings_if_open(ctx: Context, contest: ContestId) -> ContestDefinition | None:
     try:
-        settings = await published.contest(ctx, contest)
+        settings = await entrant_view.contest(ctx, contest)
     except NotFound:
         return None
     if settings.state is not State.PUBLISHED or ctx.now >= settings.end:

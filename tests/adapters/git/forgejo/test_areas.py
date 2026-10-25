@@ -56,6 +56,9 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
         recorder.on("GET", f"/api/v1/repos/acme/{repo}/branch_protections/main", ok({}, 404))
         for team in (1, 2, 3):
             recorder.on("GET", f"/api/v1/teams/{team}/repos/acme/{repo}", ok({}, 404))
+        if repo.endswith(".sub"):
+            for team in (4, 5, 6):
+                recorder.on("GET", f"/api/v1/teams/{team}/repos/acme/{repo}", ok({}, 404))
     recorder.on(
         "GET",
         "/api/v1/orgs/acme/teams/search",
@@ -65,6 +68,9 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
                     {"id": 1, "name": "acme.spring-admin"},
                     {"id": 2, "name": "acme.spring-manager"},
                     {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
                 ]
             }
         ),
@@ -81,6 +87,9 @@ async def test_a_workspace_is_attached_to_the_contest_roles(
         assert f"PUT /api/v1/teams/1/repos/acme/{repo}" in calls
         assert f"PUT /api/v1/teams/2/repos/acme/{repo}" in calls
         assert f"PUT /api/v1/repos/acme/{repo}/collaborators/bob" in calls
+    for team in (4, 5, 6):
+        assert f"PUT /api/v1/teams/{team}/repos/acme/spring.sum.{U8}.sub" in calls
+        assert f"PUT /api/v1/teams/{team}/repos/acme/spring.{U8}.desk" not in calls
     assert f"POST /api/v1/repos/acme/spring.sum.{U8}.sub/tag_protections" in calls
     assert f"POST /api/v1/repos/acme/spring.{U8}.desk/tag_protections" not in calls
     assert calls.index(
@@ -123,6 +132,9 @@ async def test_a_workspace_opened_again_keeps_what_is_there(
                     {"id": 1, "name": "acme.spring-admin"},
                     {"id": 2, "name": "acme.spring-manager"},
                     {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
                 ]
             }
         ),
@@ -170,6 +182,9 @@ async def test_a_former_member_on_a_workspace_repo_is_taken_off_before_the_membe
                     {"id": 1, "name": "acme.spring-admin"},
                     {"id": 2, "name": "acme.spring-manager"},
                     {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
                 ]
             }
         ),
@@ -219,22 +234,49 @@ async def test_a_place_its_members_can_write_already_is_finished_and_left_alone(
         f"/api/v1/repos/acme/spring.sum.{U8}.sub/collaborators/bob/permission",
         ok({"permission": "write"}),
     )
+    recorder.on(
+        "GET",
+        "/api/v1/orgs/acme/teams/search",
+        ok(
+            {
+                "data": [
+                    {"id": 1, "name": "acme.spring-admin"},
+                    {"id": 2, "name": "acme.spring-manager"},
+                    {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
+                ]
+            }
+        ),
+    )
+    for team in (1, 2, 3, 4, 5, 6):
+        recorder.on("GET", f"/api/v1/teams/{team}/repos/acme/spring.sum.{U8}.sub", ok({"id": team}))
     workspace = forgejo.workspaces.workspace_of(
         ContestId("acme/spring"), EntrantOwner(uuid.UUID(int=8))
     )
 
     await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
 
-    assert recorder.calls() == [
+    calls = recorder.calls()
+    assert calls[:4] == [
         "GET /api/v1/users/search",
         f"GET /api/v1/repos/acme/spring.sum.{U8}.sub",
         f"GET /api/v1/repos/acme/spring.sum.{U8}.sub/collaborators",
         f"GET /api/v1/repos/acme/spring.sum.{U8}.sub/collaborators/bob/permission",
     ]
+    assert f"GET /api/v1/teams/4/repos/acme/spring.sum.{U8}.sub" in calls
 
 
+@pytest.mark.parametrize(
+    "refused",
+    [
+        pytest.param(ok({"message": "Branch protection already exist"}, 403), id="refused"),
+        pytest.param(ok({"message": "duplicate key"}, 500), id="made-at-once"),
+    ],
+)
 async def test_a_branch_protected_by_another_maker_meanwhile_counts_as_protected(
-    forgejo: ForgejoForge, recorder: Recorder
+    forgejo: ForgejoForge, recorder: Recorder, refused: httpx.Response
 ) -> None:
     recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
     repo = f"/api/v1/repos/acme/spring.sum.{U8}.sub"
@@ -246,11 +288,7 @@ async def test_a_branch_protected_by_another_maker_meanwhile_counts_as_protected
         ok({}, 404),
         ok({"branch_name": "main"}),
     )
-    recorder.on(
-        "POST",
-        f"{repo}/branch_protections",
-        ok({"message": "Branch protection already exist"}, 403),
-    )
+    recorder.on("POST", f"{repo}/branch_protections", refused)
     recorder.on(
         "GET",
         "/api/v1/orgs/acme/teams/search",
@@ -260,6 +298,9 @@ async def test_a_branch_protected_by_another_maker_meanwhile_counts_as_protected
                     {"id": 1, "name": "acme.spring-admin"},
                     {"id": 2, "name": "acme.spring-manager"},
                     {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
                 ]
             }
         ),
@@ -271,6 +312,24 @@ async def test_a_branch_protected_by_another_maker_meanwhile_counts_as_protected
     await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
 
     assert f"PUT {repo}/collaborators/bob" in recorder.calls()
+
+
+async def test_a_protection_that_fails_with_none_made_meanwhile_still_fails(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    repo = f"/api/v1/repos/acme/spring.sum.{U8}.sub"
+    recorder.on("GET", f"{repo}/collaborators/bob/permission", ok({}, 404))
+    recorder.on("GET", repo, ok({}, 404))
+    recorder.on("GET", f"{repo}/branch_protections/main", ok({}, 404), ok({}, 404))
+    recorder.on("POST", f"{repo}/branch_protections", ok({"message": "database is down"}, 500))
+    workspace = forgejo.workspaces.workspace_of(
+        ContestId("acme/spring"), EntrantOwner(uuid.UUID(int=8))
+    )
+
+    with pytest.raises(Unavailable):
+        await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
+    assert f"PUT {repo}/collaborators/bob" not in recorder.calls()
 
 
 async def test_a_place_a_member_only_reads_is_made_up_to_writing(
@@ -297,6 +356,9 @@ async def test_a_place_a_member_only_reads_is_made_up_to_writing(
                     {"id": 1, "name": "acme.spring-admin"},
                     {"id": 2, "name": "acme.spring-manager"},
                     {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
                 ]
             }
         ),
@@ -1733,6 +1795,88 @@ async def test_a_version_is_read_at_its_tags_commit_whatever_its_name_spells(
 
     [read] = [seen for seen in recorder.seen if seen.url.path == f"{repo}/contents/workflow.yaml"]
     assert read.url.params["ref"] == tagged
+
+
+async def test_a_workflows_files_but_no_link_are_listed_and_read_at_the_commit_given(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    commit = "c" * 40
+    recorder.on("GET", repo, ok({"name": "grading.workflow", "topics": ["unicon-workflow"]}))
+    recorder.on(
+        "GET",
+        f"{repo}/git/trees/{commit}",
+        ok(
+            {
+                "tree": [
+                    {
+                        "path": "diff/program.yaml",
+                        "type": "blob",
+                        "mode": "100644",
+                        "sha": "b",
+                        "size": 2,
+                    },
+                    {"path": "diff/linked.yaml", "type": "blob", "mode": "120000", "sha": "l"},
+                ]
+            }
+        ),
+    )
+    recorder.on(
+        "GET",
+        f"{repo}/contents/diff/program.yaml",
+        ok({"type": "file", "sha": "b", "content": base64.b64encode(b"{}").decode(), "size": 2}),
+    )
+    ada, workflow = AsUser(7, _credential()), WorkflowId("acme/grading")
+
+    listed = await forgejo.workflows.workflow_files(ada, workflow, VersionId(commit))
+    read = await forgejo.workflows.read_workflow_at(
+        ada, workflow, VersionId(commit), "diff/program.yaml"
+    )
+
+    assert (listed.version, dict(listed.tokens)) == (commit, {"diff/program.yaml": "b"})
+    assert dict(listed.sizes) == {"diff/program.yaml": 2}
+    assert read.content == b"{}"
+    [seen] = [seen for seen in recorder.seen if seen.url.path.endswith("/program.yaml")]
+    assert seen.url.params["ref"] == commit
+
+
+async def test_a_workflows_files_are_read_at_a_commit_and_never_at_a_name(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    recorder.on("GET", repo, ok({"name": "grading.workflow", "topics": ["unicon-workflow"]}))
+    ada, workflow = AsUser(7, _credential()), WorkflowId("acme/grading")
+
+    for name in ("v1", "main"):
+        with pytest.raises(NotFound):
+            await forgejo.workflows.workflow_files(ada, workflow, VersionId(name))
+        with pytest.raises(NotFound):
+            await forgejo.workflows.read_workflow_at(
+                ada, workflow, VersionId(name), "diff/program.yaml"
+            )
+    assert [seen.url.path for seen in recorder.seen if seen.url.path != repo] == []
+
+
+async def test_a_workflow_version_is_the_commit_its_tag_stands_at(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    recorder.on("GET", repo, ok({"name": "grading.workflow", "topics": ["unicon-workflow"]}))
+    recorder.on(
+        "GET",
+        f"{repo}/tags",
+        ok(
+            [
+                {"name": "v2", "commit": {"sha": "d" * 40}},
+                {"name": "v1", "commit": {"sha": "c" * 40}},
+            ]
+        ),
+    )
+    ada, workflow = AsUser(7, _credential()), WorkflowId("acme/grading")
+
+    assert await forgejo.workflows.workflow_version(ada, workflow, "v1") == "c" * 40
+    with pytest.raises(NotFound):
+        await forgejo.workflows.workflow_version(ada, workflow, "v3")
 
 
 @pytest.mark.parametrize("user_id", [0, -1])

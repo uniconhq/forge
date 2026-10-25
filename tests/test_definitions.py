@@ -1,14 +1,12 @@
 """The two definition files, `contest.yaml` and `task.yaml`: the format's own
 examples and the starters validate, every key the format no longer has is
 refused at that key with the sentence that says what replaced it, the checks
-each file makes of itself (a task entry's timeline, C1; a board's rules, C3;
-a test group's rule weights, test weights and `show`, T1, T2 and T6; credit
-on a task that gives no points, T3) refuse at the path that is wrong, and a
-save names the admin-only keys it changes.
+each file makes of itself (a task entry's timeline, C1; a leaderboard's rules,
+C3) refuse at the path that is wrong, and a save names the admin-only keys
+it changes.
 """
 
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -21,20 +19,12 @@ from forge.domain.definitions import (
     Approval,
     ContestVisibility,
     Entrants,
-    Fold,
     InviteWay,
     Locks,
-    Over,
-    Penalty,
     Registration,
-    Relative,
-    Select,
-    Show,
     SignupWay,
     State,
-    ValueKey,
     Way,
-    Who,
     admin_only_changes,
     form_problems,
     letters,
@@ -43,9 +33,9 @@ from forge.domain.definitions import (
     starter_contest,
     starter_task,
     title_of,
-    worth_of,
 )
 from forge.domain.errors import ServiceError
+from forge.domain.leaderboard_task_check import marks_of
 from forge.domain.workflow_definition import WorkflowRef
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line, parse_size
 
@@ -72,25 +62,25 @@ entrants:
   fewest: 1
   locks: start
 leaderboards:
-  - name: Standings
-    tasks: [sum-of-two, shortest]
-    over: all
-    select: best
-    order: [points, {by: penalty, per_attempt: 20}]
-    who: contestants
-    rows: all
-  - name: Final
-    tasks: [shortest]
-    over: after_close
-    select: marked
-    who: contestants
+  standings:
+    title: Standings
+    audience: {who: entrants, rows: 10}
+    columns:
+      picked:
+        block: latest
+        from: {results: shortest}
+        where: {value: [shortest, marked]}
+      score:
+        block: otherwise
+        of: [{value: [{column: picked}, score]}, 0]
+    sort: [{score: desc}]
+    display: [{score: {places: 2}}]
+hold: {from: 2026-06-01T13:00:00Z, until: staff}
 tasks:
-  - {id: sum-of-two, worth: 100}
+  - {id: sum-of-two}
   - id: shortest
-    worth: 100
     release_at: 2026-06-01T10:00:00Z
     due: 2026-06-01T12:00:00Z
-    late_per_day: 0.1
     closes: 2026-06-01T13:00:00Z
     marks: 2
 """
@@ -99,22 +89,24 @@ TASK_EXAMPLE = b"""\
 name: Shortest Path
 workflow: unicon/checked@v1
 inputs:
-  submission: {label: Your solution, max_size: 1MB}
-  language: {options: [cpp, python], default: cpp}
+  code: {entrant: {label: Your solution, max_size: 1MB}}
+  language: {entrant: {options: [cpp, python], default: cpp}}
   checker: checker/checker.cpp
-  checker_language: cpp
   time_limit: 2
   memory_limit: 256
-credit: fraction
-test_groups:
-  samples: {}
-  small: {pass: 30, show: verdict}
-  large: {worst: 70, show: after_close}
-  main:
-    each: 80
-    pass: 20
-    pass_at: 0.8
-    test_weights: {"7": 3, "8": 3, "9": 5}
+repeat:
+  - inputs: [input, answer]
+    tuples:
+      - [samples/1.in, samples/1.ans]
+      - [tests/2.in, tests/2.ans]
+scoring:
+  groups:
+    samples: {input: [samples/1.in]}
+  values:
+    score: {block: count, over: {runs: all}}
+  show:
+    now: [samples]
+    after_close: [score]
 submissions:
   max: 50
   rate: {count: 1, per: 30}
@@ -156,11 +148,8 @@ def at(problems: list[Problem], path: str) -> str:
     return found[0]
 
 
-def task_text(groups: str, *, credit: str | None = None, extra: str = "") -> str:
-    text = f"name: T\nworkflow: unicon/classic@v2\ntest_groups: {groups}\n"
-    if credit is not None:
-        text += f"credit: {credit}\n"
-    return text + extra
+def task_text(extra: str = "") -> str:
+    return "name: T\nworkflow: unicon/classic@v3\nscoring: {}\n" + extra
 
 
 # contest.yaml
@@ -185,42 +174,48 @@ def test_the_format_documents_example_contest_parses() -> None:
     assert contest.registration.invite_way == 0
     assert contest.registration.capacity == 500
     assert contest.entrants == Entrants(most=3, fewest=1, locks=Locks.START)
-    standings, final = contest.leaderboards
-    assert standings.order == ("points", Penalty(by="penalty", per_attempt=20))
-    assert (standings.who, standings.rows) == (Who.CONTESTANTS, "all")
-    assert (final.over, final.select, final.order) == (Over.AFTER_CLOSE, Select.MARKED, ("points",))
+    standings = contest.leaderboards["standings"]
+    assert (standings.title, standings.audience.who, standings.audience.rows) == (
+        "Standings",
+        "entrants",
+        10,
+    )
+    assert (standings.sort, standings.display) == ((("score", "desc"),), (("score", 2),))
+    assert contest.hold is not None
+    assert (contest.hold.from_, contest.hold.until) == (
+        datetime(2026, 6, 1, 13, tzinfo=UTC),
+        "staff",
+    )
     shortest = contest.tasks[1]
-    assert shortest.late_per_day == Decimal("0.1")
-    assert contest.marks_of(shortest) == 2
-    assert contest.marks_of(contest.tasks[0]) is None
+    assert shortest.due == datetime(2026, 6, 1, 12, tzinfo=UTC)
+    assert marks_of(contest, shortest) == 2
+    assert marks_of(contest, contest.tasks[0]) is None
     assert [contest.label_of(task.id) for task in contest.tasks] == ["A", "B"]
 
 
 def test_a_contest_leaves_the_optional_blocks_to_their_defaults() -> None:
-    contest = parse_contest(HEAD + "leaderboards: [{name: Standings}]\ntasks: [{id: a}]\n")
+    contest = parse_contest(HEAD + "leaderboards: {standings: {}}\ntasks: [{id: a}]\n")
 
     assert contest.description is None
     assert contest.entrants == Entrants(most=1, fewest=1, locks=Locks.START)
     assert contest.registration.ways == (Way(signup=SignupWay(approval=Approval.MANUAL)),)
     assert contest.registration.invite_way is None
     assert contest.registration.capacity is None
-    board = contest.leaderboards[0]
-    assert (board.tasks, board.over, board.select, board.order, board.who, board.rows) == (
+    leaderboard = contest.leaderboards["standings"]
+    assert (
+        leaderboard.title,
+        leaderboard.audience.who,
+        leaderboard.audience.rows,
+        leaderboard.sort,
+    ) == (
         None,
-        Over.ALL,
-        Select.BEST,
-        ("points",),
-        Who.ORGANISERS,
+        "staff",
         "all",
+        (),
     )
+    assert (leaderboard.columns, leaderboard.display, contest.hold) == ({}, (), None)
     entry = contest.tasks[0]
-    assert (entry.worth, entry.release_at, entry.due, entry.late_per_day, entry.closes) == (
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    assert (entry.release_at, entry.due, entry.closes, entry.marks) == (None, None, None, None)
     assert contest.release_of(entry) == START
     assert contest.closes_of(entry) == END
     assert contest.entry("a") == entry
@@ -261,49 +256,21 @@ def test_a_label_is_the_entrys_place_as_a_letter() -> None:
         ("registration: {email_pattern: x}\n", "registration.email_pattern", "Add a way in"),
         ("registration: {code: sesame}\n", "registration.code", "Add a way in"),
         ("tasks: [{id: a, label: A}]\n", "tasks[0].label", "its place in the contest's list"),
-        ("tasks: [{id: a, points: 100}]\n", "tasks[0].points", "This is now called worth"),
+        ("tasks: [{id: a, points: 100}]\n", "tasks[0].points", "no longer gives points"),
+        ("tasks: [{id: a, worth: 100}]\n", "tasks[0].worth", "no longer gives points"),
+        ("tasks: [{id: a, late_per_day: 0.1}]\n", "tasks[0].late_per_day", "reads seconds_late"),
+        ("leaderboards: [{name: B}]\n", "leaderboards", "keyed by name"),
+        ("leaderboards: {b: {name: B}}\n", "leaderboards.b.name", "written as blocks"),
+        ("leaderboards: {b: {select: best}}\n", "leaderboards.b.select", "written as blocks"),
+        ("leaderboards: {b: {order: [points]}}\n", "leaderboards.b.order", "written as blocks"),
+        ("leaderboards: {b: {who: everyone}}\n", "leaderboards.b.who", "written as blocks"),
+        ("leaderboards: {b: {rows: all}}\n", "leaderboards.b.rows", "written as blocks"),
         (
-            "leaderboards: [{name: B, stage: default}]\n",
-            "leaderboards[0].stage",
-            "counts test groups",
+            "leaderboards: {b: {freeze_at: 2026-06-01T13:00:00Z}}\n",
+            "leaderboards.b.freeze_at",
+            "written as blocks",
         ),
-        (
-            "leaderboards: [{name: B, combine: sum}]\n",
-            "leaderboards[0].combine",
-            "adds up its tasks",
-        ),
-        (
-            "leaderboards: [{name: B, visibility: public}]\n",
-            "leaderboards[0].visibility",
-            "who the leaderboard is shown to",
-        ),
-        (
-            "leaderboards: [{name: B, freeze_at: 2026-06-01T13:00:00Z}]\n",
-            "leaderboards[0].freeze_at",
-            "no longer freeze",
-        ),
-        (
-            "leaderboards: [{name: B, team_only: true}]\n",
-            "leaderboards[0].team_only",
-            "the contest's entrants",
-        ),
-        ("leaderboards: [{name: B, select: latest}]\n", "leaderboards[0].select", "on each group"),
-        ("leaderboards: [{name: B, select: selected}]\n", "leaderboards[0].select", "marks"),
-        (
-            "leaderboards: [{name: B, select: first_accepted}]\n",
-            "leaderboards[0].select",
-            "the best submission, the best submission on each group, or the best of the",
-        ),
-        (
-            "leaderboards: [{name: B, order: [{metric: points, direction: desc}]}]\n",
-            "leaderboards[0].order[0]",
-            "set by its workflow",
-        ),
-        (
-            "leaderboards: [{name: B, order: [points, {key: penalty, per_rejected: 20}]}]\n",
-            "leaderboards[0].order[1]",
-            "penalty minutes",
-        ),
+        ("freeze_at: 2026-06-01T13:00:00Z\n", "freeze_at", "give the contest a hold"),
     ],
 )
 def test_a_retired_contest_key_is_refused_at_its_path_with_what_replaced_it(
@@ -321,6 +288,31 @@ def test_a_stored_contest_still_holding_on_system_error_reads_with_it_ignored(va
 
     assert parse_contest(text) == parse_contest(HEAD)
     assert paths(contest_problems(text)) == ["on_system_error"]
+
+
+def test_a_stored_contest_whose_tasks_still_give_worth_reads_with_it_ignored() -> None:
+    text = (
+        HEAD
+        + "tasks:\n"
+        + "  - {id: a, worth: 100}\n"
+        + "  - {id: b, due: 2026-06-01T12:00:00Z, late_per_day: 0.1}\n"
+    )
+
+    assert parse_contest(text) == parse_contest(
+        HEAD + "tasks: [{id: a}, {id: b, due: 2026-06-01T12:00:00Z}]\n"
+    )
+    assert paths(contest_problems(text)) == ["tasks[0].worth", "tasks[1].late_per_day"]
+
+
+def test_a_stored_contest_with_old_leaderboards_or_freeze_at_reads_with_no_leaderboards() -> None:
+    text = (
+        HEAD
+        + "freeze_at: 2026-06-01T13:00:00Z\n"
+        + "leaderboards:\n  - {name: Standings, who: contestants, select: best}\n"
+    )
+
+    assert parse_contest(text) == parse_contest(HEAD)
+    assert paths(contest_problems(text)) == ["leaderboards", "freeze_at"]
 
 
 def test_public_visibility_is_refused_naming_everyone() -> None:
@@ -347,123 +339,15 @@ def test_every_retired_key_in_one_file_is_named_together() -> None:
 
 
 @pytest.mark.parametrize(
-    ("order", "path", "sentence"),
-    [
-        ("[penalty]", "leaderboards[0].order[0]", "Penalty minutes cannot come first"),
-        (
-            "[{by: penalty}, points]",
-            "leaderboards[0].order[0]",
-            "Penalty minutes cannot come first",
-        ),
-        ("[points, points]", "leaderboards[0].order[1]", "already ranks by points above."),
-        (
-            "[points, penalty, {by: penalty, per_attempt: 5}]",
-            "leaderboards[0].order[2]",
-            "already ranks by penalty above.",
-        ),
-        (
-            "[{by: time_ms, fold: max}, {by: time_ms, fold: sum}]",
-            "leaderboards[0].order[1]",
-            "already ranks by time_ms above.",
-        ),
-        ("[]", "leaderboards[0].order", "Give at least one."),
-        ("[Points]", "leaderboards[0].order[0]", "by a value the tasks report"),
-        (
-            "[points, time_ms]",
-            "leaderboards[0].order[1]",
-            "Say how time_ms combines across tests: {by: time_ms, fold: max} for the highest, "
-            "sum for the total, mean for the average.",
-        ),
-        ("[{by: points, fold: max}]", "leaderboards[0].order[0].by", "Write points by itself."),
-        ("[{by: time_ms}]", "leaderboards[0].order[0].fold", "This is required."),
-        ("[{by: time_ms, fold: min}]", "leaderboards[0].order[0].fold", "sum, mean or max"),
-        (
-            "[{by: penalty, per_attempt: -1}]",
-            "leaderboards[0].order[0].per_attempt",
-            "This must be at least 0.",
-        ),
-    ],
-)
-def test_a_boards_order_breaking_c3_is_refused_at_the_key(
-    order: str, path: str, sentence: str
-) -> None:
-    problems = contest_problems(HEAD + f"leaderboards: [{{name: B, order: {order}}}]\n")
-
-    assert sentence in at(problems, path)
-
-
-def test_penalty_ranks_after_points_or_a_value() -> None:
-    contest = parse_contest(
-        HEAD
-        + "leaderboards:\n"
-        + "  - {name: A, order: [points, penalty]}\n"
-        + "  - {name: B, order: [{by: time_ms, fold: mean}, {by: penalty, per_attempt: 0}]}\n"
-    )
-
-    assert contest.leaderboards[1].order == (
-        ValueKey(by="time_ms", fold=Fold.MEAN),
-        Penalty(by="penalty", per_attempt=0),
-    )
-
-
-def test_best_per_group_ranks_points_first_and_no_value() -> None:
-    value_first = contest_problems(
-        HEAD
-        + "leaderboards: [{name: B, select: best_per_group, order: [{by: time_ms, fold: max}]}]\n"
-    )
-    with_value = contest_problems(
-        HEAD
-        + "leaderboards: [{name: B, select: best_per_group, "
-        + "order: [points, {by: time_ms, fold: max}]}]\n"
-    )
-
-    assert (
-        "Counting the best submission on each group ranks by points first. Put points first, "
-        "or count another submission."
-    ) in [problem["message"] for problem in value_first]
-    assert at(with_value, "leaderboards[0].select") == (
-        "The best submission on each group adds up groups from different submissions, so it "
-        "cannot rank by time_ms, which belongs to one submission. Count another submission, or "
-        "stop ranking by time_ms."
-    )
-    parse_contest(
-        HEAD + "leaderboards: [{name: B, select: best_per_group, order: [points, penalty]}]\n"
-    )
-
-
-def test_own_rows_are_refused_on_a_board_everyone_sees() -> None:
-    problems = contest_problems(HEAD + "leaderboards: [{name: B, rows: own, who: everyone}]\n")
-
-    assert at(problems, "leaderboards[0].rows") == (
-        "A leaderboard shown to everyone cannot show each entrant only their own row, since a "
-        "guest has none. Show every row or the top rows."
-    )
-    assert parse_contest(HEAD + "leaderboards: [{name: B, rows: own, who: contestants}]\n")
-    assert parse_contest(HEAD + "leaderboards: [{name: B, rows: 10, who: everyone}]\n")
-
-
-@pytest.mark.parametrize("rows", ["0", "some", "true", "-3"])
-def test_rows_is_all_own_or_a_count_of_at_least_one(rows: str) -> None:
-    problems = contest_problems(HEAD + f"leaderboards: [{{name: B, rows: {rows}}}]\n")
-
-    assert paths(problems) == ["leaderboards[0].rows"]
-
-
-@pytest.mark.parametrize(
     ("extra", "path"),
     [
-        ("leaderboards: [{name: B}, {name: B}]\n", "leaderboards[1].name"),
         ("tasks: [{id: a}, {id: a}]\n", "tasks[1].id"),
-        (
-            "tasks: [{id: a}]\nleaderboards: [{name: B, tasks: [a, b]}]\n",
-            "leaderboards[0].tasks[1]",
-        ),
-        ("leaderboards: [{name: B, over: live_only}]\n", "leaderboards[0].over"),
-        ("leaderboards: [{name: B, who: public}]\n", "leaderboards[0].who"),
+        ("leaderboards: {b: {audience: {who: public}}}\n", "leaderboards.b.audience.who"),
+        ("leaderboards: {b: {audience: {rows: 0}}}\n", "leaderboards.b.audience.rows"),
+        ("leaderboards: {Big: {}}\n", "leaderboards.Big"),
+        ("hold: {from: 2026-06-01T13:00:00Z, until: never}\n", "hold.until"),
         ("tasks: [{id: Big-Task}]\n", "tasks[0].id"),
         ("tasks: [{id: abcdefghijklmnopqrstuvwxy}]\n", "tasks[0].id"),
-        ("tasks: [{id: a, worth: -1}]\n", "tasks[0].worth"),
-        ("tasks: [{id: a, worth: true}]\n", "tasks[0].worth"),
         ("entrants: {most: 0}\n", "entrants.most"),
         ("entrants: {fewest: 0}\n", "entrants.fewest"),
         ("entrants: {most: 2, fewest: 3}\n", "entrants.fewest"),
@@ -570,8 +454,8 @@ def test_the_contest_admin_keys_leave_start_and_end_to_the_managers() -> None:
 # C1 within contest.yaml
 
 
-def entry_problems(entry: str, boards: str = "") -> list[Problem]:
-    return contest_problems(HEAD + f"tasks: [{entry}]\n" + boards)
+def entry_problems(entry: str, leaderboards: str = "") -> list[Problem]:
+    return contest_problems(HEAD + f"tasks: [{entry}]\n" + leaderboards)
 
 
 def test_a_full_timeline_in_order_is_valid() -> None:
@@ -579,18 +463,14 @@ def test_a_full_timeline_in_order_is_valid() -> None:
         HEAD
         + "tasks:\n"
         + "  - id: a\n"
-        + "    worth: 50\n"
         + "    release_at: 2026-06-01T09:00:00Z\n"
         + "    due: 2026-06-01T12:00:00Z\n"
-        + "    late_per_day: 1\n"
         + "    closes: 2026-06-01T14:00:00Z\n"
         + "    marks: 10\n"
-        + "leaderboards: [{name: F, select: marked, tasks: [a]}]\n"
     )
 
     entry = contest.tasks[0]
-    assert (entry.worth, entry.late_per_day, entry.marks) == (50, 1, 10)
-    assert contest.marks_of(entry) == 10
+    assert (entry.due, entry.marks) == (datetime(2026, 6, 1, 12, tzinfo=UTC), 10)
 
 
 def test_equal_times_are_in_order_and_a_task_may_never_take_a_submission() -> None:
@@ -653,49 +533,11 @@ def test_a_release_after_a_close_is_refused_naming_the_close() -> None:
     assert "The closing time is before the release time." in at(problems, "tasks[0].closes")
 
 
-def test_a_late_fraction_needs_a_due() -> None:
-    problems = entry_problems("{id: a, late_per_day: 0.5}")
-
-    assert at(problems, "tasks[0].late_per_day") == (
-        "This applies only to a task with a due time. Give the task a due time, or leave this "
-        "empty."
-    )
-
-
-@pytest.mark.parametrize("fraction", ["0", "-0.1", "1.5"])
-def test_a_late_fraction_is_more_than_0_and_at_most_1(fraction: str) -> None:
-    problems = entry_problems(f"{{id: a, due: 2026-06-01T12:00:00Z, late_per_day: {fraction}}}")
-
-    assert at(problems, "tasks[0].late_per_day") == (
-        "This must be more than 0 and at most 1: the share of the points taken off for each "
-        "late day."
-    )
-
-
-def test_marks_need_a_marked_board_covering_the_task() -> None:
-    nothing_marked = entry_problems("{id: a, marks: 2}", "leaderboards: [{name: B}]\n")
-    other_task = contest_problems(
-        HEAD
-        + "tasks: [{id: a, marks: 2}, {id: b}]\n"
-        + "leaderboards: [{name: F, select: marked, tasks: [b]}]\n"
-    )
-
-    for problems in (nothing_marked, other_task):
-        assert at(problems, "tasks[0].marks") == (
-            "This applies only when a leaderboard covering this task counts the submissions an "
-            "entrant marks."
-        )
-    covering = parse_contest(HEAD + "tasks: [{id: a}]\nleaderboards: [{name: F, select: marked}]\n")
-    assert covering.marks_of(covering.tasks[0]) == 1
-
-
 @pytest.mark.parametrize(
     ("marks", "sentence"), [("0", "This must be at least 1."), ("11", "This must be at most 10.")]
 )
 def test_marks_are_1_to_10(marks: str, sentence: str) -> None:
-    problems = entry_problems(
-        f"{{id: a, marks: {marks}}}", "leaderboards: [{name: F, select: marked}]\n"
-    )
+    problems = entry_problems(f"{{id: a, marks: {marks}}}")
 
     assert at(problems, "tasks[0].marks") == sentence
 
@@ -707,36 +549,27 @@ def test_the_format_documents_example_task_parses() -> None:
     task = parse_task(TASK_EXAMPLE)
 
     assert task.workflow == WorkflowRef("unicon", "checked", "v1")
-    assert task.credit == "fraction"
     assert task.inputs["checker"] == "checker/checker.cpp"
-    assert task.inputs["submission"] == {"label": "Your solution", "max_size": "1MB"}
-    assert list(task.test_groups) == ["samples", "small", "large", "main"]
-    samples, small, large, main = task.test_groups.values()
-    assert (samples.weight, samples.shown) == (0, Show.ALWAYS)
-    assert (small.pass_, small.shown) == (30, Show.VERDICT)
-    assert (large.worst, large.shown) == (70, Show.AFTER_CLOSE)
-    assert (main.each, main.pass_, main.pass_at, main.weight) == (80, 20, Decimal("0.8"), 100)
-    assert main.test_weights == {"7": 3, "8": 3, "9": 5}
-    assert task.gives_points
+    assert task.inputs["code"] == {"entrant": {"label": "Your solution", "max_size": "1MB"}}
+    assert [axis.inputs for axis in task.repeat] == [["input", "answer"]]
+    assert task.scoring.groups == {"samples": {"input": ["samples/1.in"]}}
+    assert list(task.scoring.values) == ["score"]
+    assert (task.scoring.show.now, task.scoring.show.after_close) == (["samples"], ["score"])
+    assert (task.submissions.max, task.submissions.rate.count) == (50, 1)
 
 
-def test_a_task_leaves_inputs_credit_and_submissions_to_their_defaults() -> None:
-    task = parse_task(task_text("{main: {each: 100}}"))
+def test_a_task_leaves_inputs_and_submissions_to_their_defaults() -> None:
+    task = parse_task(task_text())
 
     assert task.inputs == {}
-    assert task.credit is None
     assert task.submissions.max == DEFAULT_SUBMISSIONS == 50
     assert task.submissions.rate == DEFAULT_RATE
     assert (task.submissions.rate.count, task.submissions.rate.per) == (1, 30)
     assert task.submissions.rate.window == timedelta(seconds=30)
-    assert task.test_groups["main"].show is None
-    assert task.test_groups["main"].shown is Show.ALWAYS
 
 
 def test_submissions_take_a_count_and_a_rate_of_their_own() -> None:
-    task = parse_task(
-        task_text("{main: {each: 1}}", extra="submissions: {max: 5, rate: {count: 2, per: 60}}\n")
-    )
+    task = parse_task(task_text("submissions: {max: 5, rate: {count: 2, per: 60}}\n"))
 
     assert (task.submissions.max, task.submissions.rate.count, task.submissions.rate.per) == (
         5,
@@ -748,10 +581,12 @@ def test_submissions_take_a_count_and_a_rate_of_their_own() -> None:
 @pytest.mark.parametrize(
     ("extra", "path", "sentence"),
     [
+        ("test_groups: {main: {each: 1}}\n", "test_groups", "scoring's groups"),
+        ("credit: fraction\n", "credit", "scoring's values"),
         ("release_at: 2026-06-01T10:00:00Z\n", "release_at", "on the task's timeline"),
-        ("hidden: true\n", "hidden", "When entrants see results"),
+        ("hidden: true\n", "hidden", "scoring's show after_close"),
         ("limits: {submissions: 50}\n", "limits", "the most submissions"),
-        ("subtasks: [{id: s1}]\n", "subtasks", "test groups"),
+        ("subtasks: [{id: s1}]\n", "subtasks", "groups of runs"),
         ("stages: [{id: final}]\n", "stages", "set on each leaderboard"),
         ("inputs: {contestant: []}\n", "inputs.contestant", "List each input"),
         ("inputs: {setter: []}\n", "inputs.setter", "List each input"),
@@ -761,7 +596,7 @@ def test_submissions_take_a_count_and_a_rate_of_their_own() -> None:
 def test_a_retired_task_key_is_refused_at_its_path_with_what_replaced_it(
     extra: str, path: str, sentence: str
 ) -> None:
-    problems = task_problems(task_text("{main: {each: 1}}", extra=extra))
+    problems = task_problems(task_text(extra))
 
     assert paths(problems) == [path]
     assert sentence in problems[0]["message"]
@@ -770,7 +605,7 @@ def test_a_retired_task_key_is_refused_at_its_path_with_what_replaced_it(
 def test_an_input_named_contestant_in_the_new_mapping_is_still_the_old_shape() -> None:
     # `inputs` is keyed by the workflow's input ids; `contestant` and `setter`
     # were the old two lists, so either key is refused whatever it holds.
-    problems = task_problems(task_text("{main: {each: 1}}", extra="inputs: {setter: 3}\n"))
+    problems = task_problems(task_text("inputs: {setter: 3}\n"))
 
     assert paths(problems) == ["inputs.setter"]
 
@@ -778,29 +613,15 @@ def test_an_input_named_contestant_in_the_new_mapping_is_still_the_old_shape() -
 @pytest.mark.parametrize(
     ("text", "path"),
     [
-        ("workflow: unicon/classic@v2\ntest_groups: {main: {}}\n", "name"),
-        ("name: T\ntest_groups: {main: {}}\n", "workflow"),
-        ("name: T\nworkflow: unicon/classic@v2\n", "test_groups"),
-        ("name: T\nworkflow: unicon/classic@v2\ntest_groups: {}\n", "test_groups"),
-        ("name: '  '\nworkflow: unicon/classic@v2\ntest_groups: {main: {}}\n", "name"),
-        ("name: T\nworkflow: unicon/classic\ntest_groups: {main: {}}\n", "workflow"),
-        ("name: T\nworkflow: unicon/classic@v2\ntest_groups: {main: {}}\ncolour: red\n", "colour"),
-        (task_text("{main: {each: -1}}"), "test_groups.main.each"),
-        (task_text("{main: {pass: yes}}"), "test_groups.main.pass"),
-        (task_text("{main: {show: hidden}}"), "test_groups.main.show"),
-        (task_text("{main: {weight: 3}}"), "test_groups.main.weight"),
-        (task_text("{main.1: {each: 1}}"), "test_groups.main.1"),
-        (task_text("{main: {each: 1}}", credit="Fraction"), "credit"),
-        (task_text("{main: {each: 1}}", credit="{relative: x, better: lower}"), "credit.better"),
-        (task_text("{main: {each: 1}}", extra="submissions: {max: 0}\n"), "submissions.max"),
-        (
-            task_text("{main: {each: 1}}", extra="submissions: {rate: {count: 1, per: 0}}\n"),
-            "submissions.rate.per",
-        ),
-        (
-            task_text("{main: {each: 1}}", extra="submissions: {rate: {count: 1}}\n"),
-            "submissions.rate.per",
-        ),
+        ("workflow: unicon/classic@v3\nscoring: {}\n", "name"),
+        ("name: T\nscoring: {}\n", "workflow"),
+        ("name: T\nworkflow: unicon/classic@v3\n", "scoring"),
+        ("name: '  '\nworkflow: unicon/classic@v3\nscoring: {}\n", "name"),
+        ("name: T\nworkflow: unicon/classic\nscoring: {}\n", "workflow"),
+        (task_text("colour: red\n"), "colour"),
+        (task_text("submissions: {max: 0}\n"), "submissions.max"),
+        (task_text("submissions: {rate: {count: 1, per: 0}}\n"), "submissions.rate.per"),
+        (task_text("submissions: {rate: {count: 1}}\n"), "submissions.rate.per"),
     ],
 )
 def test_a_malformed_task_is_refused_at_the_path_that_is_wrong(text: str, path: str) -> None:
@@ -808,7 +629,7 @@ def test_a_malformed_task_is_refused_at_the_path_that_is_wrong(text: str, path: 
 
 
 def test_a_typo_says_so_and_a_key_given_twice_is_refused() -> None:
-    problems = task_problems(task_text("{main: {each: 1}}", extra="submision: {max: 3}\n"))
+    problems = task_problems(task_text("submision: {max: 3}\n"))
     assert problems == [
         {
             "path": "submision",
@@ -816,7 +637,7 @@ def test_a_typo_says_so_and_a_key_given_twice_is_refused() -> None:
         }
     ]
 
-    twice = task_problems(task_text("{main: {each: 1}}") + "name: U\n")
+    twice = task_problems(task_text() + "name: U\n")
     assert paths(twice) == [""]
     assert "the setting 'name' is given twice" in twice[0]["message"]
 
@@ -834,194 +655,9 @@ def test_a_file_that_is_not_a_mapping_is_one_problem_at_the_top(text: bytes, fra
 
 
 def test_every_problem_in_one_task_is_reported_together() -> None:
-    problems = task_problems(task_text("{main: {each: -1, show: hidden}}", extra="hidden: false\n"))
+    problems = task_problems(task_text("hidden: false\nsubmissions: {max: 0}\n"))
 
-    assert sorted(paths(problems)) == [
-        "hidden",
-        "test_groups.main.each",
-        "test_groups.main.show",
-    ]
-
-
-# T1, T2 and T6 within task.yaml
-
-
-def test_pass_at_applies_only_beside_pass() -> None:
-    problems = task_problems(task_text("{main: {each: 1, pass_at: 0.5}}"))
-
-    assert at(problems, "test_groups.main.pass_at") == (
-        'This applies only when the group gives points under "at least a share of its tests '
-        'must pass". Give those points, or leave this empty.'
-    )
-
-
-@pytest.mark.parametrize("share", ["0", "-0.5", "1.01"])
-def test_pass_at_is_more_than_0_and_at_most_1(share: str) -> None:
-    problems = task_problems(task_text(f"{{main: {{pass: 1, pass_at: {share}}}}}"))
-
-    assert at(problems, "test_groups.main.pass_at") == (
-        "This must be more than 0 and at most 1, such as 0.5 for half the tests."
-    )
-
-
-def test_pass_at_of_exactly_1_is_the_default_written_out() -> None:
-    task = parse_task(task_text("{main: {pass: 1, pass_at: 1}}"))
-
-    assert task.test_groups["main"].pass_at == 1
-
-
-def test_worst_needs_a_credit() -> None:
-    problems = task_problems(task_text("{main: {worst: 1}}"))
-
-    assert at(problems, "test_groups.main.worst") == (
-        "Each test here either passes or fails, so the lowest test score is the same as "
-        '"every test must pass". Give these points there instead.'
-    )
-    assert parse_task(task_text("{main: {worst: 1}}", credit="fraction"))
-
-
-@pytest.mark.parametrize(
-    "group",
-    [
-        "{pass: 1, test_weights: {'1': 2}}",
-        "{pass: 1, pass_at: 1, test_weights: {'1': 2}}",
-        "{worst: 1, test_weights: {'1': 2}}",
-        "{test_weights: {'1': 2}}",
-    ],
-)
-def test_test_weights_are_refused_where_nothing_reads_them(group: str) -> None:
-    problems = task_problems(task_text(f"{{main: {group}}}", credit="fraction"))
-
-    assert at(problems, "test_groups.main.test_weights") == (
-        "The test weights on main change nothing. They count only towards points for each test "
-        "passed, or when the share of tests that must pass is below 1."
-    )
-
-
-@pytest.mark.parametrize(
-    "group",
-    ["{each: 1, test_weights: {'1': 2}}", "{pass: 1, pass_at: 0.5, test_weights: {'1': 2}}"],
-)
-def test_test_weights_are_read_by_each_and_by_pass_below_all(group: str) -> None:
-    task = parse_task(task_text(f"{{main: {group}}}"))
-
-    assert task.test_groups["main"].test_weights == {"1": 2}
-
-
-@pytest.mark.parametrize("weight", ["0", "-1"])
-def test_a_test_weight_is_more_than_0(weight: str) -> None:
-    problems = task_problems(task_text(f"{{main: {{each: 1, test_weights: {{'20': {weight}}}}}}}"))
-
-    assert at(problems, "test_groups.main.test_weights.20") == (
-        f"main/20 has a weight of {weight}, and a weight must be more than 0. Put a test that "
-        "should count for nothing in a test group that gives no points."
-    )
-
-
-def test_a_test_weights_key_is_a_test_name() -> None:
-    problems = task_problems(task_text("{main: {each: 1, test_weights: {'a.b': 1}}}"))
-
-    assert at(problems, "test_groups.main.test_weights.a.b") == (
-        "A test's name may use only letters, digits, hyphens (-) and underscores (_)."
-    )
-
-
-def test_credit_on_a_task_with_no_rule_weight_is_refused() -> None:
-    problems = task_problems(task_text("{samples: {}, main: {each: 0}}", credit="fraction"))
-
-    assert problems == [
-        {
-            "path": "credit",
-            "message": "No test group gives points, so what an accepted test earns changes "
-            "nothing. Give a test group points, or let an accepted test earn 1.",
-        }
-    ]
-    assert not parse_task(task_text("{samples: {}}")).gives_points
-
-
-def test_a_task_entry_with_no_worth_is_worth_its_groups_total() -> None:
-    task = parse_task(task_text("{samples: {}, small: {pass: 3}, large: {each: 2, pass: 5}}"))
-    contest = parse_contest(HEAD + "tasks: [{id: a}, {id: b, worth: 50}]\n")
-    plain, scaled = contest.tasks
-
-    assert task.total_weight == 10
-    assert (worth_of(plain, task), worth_of(scaled, task)) == (10, 50)
-    assert worth_of(plain, parse_task(task_text("{samples: {}}"))) is None
-    assert worth_of(plain, parse_task(task_text("{main: {each: 0.5}}"))) == Decimal("0.5")
-
-
-def test_a_groups_total_keeps_every_digit_of_its_weights() -> None:
-    long = "0.1234567890123456789012345678"
-    task = parse_task(task_text(f"{{small: {{pass: {long}, each: {long}}}, large: {{pass: 100}}}}"))
-
-    assert task.test_groups["small"].weight == Decimal("0.2469135780246913578024691356")
-    assert task.total_weight == Decimal("100.2469135780246913578024691356")
-
-
-def test_credit_is_a_value_name_or_relative_to_one() -> None:
-    assert parse_task(task_text("{main: {each: 1}}", credit="fraction")).credit == "fraction"
-    assert parse_task(task_text("{main: {each: 1}}", credit="{relative: time_ms}")).credit == (
-        Relative(relative="time_ms")
-    )
-
-
-EACH_TELLS = (
-    "main shows entrants only its outcome until the reveal, but points for each test passed "
-    'would tell them how many of its tests passed. Give its points under "every test must pass" '
-    'instead, or change "When entrants see results".'
-)
-
-
-@pytest.mark.parametrize(
-    ("group", "credit", "sentence"),
-    [
-        (
-            "{each: 1, show: verdict}",
-            None,
-            EACH_TELLS,
-        ),
-        (
-            "{pass: 1, each: 1, show: verdict}",
-            None,
-            EACH_TELLS,
-        ),
-        (
-            "{worst: 1, show: verdict}",
-            "fraction",
-            "main shows entrants only its outcome until the reveal, but points for the lowest "
-            "test score would tell them how its worst test did. Give its points under "
-            '"every test must pass" instead, or change "When entrants see results".',
-        ),
-        (
-            "{pass: 1, show: verdict}",
-            "{relative: time_ms}",
-            "This test group shows entrants only its outcome until the reveal, but its points "
-            "would change as other entrants do better on its hidden tests. Show its results to "
-            "entrants at once or only at the reveal.",
-        ),
-    ],
-)
-def test_a_verdict_is_refused_naming_the_rule_weight_that_would_tell(
-    group: str, credit: str | None, sentence: str
-) -> None:
-    problems = task_problems(task_text(f"{{main: {group}}}", credit=credit))
-
-    assert at(problems, "test_groups.main.show") == sentence
-
-
-@pytest.mark.parametrize(
-    ("groups", "credit"),
-    [
-        ("{main: {pass: 1, show: verdict}}", None),
-        ("{main: {pass: 1, pass_at: 0.5, show: verdict}}", None),
-        ("{main: {each: 1}, extra: {show: verdict}}", None),
-        ("{main: {pass: 1, show: verdict}}", "fraction"),
-    ],
-)
-def test_a_verdict_is_allowed_on_pass_alone_or_on_no_rule_weight(
-    groups: str, credit: str | None
-) -> None:
-    parse_task(task_text(groups, credit=credit))
+    assert sorted(paths(problems)) == ["hidden", "submissions.max"]
 
 
 # Form details
@@ -1072,9 +708,7 @@ def test_the_starter_contest_is_the_formats_and_starts_on_the_hour_a_week_on() -
     assert contest.description is None and contest.entrants == Entrants()
     assert contest.registration == Registration()
     assert contest.registration.ways[0].approval is Approval.MANUAL
-    assert [(board.name, board.who) for board in contest.leaderboards] == [
-        ("Standings", Who.CONTESTANTS)
-    ]
+    assert contest.leaderboards == {}
     assert contest.tasks == ()
     assert b"tasks" not in starter_contest("x", NOW)
 
@@ -1089,25 +723,20 @@ def test_the_starter_task_is_the_formats() -> None:
     task = parse_task(files["task.yaml"])
 
     assert task.name == "Sum of two"
-    assert task.workflow == WorkflowRef("unicon", "classic", "v2")
+    assert task.workflow == WorkflowRef("unicon", "classic", "v3")
     assert task.inputs == {
-        "submission": {"label": "Your solution"},
-        "language": {"label": "Language", "options": ["python"]},
+        "code": {"entrant": {"label": "Your solution"}},
+        "language": {"entrant": {"label": "Language", "options": ["python"]}},
         "time_limit": 2,
         "memory_limit": 256,
     }
     assert files["statement.md"] == b"Write the statement entrants read here.\n"
-    assert list(task.test_groups) == ["main"]
-    assert task.test_groups["main"].each == 100
-    assert task.credit is None
-    assert set(files) == {
-        "task.yaml",
-        "statement.md",
-        "tests/main/1/input",
-        "tests/main/1/answer",
-    }
-    assert files["tests/main/1/input"] == b"1 2\n"
-    assert files["tests/main/1/answer"] == b"3\n"
+    assert [axis.rows for axis in task.repeat] == [[("tests/1.in", "tests/1.ans")]]
+    assert list(task.scoring.values) == ["score"]
+    assert task.scoring.show.now == ["score", "all", "public/"]
+    assert set(files) == {"task.yaml", "statement.md", "tests/1.in", "tests/1.ans"}
+    assert files["tests/1.in"] == b"1 2\n"
+    assert files["tests/1.ans"] == b"3\n"
 
 
 def test_a_title_is_the_one_asked_for_or_the_name() -> None:
@@ -1118,11 +747,11 @@ def test_a_title_is_the_one_asked_for_or_the_name() -> None:
 
 def test_the_task_admin_keys_are_the_name_and_the_submissions() -> None:
     assert TASK_ADMIN_KEYS == ("name", "submissions")
-    before = task_text("{main: {each: 1}}").encode()
+    before = task_text().encode()
     after = before.replace(b"name: T", b"name: U") + b"submissions: {max: 3}\n"
 
     assert admin_only_changes("task", before, after) == ["name", "submissions"]
-    managers = before.replace(b"{main: {each: 1}}", b"{main: {each: 2}}") + b"credit: x\n"
+    managers = before.replace(b"scoring: {}", b"scoring: {values: {}}") + b"inputs: {x: 1}\n"
     assert admin_only_changes("task", before, managers) == []
 
 

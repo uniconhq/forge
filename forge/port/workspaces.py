@@ -5,7 +5,7 @@ again alone, and reached by whoever is a member of the entrant. A
 submission and a
 publication are protected versions that only the platform may create. A
 publication names a version a save already wrote and carries a note, the
-short document `forge.domain.publications` writes and reads.
+short document `forge.domain.publication_record` writes and reads.
 """
 
 from collections.abc import Sequence
@@ -22,7 +22,7 @@ from forge.domain.ids import (
     WorkspaceId,
 )
 from forge.domain.names import WorkspaceOwner
-from forge.domain.publications import Publication
+from forge.domain.publication_record import Publication
 from forge.domain.submissions import Submitted
 from forge.domain.uploads import Door
 

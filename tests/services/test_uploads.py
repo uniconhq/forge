@@ -49,12 +49,20 @@ from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.uploads import UploadStatus
-from forge.domain.workflows import Visibility
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.setup import Setup
-from forge.services import entrants, publications, submissions, submitters, uploads
+from forge.services import entrants, submissions, submitters, task_save, uploads
 from forge.testing import FakeClock
-from tests.services.conftest import SPRING, Acme, Entered, organiser, segment, signed_in, upload
+from tests.services.conftest import (
+    SPRING,
+    Acme,
+    Entered,
+    checked,
+    organiser,
+    segment,
+    signed_in,
+    upload,
+)
 
 SOURCE = b"print(1)\n"
 INPUT_LIMIT = 10 * 1024 * 1024
@@ -83,7 +91,7 @@ async def test_a_slot_leaves_one_row_and_an_address_on_the_platforms_own_host(
         setup,
         entered.session,
         entered.task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=5,
         sha256=_digest(b"12345"),
@@ -98,7 +106,7 @@ async def test_a_slot_leaves_one_row_and_an_address_on_the_platforms_own_host(
         8,
         "submission",
         entered.task,
-        "submission",
+        "code",
     )
     assert (row.size, row.status, row.digest) == (5, "waiting", _digest(b"12345"))
     assert row.repo_path is None
@@ -115,7 +123,7 @@ async def test_the_place_to_submit_is_made_before_any_bytes_are_asked_for(
         setup,
         entered.session,
         entered.task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=len(SOURCE),
         sha256=_digest(SOURCE),
@@ -131,7 +139,7 @@ async def test_the_door_opens_once_for_the_owner_and_carries_their_own_credentia
         setup,
         entered.session,
         entered.task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=len(SOURCE),
         sha256=_digest(SOURCE),
@@ -159,7 +167,7 @@ async def test_the_door_refuses_a_stranger_a_wrong_length_and_an_unknown_upload(
         setup,
         entered.session,
         entered.task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=len(SOURCE),
         sha256=_digest(SOURCE),
@@ -188,7 +196,7 @@ async def test_a_file_the_forge_already_holds_needs_no_upload(
         setup,
         entered.session,
         entered.task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=len(SOURCE),
         sha256=_digest(SOURCE),
@@ -208,7 +216,7 @@ async def test_completing_before_the_bytes_arrive_says_so_and_can_be_asked_again
         setup,
         session,
         task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=len(SOURCE),
         sha256=_digest(SOURCE),
@@ -236,7 +244,7 @@ async def test_a_slot_over_its_inputs_default_size_is_refused_naming_it_before_a
             setup,
             entered.session,
             entered.task,
-            input="submission",
+            input="code",
             filename="main.py",
             size=INPUT_LIMIT + 1,
             sha256=_digest(b"x"),
@@ -244,14 +252,14 @@ async def test_a_slot_over_its_inputs_default_size_is_refused_naming_it_before_a
 
     assert (refused.value.extra["limit"], refused.value.extra["input"]) == (
         INPUT_LIMIT,
-        "submission",
+        "code",
     )
     assert await _rows(setup) == []
     inside = await uploads.slot(
         setup,
         entered.session,
         entered.task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=INPUT_LIMIT,
         sha256=_digest(b"x"),
@@ -265,78 +273,31 @@ async def test_a_file_input_checks_the_size_its_task_gives_it(
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
     current = await acme.fake.content.read_file(PLATFORM, entered.task, "task.yaml")
     text = current.content.replace(
-        b"submission: {label: Your solution}", b"submission: {label: Your solution, max_size: 1KB}"
+        b"code: {entrant: {label: Your solution}}",
+        b"code: {entrant: {label: Your solution, max_size: 1KB}}",
     )
     assert text != current.content
-    saved = await publications.save(
+    saved = await task_save.save(
         setup,
         acme.ada,
         entered.task,
         {"task.yaml": Edit(text, head.tokens["task.yaml"])},
         confirm=True,
     )
-    assert isinstance(saved, publications.Published), saved
+    assert isinstance(saved, task_save.Published), saved
+    await checked(setup, entered.task)
     session, task = entered.session, entered.task
     digest = _digest(b"x")
 
     with pytest.raises(TooLarge) as large:
         await uploads.slot(
-            setup, session, task, input="submission", filename="x.py", size=1025, sha256=digest
+            setup, session, task, input="code", filename="x.py", size=1025, sha256=digest
         )
-    assert (large.value.extra["limit"], large.value.extra["input"]) == (1024, "submission")
+    assert (large.value.extra["limit"], large.value.extra["input"]) == (1024, "code")
     fits = await uploads.slot(
-        setup, session, task, input="submission", filename="x.py", size=1024, sha256=digest
+        setup, session, task, input="code", filename="x.py", size=1024, sha256=digest
     )
     assert fits.url is not None
-
-
-ANSWERS = b"""\
-inputs:
-  answers: {type: file, contestant: true, per_test: true}
-test:
-  input: file
-  answer: file
-steps:
-  - id: check
-    use: unicon/diff-check@v2
-    per_test: true
-    with:
-      actual: ${{ inputs.answers }}
-      expected: ${{ test.answer }}
-"""
-"""An output-only workflow: the contestant uploads one answer per test."""
-
-
-async def test_a_per_test_slot_is_named_for_a_test_with_an_ending_that_is_not_empty(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    made = await acme.fake.workflows.create_workflow(
-        PLATFORM, "acme", "answers", {"workflow.yaml": ANSWERS}, Visibility.PUBLIC
-    )
-    await acme.fake.workflows.create_workflow_version(PLATFORM, made, "v1")
-    head = await acme.fake.content.list_files(PLATFORM, entered.task)
-    text = b"name: Sum\nworkflow: acme/answers@v1\ntest_groups:\n  main: {each: 100}\n"
-    saved = await publications.save(
-        setup,
-        acme.ada,
-        entered.task,
-        {"task.yaml": Edit(text, head.tokens["task.yaml"])},
-        confirm=True,
-    )
-    assert isinstance(saved, publications.Published), saved
-    session, task = entered.session, entered.task
-    digest = _digest(b"3\n")
-
-    with pytest.raises(InvalidInputs) as refused:
-        await uploads.slot(
-            setup, session, task, input="answers", filename="main/1.", size=2, sha256=digest
-        )
-    assert refused.value.extra["errors"][0]["input"] == "answers"
-    for fine in ("main/1", "main/1.t"):
-        slot = await uploads.slot(
-            setup, session, task, input="answers", filename=fine, size=2, sha256=digest
-        )
-        assert slot.url is not None
 
 
 async def test_a_slot_needs_a_file_input_a_plain_name_a_digest_and_a_contestant_now(
@@ -357,32 +318,32 @@ async def test_a_slot_needs_a_file_input_a_plain_name_a_digest_and_a_contestant_
     assert valued.value.extra["errors"][0]["input"] == "language"
     with pytest.raises(InvalidInputs):
         await uploads.slot(
-            setup, session, task, input="submission", filename="a/b.py", size=1, sha256=digest
+            setup, session, task, input="code", filename="a/../b.py", size=1, sha256=digest
         )
     with pytest.raises(InvalidInputs):
         await uploads.slot(
-            setup, session, task, input="submission", filename="a.py", size=-1, sha256=digest
+            setup, session, task, input="code", filename="a.py", size=-1, sha256=digest
         )
     with pytest.raises(InvalidInputs):
         await uploads.slot(
-            setup, session, task, input="submission", filename="a.py", size=1, sha256="nope"
+            setup, session, task, input="code", filename="a.py", size=1, sha256="nope"
         )
     with pytest.raises(InvalidInputs):
         await uploads.slot(
-            setup, session, task, input="submission", filename="a.py", size=1, sha256=digest.upper()
+            setup, session, task, input="code", filename="a.py", size=1, sha256=digest.upper()
         )
 
     acme.fake.add_user(30, "cyd")
     stranger = await signed_in(setup, acme.fake, 30)
     with pytest.raises(NotApproved):
         await uploads.slot(
-            setup, stranger, task, input="submission", filename="a.py", size=1, sha256=digest
+            setup, stranger, task, input="code", filename="a.py", size=1, sha256=digest
         )
 
     clock.advance(timedelta(hours=3))
     with pytest.raises(TaskClosed) as closed:
         await uploads.slot(
-            setup, session, task, input="submission", filename="a.py", size=1, sha256=digest
+            setup, session, task, input="code", filename="a.py", size=1, sha256=digest
         )
     assert closed.value.extra["reason"] == "closed"
     assert await _rows(setup) == []
@@ -399,7 +360,7 @@ async def test_a_person_holds_a_bounded_number_of_uploads_until_a_submit_uses_th
             setup,
             session,
             task,
-            input="submission",
+            input="code",
             filename=name,
             size=len(content),
             sha256=_digest(content),
@@ -407,7 +368,7 @@ async def test_a_person_holds_a_bounded_number_of_uploads_until_a_submit_uses_th
 
     with pytest.raises(UploadLimit) as refused:
         await uploads.slot(
-            setup, session, task, input="submission", filename="c.py", size=1, sha256=_digest(b"c")
+            setup, session, task, input="code", filename="c.py", size=1, sha256=_digest(b"c")
         )
 
     assert refused.value.extra == {"limit": 3, "bytes": 2 * INPUT_LIMIT}
@@ -417,13 +378,13 @@ async def test_a_person_holds_a_bounded_number_of_uploads_until_a_submit_uses_th
         session,
         task,
         {
-            "submission": SubmittedInput(uploads=(verified.id,)),
+            "code": SubmittedInput(uploads=(verified.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key="key-frees-one",
     )
     freed = await uploads.slot(
-        setup, session, task, input="submission", filename="c.py", size=1, sha256=_digest(b"c")
+        setup, session, task, input="code", filename="c.py", size=1, sha256=_digest(b"c")
     )
     assert freed.id is not None
 
@@ -437,7 +398,7 @@ async def test_a_person_declares_at_most_two_submissions_worth_of_open_uploads(
             setup,
             session,
             task,
-            input="submission",
+            input="code",
             filename=name,
             size=INPUT_LIMIT,
             sha256=_digest(name.encode()),
@@ -445,12 +406,12 @@ async def test_a_person_declares_at_most_two_submissions_worth_of_open_uploads(
 
     with pytest.raises(UploadLimit) as refused:
         await uploads.slot(
-            setup, session, task, input="submission", filename="c.py", size=1, sha256=_digest(b"c")
+            setup, session, task, input="code", filename="c.py", size=1, sha256=_digest(b"c")
         )
 
     assert refused.value.extra["bytes"] == 2 * INPUT_LIMIT
     empty = await uploads.slot(
-        setup, session, task, input="submission", filename="d.py", size=0, sha256=_digest(b"")
+        setup, session, task, input="code", filename="d.py", size=0, sha256=_digest(b"")
     )
     assert empty.id is not None
 
@@ -470,10 +431,10 @@ async def test_two_slots_asked_at_once_for_the_last_place_leave_one_row(
 
     outcomes = await asyncio.gather(
         uploads.slot(
-            setup, session, task, input="submission", filename="a.py", size=9, sha256=_digest(b"a")
+            setup, session, task, input="code", filename="a.py", size=9, sha256=_digest(b"a")
         ),
         uploads.slot(
-            setup, session, task, input="submission", filename="b.py", size=9, sha256=_digest(b"b")
+            setup, session, task, input="code", filename="b.py", size=9, sha256=_digest(b"b")
         ),
         return_exceptions=True,
     )
@@ -497,7 +458,7 @@ async def test_a_failing_forge_is_told_in_fixed_words_and_the_upload_survives_it
                 setup,
                 session,
                 task,
-                input="submission",
+                input="code",
                 filename="main.py",
                 size=len(SOURCE),
                 sha256=_digest(SOURCE),
@@ -509,7 +470,7 @@ async def test_a_failing_forge_is_told_in_fixed_words_and_the_upload_survives_it
         setup,
         session,
         task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=len(SOURCE),
         sha256=_digest(SOURCE),
@@ -548,7 +509,7 @@ async def test_a_submit_keeps_the_row_and_a_slot_clears_its_owners_lapsed_ones(
         session,
         task,
         {
-            "submission": SubmittedInput(uploads=(used.id,)),
+            "code": SubmittedInput(uploads=(used.id,)),
             "language": SubmittedInput(value="python"),
         },
         idempotency_key="key-for-sweep",
@@ -596,7 +557,7 @@ async def test_a_file_the_forge_holds_at_another_length_is_not_ready(
         setup,
         entered.session,
         entered.task,
-        input="submission",
+        input="code",
         filename="tiny.bin",
         size=1,
         sha256=_digest(big),
@@ -624,7 +585,7 @@ async def test_the_door_refuses_an_upload_whose_lifetime_is_over(
         setup,
         entered.session,
         entered.task,
-        input="submission",
+        input="code",
         filename="main.py",
         size=len(SOURCE),
         sha256=_digest(SOURCE),
@@ -653,7 +614,7 @@ async def test_a_refusal_at_the_forge_is_not_told_as_a_failure(
             setup,
             entered.session,
             entered.task,
-            input="submission",
+            input="code",
             filename="main.py",
             size=len(SOURCE),
             sha256=_digest(SOURCE),
@@ -679,7 +640,7 @@ async def test_a_removal_while_the_place_is_made_takes_the_access_back(
             setup,
             entered.session,
             entered.task,
-            input="submission",
+            input="code",
             filename="main.py",
             size=len(SOURCE),
             sha256=_digest(SOURCE),

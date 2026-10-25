@@ -1,4 +1,4 @@
-"""Which of a submission's attempts a board reads, by one rule: the latest
+"""Which of a submission's attempts a leaderboard reads, by one rule: the latest
 that finished with a result, until a newer attempt finishes with one, so a
 regrade in progress, a system error and a staff cancel never take a result
 away; with none, still grading while the latest attempt is queued, running
@@ -12,11 +12,10 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from forge.db.tables import Grading
-from forge.domain.boards import State
 from forge.domain.grading import Place
 from forge.runtime.context import Context
 from forge.services.gradings import place_of
-from forge.services.scores import counted, usable
+from forge.services.scores import State, counted, usable
 
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
 CTX = cast(Context, SimpleNamespace(now=NOW))

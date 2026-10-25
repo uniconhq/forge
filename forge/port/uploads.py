@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from forge.domain.identity import Identity
-from forge.domain.ids import TaskId, WorkspaceId
+from forge.domain.ids import TaskId, WorkflowId, WorkspaceId
 from forge.domain.uploads import Door
 
 
@@ -39,7 +39,14 @@ class TaskPlace:
     task: TaskId
 
 
-UploadPlace = SubmissionPlace | TaskPlace
+@dataclass(frozen=True, slots=True)
+class WorkflowPlace:
+    """A workflow itself, which its owner writes."""
+
+    workflow: WorkflowId
+
+
+UploadPlace = SubmissionPlace | TaskPlace | WorkflowPlace
 
 
 class UploadPort(Protocol):

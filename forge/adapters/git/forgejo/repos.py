@@ -47,6 +47,8 @@ DEFAULT_BRANCH = "main"
 CREATE_MESSAGE = "Create"
 TREE_PAGE = 1000
 MAX_TREE_PAGES = 100
+SYMLINK = "120000"
+"""The mode a tree gives a symbolic link."""
 BLOBS_URL_BUDGET = 1900
 """The most characters of blob shas, commas included, one read of several
 blobs names: Forgejo asks a `GetBlobs` URL to stay within about 2,083."""
@@ -135,7 +137,10 @@ class Repos:
         be put back. Forgejo has no switch for force-pushes: a protected
         branch refuses them all. Forgejo refuses a second protection of the
         branch, so one another maker put there meanwhile counts as there, and
-        is read as one found.
+        is read as one found. Two made at the same moment, as an entrant's
+        first upload and the place made ahead for them, can have the loser
+        answered with a 500 rather than the refusal; it is read again too,
+        and the failure stands only when there is still none.
 
         `platform_only` lets the platform's account alone push or merge to
         the branch, repository admins included (#443): whoever else may write
@@ -156,6 +161,13 @@ class Repos:
                 )
             except Forbidden, Conflict:
                 found = json_of(await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}"))
+            except Unavailable as exc:
+                try:
+                    found = json_of(
+                        await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}")
+                    )
+                except NotFound:
+                    raise exc from None
             else:
                 return True
         if not platform_only or all(found.get(key) == value for key, value in wanted.items()):
@@ -299,15 +311,20 @@ class Repos:
         )
         return VersionId(str(json_of(written)["commit"]["sha"]))
 
-    async def file_set(self, as_: Identity, owner: str, name: str, at: str | None) -> FileSet:
+    async def file_set(
+        self, as_: Identity, owner: str, name: str, at: str | None, *, links: bool = True
+    ) -> FileSet:
         """Every file at a version, or at the head of the default branch, with
-        the commit that is and each file's blob.
+        the commit that is and each file's blob; without `links`, a symbolic
+        link is left out, which the tree lists as a blob but which reads as no
+        file.
         """
         version = at or await self.head(as_, owner, name)
-        blobs = await self._blobs(as_, owner, name, version)
+        entries = await self._tree(as_, owner, name, version, links=links)
         return FileSet(
             version=VersionId(version),
-            tokens={path: ConflictToken(blob) for path, blob in blobs.items()},
+            tokens={path: ConflictToken(blob) for path, (blob, _) in entries.items()},
+            sizes={path: size for path, (_, size) in entries.items() if size is not None},
         )
 
     async def read_file(
@@ -735,11 +752,23 @@ class Repos:
             return None
         return await self._blobs(as_, owner, name, DEFAULT_BRANCH)
 
-    async def _blobs(self, as_: Identity, owner: str, name: str, at: str) -> dict[str, str]:
-        """The blob of every file at a version, read page by page while the
-        host says the listing was cut short.
+    async def _blobs(
+        self, as_: Identity, owner: str, name: str, at: str, *, links: bool = True
+    ) -> dict[str, str]:
+        """The blob of every file at a version; a symbolic link's too,
+        unless not `links`.
         """
-        blobs: dict[str, str] = {}
+        entries = await self._tree(as_, owner, name, at, links=links)
+        return {path: blob for path, (blob, _) in entries.items()}
+
+    async def _tree(
+        self, as_: Identity, owner: str, name: str, at: str, *, links: bool = True
+    ) -> dict[str, tuple[str, int | None]]:
+        """The blob and size of every file at a version, read page by page
+        while the host says the listing was cut short; a symbolic link's
+        too, unless not `links`.
+        """
+        blobs: dict[str, tuple[str, int | None]] = {}
         for page in range(1, MAX_TREE_PAGES + 1):
             tree = json_of(
                 await self._http.call(
@@ -750,9 +779,9 @@ class Repos:
                 )
             )
             blobs.update(
-                (str(entry["path"]), str(entry["sha"]))
+                (str(entry["path"]), (str(entry["sha"]), _size(entry.get("size"))))
                 for entry in tree.get("tree") or []
-                if entry.get("type") == "blob"
+                if entry.get("type") == "blob" and (links or entry.get("mode") != SYMLINK)
             )
             if not tree.get("truncated"):
                 return blobs
@@ -775,6 +804,11 @@ class Repos:
         except NotFound:
             return False
         return True
+
+
+def _size(value: object) -> int | None:
+    """A tree entry's size, none when the host gave no whole number."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _encoded(content: bytes) -> str:
