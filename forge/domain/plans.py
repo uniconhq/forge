@@ -727,6 +727,15 @@ def check_workflow(
                 )
             )
             continue
+        if declaration.schema_version != 5:
+            problems.append(
+                Problem(
+                    path=path_text((*where, "use")),
+                    message=f"{step.use} is written for the run workflow's format, which this "
+                    "workflow is not in. Use a version written for this format.",
+                )
+            )
+            continue
         for name in sorted(set(step.with_) - set(declaration.inputs)):
             problems.append(
                 Problem(
@@ -1426,6 +1435,10 @@ class _Compiler:
         for test, inputs in runs:
             limits = declaration.limits.as_mapping()
             for name, source in declaration.limits_from.items():
+                # A sum or max over a programs port is contract 6's, which
+                # `check_workflow` refuses in this format; skipping it would
+                # leave the limit unraised.
+                assert source.input is not None, f"{name} is raised from a programs port"
                 value = inputs.get(source.input)
                 if value is None or set(value) != {"value"} or not is_number(value["value"]):
                     continue

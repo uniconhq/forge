@@ -1035,3 +1035,37 @@ def test_a_definition_names_at_most_32_primitive_versions() -> None:
         parse_workflow(f"test: {{input: file}}\nsteps:\n{steps}")
 
     assert [error["path"] for error in refused.value.errors] == ["steps"]
+
+
+@pytest.mark.parametrize("kind", ["named_files", "programs", "links"])
+def test_a_workflow_input_or_test_field_takes_none_of_a_ports_own_types(kind: str) -> None:
+    """`named_files`, `programs` and `links` are a contract 6 primitive's
+    input ports' alone, though they share `Type`.
+    """
+    document = classic()
+    document["inputs"]["extra"] = {"type": kind}
+    document["test"]["extra"] = kind
+
+    problems = refused(document)
+
+    assert paths(problems) == ["inputs.extra.type", "test.extra.type"]
+    assert {problem["message"] for problem in problems} == {
+        "This must be one of text, number, boolean, enum, file, folder."
+    }
+
+
+def test_a_contract_6_primitive_is_refused_in_this_format() -> None:
+    """The forge reads contract 6 primitives before any workflow can use
+    them, so this format, which hands every step contract 5's files, refuses
+    one by its `use`.
+    """
+    six = ECHO.model_copy(update={"schema_version": 6})
+
+    assert checked(with_echo(**ECHO_PORTS), {**SEEDED, "acme/echo@v1": six}) == [
+        {
+            "path": "steps[1].use",
+            "message": "acme/echo@v1 is written for the run workflow's format, which this "
+            "workflow is not in. Use a version written for this format.",
+        }
+    ]
+    assert checked(with_echo(**ECHO_PORTS)) == []

@@ -172,11 +172,14 @@ only when it is added here, and that one line is the review point.
 
 The format is the proposal's `TASK-FORMAT.md`. `forge/domain/definitions.py`
 reads `contest.yaml` and `task.yaml` into models, `workflow_definition.py` a
-`workflow.yaml` and `primitives.py` a `primitive.yaml`, with the YAML loading
+`workflow.yaml`, `primitives.py` a `primitive.yaml`, contract 5 or 6, and
+`program_manifest.py` an organiser's program's `program.yaml`, the reports it
+writes, whose JSON `exec` and `interact` are handed, with the YAML loading
 and the error paths they share in `yaml_models.py` and the six value types in
-`types.py`. Every file is read as YAML 1.2's core schema, whatever `%YAML`
-line it carries (`ruamel.yaml` with the core schema's own patterns): only
-`true` and `false` are booleans, so a group named `no` is text, and
+`types.py`, beside the three only a contract 6 input port takes. Every
+file is read as YAML 1.2's core schema, whatever `%YAML` line it carries
+(`ruamel.yaml` with the core schema's own patterns): only `true` and
+`false` are booleans, so a group named `no` is text, and
 `1_000`, `1:30` and a date are text too. Every number that is not whole is
 the exact `Decimal` it is written as, never a float, and `one_line` writes a
 value back so the same reader reads the same value. The platform's own tag
@@ -2316,10 +2319,10 @@ someone a contestant, with a status and an extension. `seed_classic(fake)`
 puts the built-in workflow `unicon/classic@v2` at the fake from `CLASSIC`, a
 copy of the file deploy's bootstrap seeds, and with `seed_primitives` the
 three primitives it uses from `PRIMITIVES`, each primitive repo's own
-`primitive.yaml` with an image of `PLACEHOLDER_DIGEST`, so a task's first
-save finds a workflow and every step's image; the package's tests check the
-copies against deploy's file and the primitives' own when those repos are
-checked out beside this one.
+`primitive.yaml` at the release deploy pins, with an image of
+`PLACEHOLDER_DIGEST`, so a task's first save finds a workflow and every
+step's image; the package's tests check the copies against deploy's file and
+the primitives' own when those repos are checked out beside this one.
 The fake's large-file store is `fake.uploads`: a test plays the browser
 through the door with `send`, handing back the address the door gave out,
 or puts an object straight into a place with `put`, and `forget` drops one
@@ -2392,12 +2395,14 @@ two tests need only the forge.
 
 A few tests compare the package's copies with their originals in the repos
 checked out beside this one: `schemas/` with `runner`'s, `CLASSIC` with the
-workflow `deploy` seeds, and `PRIMITIVES` with each `primitive-<name>`'s
-`primitive.yaml`. Without a repo they are skipped, unless `CI` is set, when
-they fail. CI checks the forge out beside them: the runner at the release
-whose contracts `schemas/` copies, a `ref:` in `.github/workflows/ci.yaml`
-that moves with the copy, deploy's `main`, and each primitive at the release
-whose declaration `PRIMITIVES` copies, which moves the same way.
+workflow `deploy` seeds, `PRIMITIVES` with each `primitive-<name>`'s
+`primitive.yaml` at the tag deploy's `images.json` pins for `v2`, read with
+git whatever the checkout's branch, and `program_manifest.py`'s name rules
+and JSON with `exec`'s and `interact`'s own. Without a repo or a tag they are
+skipped, unless `CI` is set, when they fail. Until the stage 4 work ships and
+is tagged, CI checks every repo out at the branch it is built on,
+`feat/simpler-core`, the three seeded primitives with their tags; each
+`ref:` in `.github/workflows/ci.yaml` moves to its tag then.
 
 ## Releasing
 

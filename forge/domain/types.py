@@ -1,7 +1,10 @@
 """The types a value has wherever it appears, a workflow input, a test field,
 a primitive's port or a form field (TASK-FORMAT.md section 0): `text`,
 `number`, `boolean`, `enum`, `file` and `folder`. `outcome` is the one more
-type a primitive's output port may have, and nothing else.
+type a primitive's output port may have, and nothing else. A contract 6
+primitive's input port may also be `named_files`, `programs` or `links`
+(`PORT_TYPES`), which no workflow input, test field or form field takes:
+they read only `VALUE_TYPES`.
 
 A declaration of a type is a mapping with `type`, or just the type's name
 when nothing else is said: `time_limit: number` is `time_limit: {type:
@@ -20,9 +23,16 @@ class Type(StrEnum):
     FILE = "file"
     FOLDER = "folder"
     OUTCOME = "outcome"
+    NAMED_FILES = "named_files"
+    PROGRAMS = "programs"
+    LINKS = "links"
 
 
 VALUE_TYPES = (Type.TEXT, Type.NUMBER, Type.BOOLEAN, Type.ENUM, Type.FILE, Type.FOLDER)
+PORT_TYPES = (Type.NAMED_FILES, Type.PROGRAMS, Type.LINKS)
+"""The types only a primitive's input port may have, from contract 6: files
+by the names a program sees them under, the programs a step runs side by
+side, and the pipes between them."""
 SCALARS = frozenset({Type.TEXT, Type.NUMBER, Type.BOOLEAN, Type.ENUM})
 FILES = frozenset({Type.FILE, Type.FOLDER})
 RETIRED_TYPES = {

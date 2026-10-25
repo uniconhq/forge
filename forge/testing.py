@@ -290,10 +290,11 @@ outputs:
     ),
 }
 """The declarations of the three primitives the built-in workflow uses, at
-`v2`: each primitive repo's own `primitive.yaml` as it is, with the `image`
-line deploy's bootstrap writes at its top, carrying a placeholder digest in
-place of the image's own. The package's own tests check each against its
-repo's when that is checked out beside this one."""
+`v2`: each primitive repo's own `primitive.yaml` at the release deploy pins
+for `v2`, with the `image` line deploy's bootstrap writes at its top,
+carrying a placeholder digest in place of the image's own. The package's own
+tests check each against that release's when its repo is checked out beside
+this one."""
 
 
 async def seed_primitives(fake: FakeForge) -> None:
