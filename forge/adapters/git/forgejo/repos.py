@@ -137,7 +137,10 @@ class Repos:
         be put back. Forgejo has no switch for force-pushes: a protected
         branch refuses them all. Forgejo refuses a second protection of the
         branch, so one another maker put there meanwhile counts as there, and
-        is read as one found.
+        is read as one found. Two made at the same moment, as an entrant's
+        first upload and the place made ahead for them, can have the loser
+        answered with a 500 rather than the refusal; it is read again too,
+        and the failure stands only when there is still none.
 
         `platform_only` lets the platform's account alone push or merge to
         the branch, repository admins included (#443): whoever else may write
@@ -158,6 +161,13 @@ class Repos:
                 )
             except Forbidden, Conflict:
                 found = json_of(await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}"))
+            except Unavailable as exc:
+                try:
+                    found = json_of(
+                        await self._http.call(PLATFORM, "GET", f"{path}/{DEFAULT_BRANCH}")
+                    )
+                except NotFound:
+                    raise exc from None
             else:
                 return True
         if not platform_only or all(found.get(key) == value for key, value in wanted.items()):

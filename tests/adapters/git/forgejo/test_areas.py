@@ -268,8 +268,15 @@ async def test_a_place_its_members_can_write_already_is_finished_and_left_alone(
     assert f"GET /api/v1/teams/4/repos/acme/spring.sum.{U8}.sub" in calls
 
 
+@pytest.mark.parametrize(
+    "refused",
+    [
+        pytest.param(ok({"message": "Branch protection already exist"}, 403), id="refused"),
+        pytest.param(ok({"message": "duplicate key"}, 500), id="made-at-once"),
+    ],
+)
 async def test_a_branch_protected_by_another_maker_meanwhile_counts_as_protected(
-    forgejo: ForgejoForge, recorder: Recorder
+    forgejo: ForgejoForge, recorder: Recorder, refused: httpx.Response
 ) -> None:
     recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
     repo = f"/api/v1/repos/acme/spring.sum.{U8}.sub"
@@ -281,11 +288,7 @@ async def test_a_branch_protected_by_another_maker_meanwhile_counts_as_protected
         ok({}, 404),
         ok({"branch_name": "main"}),
     )
-    recorder.on(
-        "POST",
-        f"{repo}/branch_protections",
-        ok({"message": "Branch protection already exist"}, 403),
-    )
+    recorder.on("POST", f"{repo}/branch_protections", refused)
     recorder.on(
         "GET",
         "/api/v1/orgs/acme/teams/search",
@@ -309,6 +312,24 @@ async def test_a_branch_protected_by_another_maker_meanwhile_counts_as_protected
     await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
 
     assert f"PUT {repo}/collaborators/bob" in recorder.calls()
+
+
+async def test_a_protection_that_fails_with_none_made_meanwhile_still_fails(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    repo = f"/api/v1/repos/acme/spring.sum.{U8}.sub"
+    recorder.on("GET", f"{repo}/collaborators/bob/permission", ok({}, 404))
+    recorder.on("GET", repo, ok({}, 404))
+    recorder.on("GET", f"{repo}/branch_protections/main", ok({}, 404), ok({}, 404))
+    recorder.on("POST", f"{repo}/branch_protections", ok({"message": "database is down"}, 500))
+    workspace = forgejo.workspaces.workspace_of(
+        ContestId("acme/spring"), EntrantOwner(uuid.UUID(int=8))
+    )
+
+    with pytest.raises(Unavailable):
+        await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
+    assert f"PUT {repo}/collaborators/bob" not in recorder.calls()
 
 
 async def test_a_place_a_member_only_reads_is_made_up_to_writing(
