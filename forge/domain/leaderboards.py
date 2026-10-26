@@ -57,7 +57,7 @@ leaderboard's audience, never stored.
   cell chose. The cells reading one task alone
   (`alone`) are those whose choices tell nothing of another task.
 - **A header** says what a listed column is, the same for every row: its
-  name, the decimal places it is shown to, the least and most it can give
+  name, the decimals it is shown to, the least and most it can give
   where both are known (stage 5 section 6, item 5), and the self-reported
   values it reads, each by task (item 7). For anyone but staff the bounds
   are known only from what the viewer is shown now (`seen_bounds`): a
@@ -83,12 +83,12 @@ from forge.domain.run_showing import ValueShown
 
 @dataclass(frozen=True, slots=True)
 class Header:
-    """A listed column: its name, its decimal places, none when the leaderboard
+    """A listed column: its name, its decimals, none when the leaderboard
     gives none, its least and most, both none unless both are known, and
     each self-reported value it reads, by task."""
 
     name: str
-    places: int | None = None
+    decimals: int | None = None
     at_least: Fraction | None = None
     at_most: Fraction | None = None
     self_reported: tuple[tuple[str, str], ...] = ()
@@ -369,10 +369,10 @@ def headers_of(
 ) -> tuple[Header, ...]:
     """The headers of `leaderboard`'s displayed columns, in order."""
     found: list[Header] = []
-    for name, places in leaderboard.display:
+    for name, decimals in leaderboard.display:
         held = bounds.get((key, name))
         least, most = held if held is not None else (None, None)
-        found.append(Header(name, places, least, most, reported.get((key, name), ())))
+        found.append(Header(name, decimals, least, most, reported.get((key, name), ())))
     return tuple(found)
 
 

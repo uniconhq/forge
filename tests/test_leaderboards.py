@@ -112,7 +112,7 @@ leaderboards:
               - block: min
                 of: [{block: div, of: [{column: cartpole_best}, 475]}, 1]
     sort: [{total: desc}]
-    display: [search_mark, cartpole_best, {total: {places: 2}}]
+    display: [search_mark, cartpole_best, {total: {decimals: 2}}]
   cartpole_ranking:
     audience: {who: everyone}
     columns:
@@ -1120,7 +1120,7 @@ def test_a_header_names_no_self_reported_value_of_a_task_not_released() -> None:
     assert header(STAFF).self_reported == (("a", "score"), ("b", "reward"))
 
 
-def test_a_text_column_is_shown_and_not_sorted_folded_or_given_places() -> None:
+def test_a_text_column_is_shown_and_not_sorted_folded_or_given_decimals() -> None:
     assert column("p", "medal", {}, {"text": "gold"}).text == "gold"
     submitted = Submitted(1, texts={"medal": "gold"})
     shown = column(
@@ -1138,7 +1138,7 @@ def test_a_text_column_is_shown_and_not_sorted_folded_or_given_places() -> None:
     assert "sorts on numbers" in messages(
         body + "    sort: [{medal: desc}]\n    display: [medal]\n"
     )
-    assert "decimal places" in messages(body + "    display: [{medal: {places: 2}}]\n")
+    assert "decimals" in messages(body + "    display: [{medal: {decimals: 2}}]\n")
     folded = messages(
         body + "      more: {block: add, of: [{column: medal}, 1]}\n" + "    display: [medal]\n"
     )
