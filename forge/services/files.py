@@ -49,6 +49,7 @@ from forge.domain.content import (
     check_path,
     start_of,
 )
+from forge.domain.contest_changes import contest_changes
 from forge.domain.definitions import (
     CONTEST_FILE,
     ContestDefinition,
@@ -56,9 +57,10 @@ from forge.domain.definitions import (
     admin_only_refusal,
     parse_contest,
 )
-from forge.domain.errors import AdminOnly, NotFound, PortError
+from forge.domain.errors import AdminOnly, ConfirmationRequired, Conflict, NotFound, PortError
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, VersionId, is_commit
+from forge.domain.release import has_started
 from forge.domain.roles import Role, ScopeKind, holds, scope_of_place, task_scope
 from forge.domain.uploads import Door, may_be_pointer, refuse_pointer, upload_info
 from forge.domain.yaml_models import InvalidDefinition
@@ -250,13 +252,27 @@ async def write(
     notes: list[str] = []
     if path == CONTEST_FILE:
         after = parse_contest(content, saved=True)
-        before = await _current(ctx, organiser, contest, path)
+        await timelines.hold_rules(ctx, contest)
+        try:
+            current = await ctx.forge.content.read_file(organiser.identity, contest, path)
+        except NotFound:
+            current = None
+        before = current.content if current is not None else None
+        basis = (
+            current.version
+            or (await ctx.forge.content.list_files(organiser.identity, contest)).version
+            if current is not None
+            else None
+        )
+        if confirm and asked is not None and asked != basis:
+            raise Conflict(
+                "The contest changed since this question was asked. Reload it and save again."
+            )
         if not holds(organiser.grants, scope, Role.ADMIN):
             keys = admin_only_changes("contest", before, content)
             if keys:
                 log.info("files.refused", place=place, keys=keys, user_id=organiser.user.id)
                 raise AdminOnly(admin_only_refusal(scope.name, keys), keys=keys)
-        await timelines.hold_rules(ctx, contest)
         standing = await _last_read(ctx, organiser, contest, before)
         problems = await timelines.check_contest(ctx, contest, standing, after)
         checked = await leaderboards.check_contest(ctx, contest, standing, after)
@@ -264,6 +280,17 @@ async def write(
         notes = checked.notes
         if problems:
             raise InvalidDefinition(CONTEST_FILE, problems)
+        if standing is not None and has_started(standing, ctx.now) and not confirm:
+            changes = contest_changes(standing, after)
+            if changes:
+                assert current is not None
+                raise ConfirmationRequired(
+                    " ".join(
+                        ["The contest is running, so this save asks first.", *changes, "Save it?"]
+                    ),
+                    changes=list(changes),
+                    asked=str(basis),
+                )
     version = await ctx.forge.content.write_file(
         PLATFORM,
         contest,
@@ -358,13 +385,6 @@ def _parsed(content: bytes | None) -> ContestDefinition | None:
     try:
         return parse_contest(content)
     except InvalidDefinition:
-        return None
-
-
-async def _current(ctx: Context, organiser: Organiser, place: ContestId, path: str) -> bytes | None:
-    try:
-        return (await ctx.forge.content.read_file(organiser.identity, place, path)).content
-    except NotFound:
         return None
 
 

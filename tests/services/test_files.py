@@ -17,7 +17,14 @@ import pytest
 from forge.domain.clock import FakeClock
 from forge.domain.content import ConflictToken, Edit, start_of
 from forge.domain.definitions import parse_contest
-from forge.domain.errors import AdminOnly, Conflict, Forbidden, InvalidPath, NotFound
+from forge.domain.errors import (
+    AdminOnly,
+    ConfirmationRequired,
+    Conflict,
+    Forbidden,
+    InvalidPath,
+    NotFound,
+)
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.roles import Role, Scope
@@ -294,7 +301,9 @@ def _running(entry: str) -> bytes:
 async def _write_contest(setup: Setup, acme: Acme, content: bytes) -> VersionId:
     """`contest.yaml` written by ada through the editor's write."""
     current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
-    written = await files.write(setup, acme.ada, SPRING, "contest.yaml", content, current.token)
+    written = await files.write(
+        setup, acme.ada, SPRING, "contest.yaml", content, current.token, confirm=True
+    )
     assert isinstance(written, files.Written)
     return written.version
 
@@ -909,3 +918,70 @@ async def test_an_unscheduled_task_can_publish_an_unwritten_statement(
     )
     result = await task_save.save(setup, acme.ada, sum_task, {}, confirm=True)
     assert isinstance(result, Published)
+
+
+async def test_a_running_contest_due_change_asks_and_confirms_its_version(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    before = await files.read(setup, acme.ada, SPRING, "contest.yaml")
+    changed = before.content.replace(
+        b"  - id: sum\n", b"  - id: sum\n    due: 2026-09-26T14:00:00Z\n"
+    )
+    with pytest.raises(ConfirmationRequired) as question:
+        await files.write(setup, acme.ada, SPRING, "contest.yaml", changed, before.token)
+    assert before.version is not None
+    assert question.value.extra["asked"] == before.version
+    assert "due" in question.value.extra["changes"][0]
+    assert (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content == before.content
+    written = await files.write(
+        setup,
+        acme.ada,
+        SPRING,
+        "contest.yaml",
+        changed,
+        before.token,
+        confirm=True,
+        asked=question.value.extra["asked"],
+    )
+    assert isinstance(written, files.Written)
+    with pytest.raises(ConfirmationRequired):
+        await files.rollback(
+            setup,
+            acme.ada,
+            SPRING,
+            "contest.yaml",
+            before.version,
+            (await files.read(setup, acme.ada, SPRING, "contest.yaml")).token,
+        )
+
+
+async def test_a_contest_confirmation_refuses_a_stale_question(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    before = await files.read(setup, acme.ada, SPRING, "contest.yaml")
+    renamed = before.content.replace(b"Spring 2026", b"Autumn 2026")
+    await files.write(setup, acme.ada, SPRING, "contest.yaml", renamed, before.token)
+    current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
+    with pytest.raises(Conflict):
+        await files.write(
+            setup,
+            acme.ada,
+            SPRING,
+            "contest.yaml",
+            renamed + b"description: Changed.\n",
+            current.token,
+            confirm=True,
+            asked=str(before.version),
+        )
+
+
+async def test_a_contest_change_before_its_start_does_not_ask(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    clock.advance(-timedelta(hours=3))
+    before = await files.read(setup, acme.ada, SPRING, "contest.yaml")
+    changed = before.content.replace(
+        b"  - id: sum\n", b"  - id: sum\n    due: 2026-09-26T14:00:00Z\n"
+    )
+    written = await files.write(setup, acme.ada, SPRING, "contest.yaml", changed, before.token)
+    assert isinstance(written, files.Written)

@@ -306,7 +306,9 @@ async def test_a_task_put_back_by_hand_gets_its_places_ahead_as_put_back_does(
     assert _made(acme.fake) == []
     current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
 
-    await files.write(setup, acme.ada, SPRING, "contest.yaml", running.encode(), current.token)
+    await files.write(
+        setup, acme.ada, SPRING, "contest.yaml", running.encode(), current.token, confirm=True
+    )
     await setup.settle()
 
     assert await _writers(setup, acme.fake, sum_task, 8) == {8}
