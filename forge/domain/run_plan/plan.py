@@ -23,10 +23,9 @@ from forge.domain.run_plan.models import (
     RunStep,
 )
 from forge.domain.run_plan.plan_checks import cache_problems, order_problems
-from forge.domain.run_plan.plan_helpers import _key_json
 from forge.domain.run_plan.planner import _last, _Planner
 from forge.domain.run_plan.records import COMPILE_USE, EXEC_USE, PIPELINES
-from forge.domain.run_task import RunTask
+from forge.domain.run_task import RunTask, key_json
 from forge.domain.run_workflow import RunWorkflowCheck
 from forge.domain.types import FILES
 from forge.domain.workflow_definition import RunWorkflow
@@ -136,7 +135,7 @@ def plan_runs(
         task_files=dict(sorted(task_files.items())),
         entrant=planner.entrant_entries(),
         runs=tuple(
-            RunEntry(id=run.id, key=_key_json(run.key), early=run.early, titles=run.titles)
+            RunEntry(id=run.id, key=key_json(run.key), early=run.early, titles=run.titles)
             for run in task.runs
         ),
         steps=_named({**planner.run_steps(), **copied}),
@@ -229,7 +228,9 @@ def _check_copies(
             )
         )
         return {}, (), problems
-    room = len(task.checks) * check_room([run.key for run in task.runs], reports, len(order))
+    room = len(task.checks) * check_room(
+        [key_json(run.key) for run in task.runs], reports, len(order)
+    )
     if room > CHECKS_ROOM:
         problems.append(
             Problem(

@@ -640,6 +640,24 @@ def test_the_first_task_manifest_supplies_disagreeing_bounds(
     assert plan.reports["length"].at_least == 0
 
 
+def test_a_tour_with_checks_plans_part_keys(primitives: dict[str, PrimitiveDeclaration]) -> None:
+    task = (
+        TOUR_TASK + "checks:\n  - submit: {route: [solutions/1.txt, solutions/2.txt]}\n"
+        "    expect: {total: 2}\n"
+    )
+    plan = ok(
+        planned(
+            primitives,
+            task,
+            TOUR,
+            TOUR_FILES,
+            TOUR_PATHS | {"solutions/1.txt", "solutions/2.txt"},
+        )
+    )
+    assert len(plan.checks()) == 1
+    assert plan.runs[0].key["route"] == {"part": 1}
+
+
 # Step classes
 
 
