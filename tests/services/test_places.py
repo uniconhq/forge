@@ -132,7 +132,10 @@ async def test_a_first_live_publication_makes_the_places_though_an_earlier_one_w
         setup,
         acme.ada,
         sum_task,
-        {"task.yaml": Edit(starter.content + b"# checked first\n", head.tokens["task.yaml"])},
+        {
+            "task.yaml": Edit(starter.content + b"# checked first\n", head.tokens["task.yaml"]),
+            "statement.md": Edit(b"Add two numbers.\n", head.tokens["statement.md"]),
+        },
         confirm=True,
     )
     assert isinstance(waiting, task_save.Published), waiting

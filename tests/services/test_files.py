@@ -475,7 +475,8 @@ async def test_an_end_moved_before_a_submission_or_later_after_the_reveal_is_ref
 async def test_a_task_the_contest_did_not_list_never_opened_so_its_entry_may_open_it_later(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    await make_task(setup, acme, "product")
+    product = await make_task(setup, acme, "product")
+    await publish(setup, acme, product, statement=b"Multiply two numbers.\n")
     await write_contest(acme.fake, _running(SUM_ENTRY).decode())
     listed = _running(SUM_ENTRY + "  - {id: product, release_at: 2026-09-26T13:00:00Z}\n")
 
@@ -843,3 +844,68 @@ async def test_a_manager_is_refused_an_admin_only_key_of_a_task_and_of_a_contest
     assert [
         call for call in acme.fake.calls if call.operation in {"save_files", "write_file"}
     ] == []
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "path"),
+    [
+        ("", "  - id: sum\n", "tasks[0]"),
+        (
+            "  - {id: sum, withdrawn: true}\n",
+            "  - id: sum\n",
+            "tasks[0]",
+        ),
+        (
+            "  - {id: sum, release_at: 2026-09-26T15:00:00Z}\n",
+            "  - {id: sum, release_at: 2026-09-26T13:00:00Z}\n",
+            "tasks[0].release_at",
+        ),
+    ],
+)
+async def test_an_open_contest_checks_only_tasks_newly_scheduled_to_show(
+    setup: Setup, acme: Acme, sum_task: TaskId, old: str, new: str, path: str
+) -> None:
+    before = _running(old) if old else _running(old).replace(b"tasks:\n", b"tasks: []\n")
+    await write_contest(acme.fake, before.decode())
+    refused = await _refused(setup, acme, _running(new))
+    assert refused == [(path, "A · sum: it is not published yet.")]
+
+
+async def test_an_open_contest_refuses_a_scheduled_placeholder_statement(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await publish(setup, acme, sum_task)
+    await write_contest(acme.fake, _running("").replace(b"tasks:\n", b"tasks: []\n").decode())
+    assert await _refused(setup, acme, _running(SUM_ENTRY)) == [
+        ("tasks[0]", "A · sum: its statement is not written yet.")
+    ]
+
+
+@pytest.mark.parametrize("statement", [b"", b"Write the statement entrants read here.\n", None])
+async def test_a_scheduled_task_cannot_publish_an_unwritten_statement(
+    setup: Setup, acme: Acme, sum_task: TaskId, statement: bytes | None
+) -> None:
+    current = await files.read(setup, acme.ada, sum_task, "statement.md")
+    await write_contest(acme.fake, _running(SUM_ENTRY).decode())
+    result = await task_save.save(
+        setup,
+        acme.ada,
+        sum_task,
+        {"statement.md": Edit(statement, current.token)},
+        confirm=True,
+    )
+    assert isinstance(result, task_save.Draft)
+    assert result.errors == (
+        {"path": "statement.md", "message": "A · sum: its statement is not written yet."},
+    )
+
+
+async def test_an_unscheduled_task_can_publish_an_unwritten_statement(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    await write_contest(
+        acme.fake,
+        _running("  - {id: sum, release_at: 2026-09-26T15:00:00Z}\n").decode(),
+    )
+    result = await task_save.save(setup, acme.ada, sum_task, {}, confirm=True)
+    assert isinstance(result, Published)
