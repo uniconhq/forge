@@ -79,12 +79,16 @@ def _shown(value: object) -> tuple[str, int | None]:
         return _column_name(value), None
     if isinstance(value, dict) and len(value) == 1:
         [(name, how)] = value.items()
-        places = how.get("places") if isinstance(how, dict) and set(how) == {"places"} else None
-        if isinstance(places, int) and not isinstance(places, bool) and 0 <= places <= 10:
-            return _column_name(name), places
+        if isinstance(how, dict) and "places" in how:
+            raise ValueError("Write `decimals`, such as `{total: {decimals: 2}}`.")
+        decimals = (
+            how.get("decimals") if isinstance(how, dict) and set(how) == {"decimals"} else None
+        )
+        if isinstance(decimals, int) and not isinstance(decimals, bool) and 0 <= decimals <= 10:
+            return _column_name(name), decimals
     raise ValueError(
-        "Give a column's name, or its name with how many decimal places it is shown, such "
-        "as {total: {places: 2}}, from 0 to 10."
+        "Give a column's name, or its name with how many decimals it is shown, such "
+        "as {total: {decimals: 2}}, from 0 to 10."
     )
 
 
@@ -95,7 +99,7 @@ class Leaderboard(Model):
     catalogue and the tasks they read at the contest's save and at a
     task's (`forge.domain.leaderboard_checks`); the
     columns it `sort`s by, in turn, each `desc` or `asc`; and those it
-    `display`s, in order, each with how many decimal `places` it is shown
+    `display`s, in order, each with how many `decimals` it is shown
     to, a column's number itself kept exact.
     """
 
@@ -113,5 +117,5 @@ class Leaderboard(Model):
         """The columns displayed, in order."""
         return tuple(name for name, _ in self.display)
 
-    def places(self, column: str) -> int | None:
-        return next((places for name, places in self.display if name == column), None)
+    def decimals(self, column: str) -> int | None:
+        return next((decimals for name, decimals in self.display if name == column), None)

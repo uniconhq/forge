@@ -450,7 +450,7 @@ async def test_a_save_that_writes_withdrawn_by_hand_reads_as_the_action_does(
     current = await acme.fake.content.read_file(PLATFORM, SPRING, "contest.yaml")
 
     written = await files.write(
-        setup, manager, SPRING, "contest.yaml", withdrawn.encode(), current.token
+        setup, manager, SPRING, "contest.yaml", withdrawn.encode(), current.token, confirm=True
     )
 
     assert isinstance(written, files.Written) and written.notes == ()

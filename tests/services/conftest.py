@@ -24,6 +24,7 @@ from sqlalchemy import update
 from forge.adapters.fakes import FakeForge
 from forge.db.tables import Grading
 from forge.domain.content import Edit
+from forge.domain.definitions import State, parse_contest, statement_written
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, OrgId, TaskId
@@ -123,18 +124,35 @@ async def make_task(setup: Setup, acme: Acme, name: str) -> TaskId:
     return task_id_of(Scope("acme", "spring", name))
 
 
-async def publish(setup: Setup, acme: Acme, task: TaskId, extra: bytes = b"") -> Published:
+async def publish(
+    setup: Setup, acme: Acme, task: TaskId, extra: bytes = b"", *, statement: bytes | None = None
+) -> Published:
     """The task published by ada's save of its `task.yaml` with `extra` after
     it, confirmed, since a save asks first once the contest has started, and
-    the runs its save grades checked.
+    the runs its save grades checked. In an open contest, give a starter
+    its statement too; a draft keeps its placeholder unless one is given.
     """
     head = await acme.fake.content.list_files(PLATFORM, task)
     current = await acme.fake.content.read_file(PLATFORM, task, "task.yaml")
+    contest = await acme.fake.content.read_file(
+        PLATFORM, ContestId(task.rsplit("/", 1)[0]), "contest.yaml"
+    )
+    if statement is None and parse_contest(contest.content).state is not State.DRAFT:
+        current_statement = await acme.fake.content.read_file(PLATFORM, task, "statement.md")
+        if not statement_written(current_statement.content):
+            statement = b"Add two numbers.\n"
     result = await task_save.save(
         setup,
         acme.ada,
         task,
-        {"task.yaml": Edit(current.content + extra, head.tokens["task.yaml"])},
+        {
+            "task.yaml": Edit(current.content + extra, head.tokens["task.yaml"]),
+            **(
+                {"statement.md": Edit(statement, head.tokens.get("statement.md"))}
+                if statement is not None
+                else {}
+            ),
+        },
         confirm=True,
     )
     assert isinstance(result, Published), result
@@ -205,7 +223,7 @@ class Entered:
 @pytest.fixture
 async def entered(setup: Setup, acme: Acme, sum_task: TaskId) -> Entered:
     await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
-    await publish(setup, acme, sum_task)
+    await publish(setup, acme, sum_task, statement=b"Add two numbers.\n")
     bob = await signed_in(setup, acme.fake, 8)
     entrant = await entrants.register(setup, bob, SPRING)
     manager = await organiser(setup, acme.fake, 7, Scope("acme", "spring"), Role.MANAGER)

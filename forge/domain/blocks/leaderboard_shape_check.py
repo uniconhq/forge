@@ -455,14 +455,14 @@ class _Checker:
     def _sort_and_display(self) -> None:
         leaderboard = self.leaderboard
         shown: list[str] = []
-        for index, (name, places) in enumerate(leaderboard.display):
+        for index, (name, decimals) in enumerate(leaderboard.display):
             if self._listed(self.at("display", index), name, shown, "displays"):
                 shown.append(name)
                 shape = self.shapes.get(name)
-                if places is not None and shape is not None and shape.kind is Kind.TEXT:
+                if decimals is not None and shape is not None and shape.kind is Kind.TEXT:
                     self.refuse(
                         self.at("display", index),
-                        f"{name} is text, so it has no decimal places.",
+                        f"{name} is text, so it has no decimals.",
                     )
         sorted_by: list[str] = []
         for index, (name, _) in enumerate(leaderboard.sort):

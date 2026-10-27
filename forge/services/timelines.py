@@ -37,8 +37,9 @@ gradings, one per submission, at the moment it was taken:
   publication whose statement is written, not blank and not the starter's
   placeholder (M57), as the organisers' opening checklist asks; each one
   that has not is refused at the `state` line, "A · sum: its statement is
-  not written yet". Only that save: a task added to an open contest, or
-  saved since, does not keep a later save of its settings from being made.
+  not written yet". In an open contest, an entry newly scheduled to show
+  passes the same check at its own line, or at `end` when a later end
+  schedules it. Unchanged entries never block an unrelated edit.
 
 Changing an extension is checked the same way (`refuse_extension`): it may
 not let a row submit to a task whose reveal has passed, nor, shortened or
@@ -246,7 +247,21 @@ async def check_contest(
         if entry.id not in tasks
     ]
     if after.state is State.PUBLISHED and (before is None or before.state is State.DRAFT):
-        problems += await _not_ready(ctx, after, tasks)
+        problems += await _not_ready(
+            ctx, [(index, entry, "state") for index, entry in enumerate(after.tasks)], tasks
+        )
+    elif before is not None and before.state is not State.DRAFT:
+        scheduled = []
+        for index, entry in enumerate(after.tasks):
+            old = before.entry(entry.id)
+            if entry.withdrawn or after.release_of(entry) >= after.end:
+                continue
+            if old is None or old.withdrawn:
+                scheduled.append((index, entry, f"tasks[{index}]"))
+            elif before.release_of(old) >= before.end:
+                moved = old.release_at != entry.release_at
+                scheduled.append((index, entry, f"tasks[{index}].release_at" if moved else "end"))
+        problems += await _not_ready(ctx, scheduled, tasks)
     if before is None:
         return problems
     if _drafted_after_start(before, after, ctx.now):
@@ -294,17 +309,17 @@ async def check_contest(
 
 
 async def _not_ready(
-    ctx: Context, after: ContestDefinition, tasks: Mapping[str, TaskId]
+    ctx: Context, entries: Sequence[tuple[int, ContestTask, str]], tasks: Mapping[str, TaskId]
 ) -> list[Problem]:
-    """C5, for the save that opens the contest: each task it lists, but a
+    """C5: each selected task, but a
     withdrawn one, that has no publication it is graded on, one still
     checked or refused not counted (`published.live`), or whose
     latest such publication's statement is not written (M57), at the
-    `state` line, named by its letter and name as the opening checklist
+    selected line, named by its letter and name as the opening checklist
     names it.
     """
     problems: list[Problem] = []
-    for index, entry in enumerate(after.tasks):
+    for index, entry, path in entries:
         task = tasks.get(entry.id)
         if task is None or entry.withdrawn:
             continue
@@ -314,10 +329,10 @@ async def _not_ready(
         except NotFound:
             made = []
         if not made:
-            problems.append(Problem(path="state", message=f"{named}: it is not published yet."))
+            problems.append(Problem(path=path, message=f"{named}: it is not published yet."))
         elif not await entrant_view.statement_written_at(ctx, task, made[-1].version, made[-1].id):
             problems.append(
-                Problem(path="state", message=f"{named}: its statement is not written yet.")
+                Problem(path=path, message=f"{named}: its statement is not written yet.")
             )
     return problems
 
