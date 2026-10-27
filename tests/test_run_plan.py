@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from forge.domain import exact_json
-from forge.domain.blocks.evaluate import Column
+from forge.domain.blocks.evaluate import Column, RunResult, evaluate
 from forge.domain.blocks.numbers import Better
 from forge.domain.checks import CHECKS_ROOM, RUNS_KEPT, check_room, keep_runs
 from forge.domain.content import named_by
@@ -561,9 +561,9 @@ def test_tour_gives_each_run_its_own_part(primitives: dict[str, PrimitiveDeclara
     assert plan.files_read(held(plan, "check", "early")).entrant == {("route", 1), ("route", 2)}
 
 
-def test_a_step_given_the_tasks_manifest_writes_every_report_of_its_files(
-    primitives: dict[str, PrimitiveDeclaration],
-) -> None:
+def task_manifest_tour(
+    primitives: dict[str, PrimitiveDeclaration], *, second_length: int = 0
+) -> RunPlan:
     workflow = TOUR.replace("  best: number\n", "  best: number\n  manifest: file\n").replace(
         "${{ workflow.checker/program.yaml }}", "${{ inputs.manifest }}"
     )
@@ -572,7 +572,9 @@ def test_a_step_given_the_tasks_manifest_writes_every_report_of_its_files(
         .replace("entrant]", "entrant, check/one.yaml]", 1)
         .replace("[parts/2.in, entrant]", "[parts/2.in, entrant, check/two.yaml]")
     )
-    reports = b"reports:\n  length: {at_least: 0}\n  score: {at_least: 0, at_most: 1}\n"
+    reports = (
+        b"reports:\n  length: {at_least: 0}\n  score: {better: higher, at_least: 0, at_most: 1}\n"
+    )
     plan = ok(
         planned(
             primitives,
@@ -582,17 +584,78 @@ def test_a_step_given_the_tasks_manifest_writes_every_report_of_its_files(
             TOUR_PATHS | {"check/one.yaml", "check/two.yaml"},
             manifests={
                 "check/one.yaml": reports + b"  moves: {type: text, optional: true}\n",
-                "check/two.yaml": reports + b"  turns: {at_least: 0}\n",
+                "check/two.yaml": reports.replace(
+                    b"length: {at_least: 0}", f"length: {{at_least: {second_length}}}".encode()
+                )
+                + b"  turns: {at_least: 0}\n",
             },
         )
     )
 
+    return plan
+
+
+def test_a_step_given_the_tasks_manifest_writes_every_report_of_its_files(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = task_manifest_tour(primitives)
     # The checker writes what its file declares, so each report is an output
     # of the step, one some file leaves out optional.
     outputs = plan.steps["check"].outputs
     assert (outputs["length"], outputs["score"]) == ("number", "number")
     assert (outputs["moves?"], outputs["turns?"]) == ("text", "number")
     assert "turns" not in outputs
+
+
+def test_a_tasks_manifest_keeps_report_meaning(primitives: dict[str, PrimitiveDeclaration]) -> None:
+    plan = task_manifest_tour(primitives)
+    score = plan.reports["score"]
+    assert (score.better, score.at_least, score.at_most) == ("higher", 0, 1)
+    assert plan.reports["length"].at_least == 0
+
+
+def test_a_task_manifest_missing_score_counts_as_zero_in_a_fold(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = task_manifest_tour(primitives)
+    outcomes = evaluate(
+        {"total": {"block": "sum", "over": {"runs": "all"}, "of": {"run": ["all", "score"]}}},
+        {
+            "all": [
+                RunResult("r1", "accepted", reports={"score": 1}),
+                RunResult("r2", "wrong_answer"),
+            ]
+        },
+        {},
+        {name: report.column() for name, report in plan.reports.items()},
+    )
+    assert outcomes["total"].number == 1
+    assert not outcomes["total"].waiting
+
+
+def test_the_first_task_manifest_supplies_disagreeing_bounds(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = task_manifest_tour(primitives, second_length=2)
+    assert plan.reports["length"].at_least == 0
+
+
+def test_a_tour_with_checks_plans_part_keys(primitives: dict[str, PrimitiveDeclaration]) -> None:
+    task = (
+        TOUR_TASK + "checks:\n  - submit: {route: [solutions/1.txt, solutions/2.txt]}\n"
+        "    expect: {total: 2}\n"
+    )
+    plan = ok(
+        planned(
+            primitives,
+            task,
+            TOUR,
+            TOUR_FILES,
+            TOUR_PATHS | {"solutions/1.txt", "solutions/2.txt"},
+        )
+    )
+    assert len(plan.checks()) == 1
+    assert plan.runs[0].key["route"] == {"part": 1}
 
 
 # Step classes

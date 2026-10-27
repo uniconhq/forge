@@ -113,7 +113,12 @@ async def _islands(
         data = {
             path: content for path, content in data.items() if path not in _repo(acme, task).files
         }
-    published = await _save(setup, acme, task, {"task.yaml": text.encode(), **data})
+    published = await _save(
+        setup,
+        acme,
+        task,
+        {"task.yaml": text.encode(), "statement.md": b"Count the islands.\n", **data},
+    )
     return Islands(task, published.publication, workflow)
 
 

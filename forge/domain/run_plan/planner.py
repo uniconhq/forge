@@ -1035,12 +1035,12 @@ class _Planner:
                 resolved = self.task.manifest_outputs.get(report.step, {}).get(key)
             if resolved is not None and resolved.type not in (Type.NUMBER, Type.TEXT):
                 continue
-            number = port is not None and port.type is Type.NUMBER
+            number = resolved is not None and resolved.type is Type.NUMBER
             found[name] = ReportEntry(
                 step=report.step,
                 output=f"{report.program}.{report.output}" if report.program else report.output,
-                better=port.better if number and port is not None else None,
-                at_least=port.at_least if number and port is not None else None,
-                at_most=port.at_most if number and port is not None else None,
+                better=resolved.better if number and resolved is not None else None,
+                at_least=resolved.at_least if number and resolved is not None else None,
+                at_most=resolved.at_most if number and resolved is not None else None,
             )
         return found

@@ -264,7 +264,7 @@ async def test_another_persons_submission_is_not_theirs_to_mark(
 async def _write(setup: Setup, acme: Acme, content: str) -> files.Written:
     current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
     written = await files.write(
-        setup, acme.ada, SPRING, "contest.yaml", content.encode(), current.token
+        setup, acme.ada, SPRING, "contest.yaml", content.encode(), current.token, confirm=True
     )
     assert isinstance(written, files.Written)
     return written

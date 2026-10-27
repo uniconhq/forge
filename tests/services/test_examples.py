@@ -241,7 +241,12 @@ async def _task(
     question the save asks answered; with `check`, its save row ended done,
     so its publication takes over."""
     task = await make_task(setup, acme, name)
-    await _save(setup, acme, task, {"task.yaml": text.encode(), **data})
+    await _save(
+        setup,
+        acme,
+        task,
+        {"task.yaml": text.encode(), "statement.md": b"Solve the task.\n", **data},
+    )
     if check:
         await checked(setup, task)
     return task
