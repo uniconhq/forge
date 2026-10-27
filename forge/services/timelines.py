@@ -38,8 +38,8 @@ gradings, one per submission, at the moment it was taken:
   placeholder (M57), as the organisers' opening checklist asks; each one
   that has not is refused at the `state` line, "A · sum: its statement is
   not written yet". In an open contest, an entry newly scheduled to show
-  passes the same check at its own line. Unchanged entries never block an
-  unrelated edit.
+  passes the same check at its own line, or at `end` when a later end
+  schedules it. Unchanged entries never block an unrelated edit.
 
 Changing an extension is checked the same way (`refuse_extension`): it may
 not let a row submit to a task whose reveal has passed, nor, shortened or
@@ -258,8 +258,9 @@ async def check_contest(
                 continue
             if old is None or old.withdrawn:
                 scheduled.append((index, entry, f"tasks[{index}]"))
-            elif old.release_at != entry.release_at and before.release_of(old) >= before.end:
-                scheduled.append((index, entry, f"tasks[{index}].release_at"))
+            elif before.release_of(old) >= before.end:
+                moved = old.release_at != entry.release_at
+                scheduled.append((index, entry, f"tasks[{index}].release_at" if moved else "end"))
         problems += await _not_ready(ctx, scheduled, tasks)
     if before is None:
         return problems

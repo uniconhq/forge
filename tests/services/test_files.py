@@ -880,6 +880,15 @@ async def test_an_open_contest_checks_only_tasks_newly_scheduled_to_show(
     assert refused == [(path, "A · sum: it is not published yet.")]
 
 
+async def test_an_open_contest_checks_a_task_its_later_end_schedules(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    held = _running("  - {id: sum, release_at: 2026-09-26T15:00:00Z}\n")
+    await write_contest(acme.fake, held.decode())
+    later = held.replace(b"end: 2026-09-26T15:00:00Z", b"end: 2026-09-26T16:00:00Z")
+    assert await _refused(setup, acme, later) == [("end", "A · sum: it is not published yet.")]
+
+
 async def test_an_open_contest_refuses_a_scheduled_placeholder_statement(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
