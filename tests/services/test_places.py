@@ -132,7 +132,10 @@ async def test_a_first_live_publication_makes_the_places_though_an_earlier_one_w
         setup,
         acme.ada,
         sum_task,
-        {"task.yaml": Edit(starter.content + b"# checked first\n", head.tokens["task.yaml"])},
+        {
+            "task.yaml": Edit(starter.content + b"# checked first\n", head.tokens["task.yaml"]),
+            "statement.md": Edit(b"Add two numbers.\n", head.tokens["statement.md"]),
+        },
         confirm=True,
     )
     assert isinstance(waiting, task_save.Published), waiting
@@ -303,7 +306,9 @@ async def test_a_task_put_back_by_hand_gets_its_places_ahead_as_put_back_does(
     assert _made(acme.fake) == []
     current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
 
-    await files.write(setup, acme.ada, SPRING, "contest.yaml", running.encode(), current.token)
+    await files.write(
+        setup, acme.ada, SPRING, "contest.yaml", running.encode(), current.token, confirm=True
+    )
     await setup.settle()
 
     assert await _writers(setup, acme.fake, sum_task, 8) == {8}

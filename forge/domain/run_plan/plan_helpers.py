@@ -3,7 +3,6 @@ from typing import Any
 
 from forge.domain.primitives import PrimitiveDeclaration
 from forge.domain.run_plan.records import PAGE_KB
-from forge.domain.run_task import Part
 from forge.domain.workflow_definition import BadReference, Reference, references
 from forge.domain.yaml_models import is_number
 
@@ -63,10 +62,3 @@ def _words(value: Mapping[str, object]) -> str:
     if "workflow" in value:
         return f"the workflow's `{value['workflow']}`"
     return f"`{value['task']}`"
-
-
-def _key_json(key: Mapping[str, object]) -> dict[str, object]:
-    return {
-        name: {"part": value.number} if isinstance(value, Part) else value
-        for name, value in key.items()
-    }

@@ -66,8 +66,19 @@ async def public(setup: Setup, acme: Acme, sum_task: TaskId) -> TaskId:
     """
     later = await make_task(setup, acme, "later")
     await write_contest(acme.fake, LATER.format(visibility="everyone"))
-    await _save(setup, acme, sum_task, {"public/figure.png": FIGURE, "public/a/notes.txt": NOTES})
-    await _save(setup, acme, later, {"public/figure.png": FIGURE})
+    await _save(
+        setup,
+        acme,
+        sum_task,
+        {
+            "statement.md": b"Add two numbers.\n",
+            "public/figure.png": FIGURE,
+            "public/a/notes.txt": NOTES,
+        },
+    )
+    await _save(
+        setup, acme, later, {"statement.md": b"Solve it later.\n", "public/figure.png": FIGURE}
+    )
     acme.fake.reset_calls()
     return sum_task
 

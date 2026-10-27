@@ -74,7 +74,7 @@ leaderboards:
         block: otherwise
         of: [{value: [{column: picked}, score]}, 0]
     sort: [{score: desc}]
-    display: [{score: {places: 2}}]
+    display: [{score: {decimals: 2}}]
 hold: {from: 2026-06-01T13:00:00Z, until: staff}
 tasks:
   - {id: sum-of-two}
@@ -815,3 +815,15 @@ def test_a_way_written_bare_takes_its_defaults_and_none_at_all_lets_nobody_in() 
 
     assert [way.approval for way in contest.registration.ways] == [Approval.AUTO, Approval.MANUAL]
     assert nobody.registration.ways == ()
+
+
+@pytest.mark.parametrize("how", ["{places: 2}", "{places: 2, decimals: 2}"])
+def test_display_refuses_places_with_the_decimals_spelling(how: str) -> None:
+    with pytest.raises(InvalidDefinition) as refused:
+        parse_contest(HEAD + f"leaderboards: {{s: {{display: [{{total: {how}}}]}}}}\n")
+    assert refused.value.errors == [
+        {
+            "path": "leaderboards.s.display[0]",
+            "message": "Write `decimals`, such as `{total: {decimals: 2}}`.",
+        },
+    ]

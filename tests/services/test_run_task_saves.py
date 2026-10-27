@@ -134,7 +134,11 @@ async def _published(
     the save asks answered.
     """
     written = await _ready(acme, which, contest)
-    contents = {"task.yaml": (text or written).encode(), **TASKS[which][2]}
+    contents = {
+        "task.yaml": (text or written).encode(),
+        "statement.md": b"Solve the task.\n",
+        **TASKS[which][2],
+    }
     try:
         result = await _save(setup, acme, task, contents, confirm=True)
     except ConfirmationRequired as asked:
@@ -404,7 +408,12 @@ async def test_a_running_contest_and_a_self_reported_report_ask_as_one_question(
     text = await _ready(acme, "cartpole", RUNNING.format(visibility="everyone"))
 
     with pytest.raises(ConfirmationRequired) as asked:
-        await _save(setup, acme, sum_task, {"task.yaml": text.encode()})
+        await _save(
+            setup,
+            acme,
+            sum_task,
+            {"task.yaml": text.encode(), "statement.md": b"Balance the pole.\n"},
+        )
 
     assert asked.value.detail.startswith(
         "The contest is running, so this save asks before it publishes. What the entrant gives "

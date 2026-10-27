@@ -2,7 +2,14 @@ import re
 from collections.abc import Mapping
 
 from forge.domain.content import FileSet, WrittenEdit
-from forge.domain.definitions import TASK_FILE, TaskDefinition, parse_task
+from forge.domain.definitions import (
+    STATEMENT_FILE,
+    TASK_FILE,
+    State,
+    TaskDefinition,
+    parse_task,
+    statement_written,
+)
 from forge.domain.errors import ConfirmationRequired, Forbidden, NotFound
 from forge.domain.grading import run_machine
 from forge.domain.identity import Identity
@@ -16,7 +23,7 @@ from forge.domain.save_effect import ReadChanges, as_extra
 from forge.domain.workflow_definition import RunWorkflow
 from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
 from forge.runtime.context import Context
-from forge.services import gradings
+from forge.services import gradings, names
 from forge.services.task_save import sources
 from forge.services.task_save.effect import _programs_again, _save_effect
 from forge.services.task_save.guards import _leaderboard_reads, _present, _shown_before_runs
@@ -35,7 +42,7 @@ from forge.services.task_save.stored_facts import (
     _workflow_facts,
     _workflow_problem,
 )
-from forge.services.task_save.writing import _contest_running
+from forge.services.task_save.writing import _contest, _contest_running
 from forge.services.workflow_boxes import Expanded, expand, files_at
 
 _INNER_BAD = re.compile(r"^`([^`]+)`: (.*)$", re.DOTALL)
@@ -163,6 +170,26 @@ async def _ask(
     )
 
 
+async def _statement_ready(
+    ctx: Context, as_: Identity, task: TaskId, head: FileSet, written: Mapping[str, WrittenEdit]
+) -> list[Problem]:
+    contest = await _contest(ctx, task)
+    if contest is None or contest.state is State.DRAFT:
+        return []
+    name = (await names.names_of(ctx, [task])).get(task)
+    entry = contest.entry(name) if name is not None else None
+    if entry is None or entry.withdrawn or contest.release_of(entry) >= contest.end:
+        return []
+    if statement_written(await _content(ctx, as_, task, STATEMENT_FILE, head, written)):
+        return []
+    return [
+        Problem(
+            path=STATEMENT_FILE,
+            message=f"{contest.label_of(entry.id)} · {entry.id}: its statement is not written yet.",
+        )
+    ]
+
+
 async def check(
     ctx: Context, as_: Identity, task: TaskId, head: FileSet, written: Mapping[str, WrittenEdit]
 ) -> Checked:
@@ -281,6 +308,7 @@ async def _check_runs(
     )
     problems = [
         *found.problems,
+        *await _statement_ready(ctx, as_, task, head, written),
         *await _shown_before_runs(ctx, task, definition, present, found.task),
         *await _leaderboard_reads(ctx, task, definition),
     ]
