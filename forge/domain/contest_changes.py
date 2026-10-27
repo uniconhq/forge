@@ -63,7 +63,6 @@ def contest_changes(before: ContestDefinition, after: ContestDefinition) -> tupl
             )
             continue
         for key, label in (
-            ("title", "title changes"),
             ("audience", "audience changes"),
             ("columns", "columns change"),
             ("sort", "ranking changes"),

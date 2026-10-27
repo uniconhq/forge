@@ -42,7 +42,6 @@ def test_each_task_result_key_is_named(entry: str, words: str) -> None:
 @pytest.mark.parametrize(
     ("old", "new", "words"),
     [
-        ("title: Standings", "title: Results", "title changes"),
         ("columns: {total: 1}", "columns: {total: 2}", "columns change"),
         ("sort: [{total: desc}]", "sort: [{total: asc}]", "ranking changes"),
         ("display: [total]", "display: []", "displayed columns change"),
@@ -76,6 +75,8 @@ def test_text_default_times_and_reordered_keys_do_not_ask() -> None:
     before = parse_contest(BASE + BOARD)
     text = BASE.replace("name: Spring", "name: Autumn\ndescription: A contest.")
     assert contest_changes(before, parse_contest(text + BOARD)) == ()
+    renamed = BOARD.replace("title: Standings", "title: Results")
+    assert contest_changes(before, parse_contest(BASE + renamed)) == ()
     explicit = BASE + "    release_at: 2026-09-26T10:00:00Z\n    closes: 2026-09-26T15:00:00Z\n"
     assert contest_changes(parse_contest(BASE), parse_contest(explicit)) == ()
     two = BOARD.replace("columns: {total: 1}", "columns: {total: 1, other: 2}")
