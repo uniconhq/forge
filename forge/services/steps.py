@@ -862,11 +862,54 @@ class _Reader:
                 inputs = (run_step.items or {})[run].inputs
             check = run_step.check.index if run_step.check is not None else None
             canonical = await self._ports(inputs, item[1], check)
+            if isinstance(canonical, dict):
+                canonical = await self._folders_of_one(run_step, inputs, canonical, item[1])
             if canonical is STOPPED:
                 self._stopped.add(item)
             missing = canonical is MISSING or canonical is STOPPED
             self._keys[item] = None if missing else item_key(run_step.image, canonical)
         return self._keys[item]
+
+    async def _folders_of_one(
+        self,
+        step: RunStep,
+        inputs: Mapping[str, Any],
+        canonical: dict[str, Any],
+        run: str | None,
+    ) -> dict[str, Any]:
+        """`canonical` with each file a folder port is given as the folder
+        holding that one file under its name (TASK-FORMAT.md 1.3), as the
+        job places it, so the name is in the key."""
+        for port in step.folders or ():
+            given = canonical.get(port)
+            if isinstance(given, dict) and set(given) == {"file"}:
+                name = await self.file_name(inputs[port], run)
+                canonical[port] = {"folder": {name: given["file"]}}
+        return canonical
+
+    async def file_name(self, value: Mapping[str, Any], run: str | None) -> str:
+        """The name of the file `value` is: an entrant's as they uploaded
+        it, a task's or a workflow's by its path, an earlier step's as it
+        wrote it."""
+        if "entrant" in value:
+            files = self.entrant_files(value)
+            if len(files) != 1:
+                raise Misconfigured(f"The submission gives no one file for {value['entrant']}.")
+            path = files[0]
+        elif "task" in value:
+            path = value["task"]
+        elif "workflow" in value:
+            path = value["workflow"]
+        elif "step" in value:
+            found = await self.output_of(value["step"], run)
+            if found is None:
+                raise Misconfigured(f"The step {value['step']} gave nothing for a run it keyed.")
+            path = found.outputs[value["output"]]["file"]
+        else:
+            raise Misconfigured(
+                f"The plan gives a folder port a value with no file: {sorted(value)}"
+            )
+        return str(path).rsplit("/", 1)[-1]
 
     async def stopped(self, step: str, run: str | None) -> bool:
         """Whether `step`'s item for `run` will never be done: an earlier
@@ -1203,10 +1246,25 @@ class _Job:
 
     async def _inputs(self, inputs: Mapping[str, Any], run: str | None) -> dict[str, Any]:
         item = _CacheItem()
-        return {
+        placed = {
             port: await self._value(value, run, item, manifest=port == MANIFEST)
             for port, value in inputs.items()
         }
+        for port in self.step.folders or ():
+            given = placed.get(port)
+            if isinstance(given, dict) and set(given) == {"file"}:
+                name = await self.reader.file_name(inputs[port], run)
+                placed[port] = self._folder_of_one(given["file"], name)
+        return placed
+
+    def _folder_of_one(self, path: str, name: str) -> dict[str, str]:
+        """The file placed at `path`, given to a folder port: placed again
+        as the one file of a folder of its own, under its name
+        (TASK-FORMAT.md 1.3)."""
+        folder = self._folder()
+        placed = next(entry for entry in self.files if entry["path"] == path)
+        self.files.append({**placed, "path": _under(folder, name)})
+        return {"folder": folder}
 
     async def _value(
         self,
