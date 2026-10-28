@@ -38,6 +38,7 @@ from forge.domain.yaml_models import (
     Model,
     Problems,
     Retired,
+    Text,
     already_listed,
     fail,
     load_mapping,
@@ -411,13 +412,14 @@ SELF_REPORTED_GIVEN = (
 
 
 class RunWorkflow(Model):
-    """A `workflow.yaml`: one run's inputs, its steps, at
-    least one, and the outputs it gives beside the `verdict` and `passed`
-    every run has. Output names and input names are one set of columns. A
-    number or a text output is a column; a file output is not, and a box
-    may still wire it on.
+    """A `workflow.yaml`: what it does in a `description` for the pages that
+    show it, one run's inputs, its steps, at least one, and the outputs it
+    gives beside the `verdict` and `passed` every run has. Output names and
+    input names are one set of columns. A number or a text output is a
+    column; a file output is not, and a box may still wire it on.
     """
 
+    description: Text | None = None
     inputs: dict[str, RunDeclared] = Field(default_factory=dict)
     steps: tuple[RunStep, ...]
     outputs: dict[str, _RunOutputEntry] = Field(default_factory=dict)

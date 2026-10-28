@@ -196,14 +196,15 @@ class BoxOutput:
 @dataclass(frozen=True, slots=True)
 class Box:
     """A workflow version as a box: whether it is a run workflow, always so
-    now, its inputs and outputs, and a later numbered version when it has
-    one.
+    now, its inputs and outputs, a later numbered version when it has one,
+    and what it does, as its `description` says.
     """
 
     run: bool
     inputs: tuple[BoxInput, ...]
     outputs: tuple[BoxOutput, ...]
     newer_version: str | None
+    description: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -569,6 +570,7 @@ async def box(ctx: Context, session: Session, ref: str) -> Box:
             for name, entry in definition.outputs.items()
         ),
         newer,
+        definition.description,
     )
 
 
