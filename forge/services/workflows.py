@@ -31,9 +31,9 @@ reads back as shared once the list holds someone; making it private or
 public empties the list, and the list is edited only while it is not
 public.
 
-The forge makes the place and the person writes its first commit, a
-`workflow.yaml` that is valid as written
-(`forge.domain.workflow_definition.starter_workflow`). A new workflow and a
+The forge makes the place and the person writes its first commit,
+an empty `workflow.yaml` draft
+(`forge.domain.workflow_definition.empty_workflow`). A new workflow and a
 copy are private. A copy is the source's files at a version, with nothing
 written about where they came from. A draft with problems saves, so work can
 stop half done; a version is made only of a draft that passes every check a
@@ -75,6 +75,7 @@ from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.sessions import Session
 from forge.domain.types import Type
 from forge.domain.uploads import (
+    Door,
     UploadStatus,
     filename_problem,
     may_be_pointer,
@@ -89,9 +90,9 @@ from forge.domain.workflow_definition import (
     RunOutput,
     RunWorkflow,
     WorkflowRef,
+    empty_workflow,
     parse_run_workflow,
     parse_workflow_ref,
-    starter_workflow,
     validate_version,
     version_number,
 )
@@ -228,7 +229,7 @@ async def create(ctx: Context, session: Session, owner: str, name: str) -> NewWo
     """
     writer = await _writer(ctx, session, owner)
     validate_name(name)
-    files = starter_workflow(writer.label, name)
+    files = empty_workflow(writer.label, name)
     workflow = await _make(ctx, writer, name, files)
     log.info("workflows.created", workflow=workflow, user_id=session.user_id)
     return NewWorkflow(workflow, writer.label, name)
@@ -809,8 +810,77 @@ async def files(
     ctx: Context, session: Session, owner: str, name: str, path: str = ""
 ) -> tuple[TreeEntry, ...]:
     as_, workflow, head = await _files_head(ctx, session, owner, name)
+    return await _listing(ctx, as_, workflow, head, path)
+
+
+@action
+async def version_files(
+    ctx: Context, session: Session, ref: str, path: str = ""
+) -> tuple[TreeEntry, ...]:
+    """The files and folders directly under `path` that
+    `<owner>/<name>@<version>` was frozen with, as the draft's are listed,
+    read as the person signed in: anyone who may read the version may see
+    what it ships with. `NotFound`, in the same words as the version
+    itself, when there is no such version or they may not read it.
+    """
+    as_, workflow, at = await _version_at(ctx, session, ref)
+    return await _listing(ctx, as_, workflow, at, path)
+
+
+@action
+async def version_download(ctx: Context, session: Session, ref: str, path: str) -> Door:
+    """Where one file of `<owner>/<name>@<version>` is read whole, and what
+    to present there as the person signed in, for the proxy to fetch it and
+    stream it to them: a typed file and an upload alike, whatever its size.
+    Read as they are, as `version_files` lists it, at the commit the
+    version names and never at a commit given, so no draft is reached
+    through it. `NotFound` as for `version_files`; `InvalidPath` for a path
+    that is not plain. Whether the file is there is the forge's to answer
+    when the proxy asks.
+    """
+    as_, workflow, at = await _version_at(ctx, session, ref)
+    door = await ctx.forge.workflows.workflow_media_door(as_, workflow, at, check_path(path))
+    log.info("workflows.download_opened", workflow=workflow, user_id=session.user_id)
+    return door
+
+
+@action
+async def draft_download(ctx: Context, session: Session, owner: str, name: str, path: str) -> Door:
+    """Where one file of `<owner>/<name>`'s draft is read whole, and what to
+    present there, for the proxy to fetch it and stream it, as `files` lists
+    it: at the draft's head, read by whoever may change the workflow.
+    `NotFound` for someone who may not read the workflow and `Forbidden` for
+    one who may read it but not change it, as for `files`; `InvalidPath`
+    for a path that is not plain.
+    """
+    as_, workflow, head = await _files_head(ctx, session, owner, name)
+    door = await ctx.forge.workflows.workflow_media_door(as_, workflow, head, check_path(path))
+    log.info("workflows.download_opened", workflow=workflow, user_id=session.user_id)
+    return door
+
+
+async def _version_at(
+    ctx: Context, session: Session, ref: str
+) -> tuple[AsUser, WorkflowId, VersionId]:
+    """The caller, the workflow and the commit its version stands at."""
+    found = parse_workflow_ref(ref)
+    as_ = await _as_user(ctx, session)
+    try:
+        workflow = await names.workflow_id(ctx, found)
+        at = await ctx.forge.workflows.workflow_version(as_, workflow, found.version)
+    except NotFound, Forbidden:
+        raise _not_readable(found.owner, f"{found.name}@{found.version}") from None
+    return as_, workflow, at
+
+
+async def _listing(
+    ctx: Context, as_: Identity, workflow: WorkflowId, at: VersionId, path: str
+) -> tuple[TreeEntry, ...]:
+    """The entries directly under `path` at the commit `at`, each file that
+    may be an upload read to say what it holds.
+    """
     folder = check_path(path) + "/" if path else ""
-    listed = await ctx.forge.workflows.workflow_files(as_, workflow, head)
+    listed = await ctx.forge.workflows.workflow_files(as_, workflow, at)
     entries: dict[str, TreeEntry] = {}
     for held, token in sorted(listed.tokens.items()):
         if not held.startswith(folder):
@@ -822,7 +892,7 @@ async def files(
         else:
             info = None
             if may_be_pointer(listed.sizes.get(held)):
-                read = await ctx.forge.workflows.read_workflow_at(as_, workflow, head, held)
+                read = await ctx.forge.workflows.read_workflow_at(as_, workflow, at, held)
                 info = upload_info(read.content)
             entries[held] = TreeEntry(
                 held,
@@ -830,7 +900,7 @@ async def files(
                 size=listed.sizes.get(held),
                 token=str(token),
                 upload=info,
-                version=head,
+                version=at,
             )
     return tuple(entries.values())
 

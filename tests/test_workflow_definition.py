@@ -1,5 +1,5 @@
 """The workflow file: the package's copy of `unicon/classic@v3` is deploy's,
-a new workflow starts as it, every workflow deploy seeds is a run workflow,
+a new workflow starts empty, every workflow deploy seeds is a run workflow,
 a reference reads as owner/name@version and a value's references are found
 in it, the keys and types the format no longer has are refused at their
 paths, and only a number takes a unit.
@@ -13,16 +13,15 @@ import pytest
 from forge.domain.errors import InvalidName
 from forge.domain.port_values import stray_units
 from forge.domain.workflow_definition import (
-    README_FILE,
     WORKFLOW_FILE,
     BadReference,
     Reference,
     WorkflowRef,
     classic_files,
+    empty_workflow,
     parse_run_workflow,
     parse_workflow_ref,
     references,
-    starter_workflow,
     whole_reference,
 )
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line
@@ -66,13 +65,16 @@ def test_the_packages_classic_is_the_one_deploy_seeds() -> None:
     assert classic_files() == held(seeded) == CLASSIC
 
 
-def test_a_new_workflow_starts_as_classic_without_its_readme() -> None:
-    files = starter_workflow("acme", "sorting")
-
-    assert set(files) == set(CLASSIC) - {README_FILE}
-    assert files[WORKFLOW_FILE].startswith(b"# acme/sorting, a workflow.")
-    assert parse_run_workflow(files[WORKFLOW_FILE]) == parse_run_workflow(CLASSIC[WORKFLOW_FILE])
-    assert all(files[path] == CLASSIC[path] for path in files if path != WORKFLOW_FILE)
+def test_a_new_workflow_starts_empty_with_one_problem() -> None:
+    files = empty_workflow("acme", "sorting")
+    assert files == {
+        WORKFLOW_FILE: b"# acme/sorting, a workflow. The format is SIMPLER-CORE.md 7.\nsteps: []\n"
+    }
+    with pytest.raises(InvalidDefinition) as raised:
+        parse_run_workflow(files[WORKFLOW_FILE])
+    assert raised.value.errors == [
+        {"path": "steps", "message": "A workflow needs at least one step. Add one from the tray."}
+    ]
 
 
 def test_every_workflow_deploy_seeds_is_a_run_workflow_named_here() -> None:

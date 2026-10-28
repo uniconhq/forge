@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BeforeValidator, Field, PlainValidator, model_validator
+from pydantic import BeforeValidator, Field, PlainValidator, field_validator, model_validator
 
 from forge.domain.content import path_problem
 from forge.domain.errors import InvalidName
@@ -39,6 +39,7 @@ from forge.domain.yaml_models import (
     Problems,
     Retired,
     already_listed,
+    fail,
     load_mapping,
     name_rule,
     validate,
@@ -418,8 +419,15 @@ class RunWorkflow(Model):
     """
 
     inputs: dict[str, RunDeclared] = Field(default_factory=dict)
-    steps: tuple[RunStep, ...] = Field(min_length=1)
+    steps: tuple[RunStep, ...]
     outputs: dict[str, _RunOutputEntry] = Field(default_factory=dict)
+
+    @field_validator("steps")
+    @classmethod
+    def _steps(cls, steps: tuple[RunStep, ...]) -> tuple[RunStep, ...]:
+        if not steps:
+            fail([((), "A workflow needs at least one step. Add one from the tray.")])
+        return steps
 
     @model_validator(mode="after")
     def _check(self) -> RunWorkflow:
@@ -518,10 +526,8 @@ def parse_run_workflow(text: bytes | str) -> RunWorkflow:
     return validate(RunWorkflow, WORKFLOW_FILE, load_mapping(WORKFLOW_FILE, text), RUN_RETIRED)
 
 
-README_FILE = "README.md"
 CLASSIC = Path(__file__).parent / "classic"
-"""A copy of `unicon/classic@v3`'s files, as deploy seeds them, which a new
-workflow starts from."""
+"""A copy of `unicon/classic@v3`'s files, as deploy seeds them."""
 
 
 def classic_files() -> dict[str, bytes]:
@@ -533,20 +539,10 @@ def classic_files() -> dict[str, bytes]:
     }
 
 
-def starter_workflow(owner: str, name: str) -> dict[str, bytes]:
-    """The files a new workflow is created with: `unicon/classic@v3`'s but
-    its README, its `workflow.yaml` headed with the workflow's own name, so
-    it is valid from its first commit and a person starts from a workflow
-    that grades and changes what they need.
-    """
-    files = {path: content for path, content in classic_files().items() if path != README_FILE}
-    lines = files[WORKFLOW_FILE].decode().splitlines(keepends=True)
-    body = "".join(lines[next(i for i, line in enumerate(lines) if not line.startswith("#")) :])
-    header = f"""# {owner}/{name}, a workflow. It starts as unicon/classic@v3: one run of an
-# entrant's program on one input, its output compared word by word with the
-# answer by the diff script beside this file. The format is SIMPLER-CORE.md 7.
-"""
-    return {**files, WORKFLOW_FILE: (header + body).encode()}
+def empty_workflow(owner: str, name: str) -> dict[str, bytes]:
+    """The empty draft a new workflow starts with; steps are added before versioning."""
+    header = f"# {owner}/{name}, a workflow. The format is SIMPLER-CORE.md 7.\n"
+    return {WORKFLOW_FILE: (header + "steps: []\n").encode()}
 
 
 __all__ = [
@@ -563,12 +559,12 @@ __all__ = [
     "RunWorkflow",
     "WorkflowRef",
     "classic_files",
+    "empty_workflow",
     "parse_reference",
     "parse_run_workflow",
     "parse_workflow_ref",
     "references",
     "reserved_message",
-    "starter_workflow",
     "validate_version",
     "version_number",
     "whole_reference",

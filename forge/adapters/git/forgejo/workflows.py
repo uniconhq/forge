@@ -30,6 +30,7 @@ from forge.domain.content import ConflictToken, File, Files, FileSet, WrittenEdi
 from forge.domain.errors import Conflict, Forbidden, NotFound
 from forge.domain.identity import PLATFORM, Identity, Platform, User
 from forge.domain.ids import VersionId, WorkflowId, is_commit
+from forge.domain.uploads import Door
 from forge.domain.workflows import Visibility, Workflow
 
 READ = "read"
@@ -136,6 +137,14 @@ class ForgejoWorkflows:
         await self._require_mark(as_, ref)
         _require_commit(at)
         return await self._repos.read_file(as_, ref.owner, ref.repo, path, at=str(at))
+
+    async def workflow_media_door(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str
+    ) -> Door:
+        ref = parse_workflow(workflow)
+        await self._require_mark(as_, ref)
+        _require_commit(at)
+        return await self._repos.media_door(as_, ref.owner, ref.repo, path, at=str(at))
 
     async def write_workflow_file(
         self,

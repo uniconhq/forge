@@ -16,6 +16,7 @@ from typing import Protocol
 from forge.domain.content import ConflictToken, File, Files, FileSet, WrittenEdit
 from forge.domain.identity import Identity, User
 from forge.domain.ids import VersionId, WorkflowId
+from forge.domain.uploads import Door
 from forge.domain.workflows import Visibility, Workflow
 
 
@@ -104,6 +105,19 @@ class WorkflowPort(Protocol):
         `NotFound` when there is no such commit or file, and for a version's
         name, as for `workflow_files`; `Forbidden` when the identity may not
         read the workflow.
+        """
+        ...
+
+    async def workflow_media_door(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str
+    ) -> Door:
+        """Where one file's bytes at the commit `at` are read whole, an
+        upload's as the bytes its pointer names, and what to present there as
+        `as_`, for the proxy to fetch them from and stream to the person, as
+        `ContentPort.media_door` opens one for a task. `NotFound` for a
+        version's name, as for `workflow_files`; `Forbidden` when the
+        identity may not read the workflow. Whether the file is there is the
+        forge's to answer when the proxy asks.
         """
         ...
 

@@ -93,8 +93,9 @@ forge/api/
                 return, and task_id_of, the id of the task a scope names
   workflows.py  create, listing, view, read_version, save, create_version,
                 check, set_visibility, share, unshare, copy, box,
-                primitives, and the NewWorkflow, WorkflowSummary,
-                WorkflowView, Draft, Box, BoxInput, BoxOutput,
+                draft_download, version_files, version_download, primitives,
+                and the NewWorkflow, WorkflowSummary, WorkflowView, Draft,
+                Box, BoxInput, BoxOutput,
                 PrimitiveVersion and Problem they return
   files.py      read, tree, history, write, rollback, write_upload, download,
                 and the File, TreeEntry, UploadInfo, EntryKind and Change
@@ -206,7 +207,7 @@ type in words.
 `admin_only_changes` names the admin-only keys a save changes, a time
 compared as the moment it names,
 `starter_contest` and `starter_task` are the files a new contest or task is
-created with, and `starter_workflow` the `workflow.yaml` a new workflow is.
+created with, and `empty_workflow` the `workflow.yaml` a new workflow is.
 `run_plan/` is the compiler (below) and names what changed how a task grades
 between two publications (`run_plan_changes`). A plan is written and read with
 `exact_json`, so its numbers are the digits the files gave. `submissions.py` lays out what a contestant gives
@@ -615,7 +616,7 @@ hosting process calls are actions, marked `@action` from
 | `gradings` | `cancel`, `retry`, `rejudge`, `list`, `task_of`, `feed`, `queue_depth` |
 | `regrades` | `latest`, `dismiss`, `gradings_of` |
 | `runs` | `config`, `step_job`, `step_uploads`, `step_file`, `step_admits`, `step_done`, `step_report` |
-| `workflows` | `create`, `listing`, `view`, `read_version`, `save`, `create_version`, `check`, `set_visibility`, `share`, `unshare`, `copy`, `box` |
+| `workflows` | `create`, `listing`, `view`, `read_version`, `save`, `create_version`, `check`, `set_visibility`, `share`, `unshare`, `copy`, `box`, `draft_download`, `version_files`, `version_download` |
 | `primitives` | `listing` |
 
 A hosting process reaches them through `forge.api`. An action is one unit of
@@ -829,7 +830,15 @@ public. `copy` makes a private workflow of the source's files at a version,
 read as the caller, with nothing written about where it came from. `box`
 reads a version as the caller and gives its inputs and outputs for drawing
 it as a box; a workflow of the test format answers that it is not a run
-workflow. `primitives.listing` is every
+workflow. `version_files` lists the files and folders a version was frozen
+with, as the draft's are listed, and `version_download` opens the download
+door to one of them, as `files.download` does for a task's: both read as the
+caller, so anyone who may read the version may see what it ships with and
+nobody else, `NotFound` in the version's own words. The door is opened at
+the commit the version's name stands at, never at a commit the caller
+gives, so no draft is reached through it. `draft_download` opens the same
+door to a file of the draft at its head, for whoever may change the
+workflow, as `files` lists it. `primitives.listing` is every
 primitive at every version with its declaration, for the editor's palette;
 a version in a format no longer read comes with the reason instead.
 
