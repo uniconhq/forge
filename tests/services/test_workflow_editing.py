@@ -37,6 +37,8 @@ async def _own(setup: Setup, acme: Acme) -> Session:
     """bob, signed in, with his own workflow bob/tuned."""
     bob = await signed_in(setup, acme.fake, 8)
     await workflows.create(setup, bob, "bob", "tuned")
+    repo = acme.fake.state.repos[("bob", "tuned.workflow")]
+    acme.fake.state.commit(repo, CLASSIC, "Write workflow steps", 8)
     return bob
 
 
@@ -551,6 +553,9 @@ async def test_a_capitalised_username_lists_and_opens_its_workflows_in_lower_cas
     acme.fake.add_user(33, "Bob2")
     bob = await signed_in(setup, acme.fake, 33)
     await workflows.create(setup, bob, "Bob2", "tuned")
+    acme.fake.state.commit(
+        acme.fake.state.repos[("Bob2", "tuned.workflow")], CLASSIC, "Write workflow steps", 33
+    )
     await workflows.create_version(setup, bob, "bob2", "tuned", "v1")
 
     (mine,) = [item for item in await workflows.listing(setup, bob) if item.editable]

@@ -1,7 +1,8 @@
 """Workflows for a signed-in person: making one, the ones they may read,
 one as its page shows it, its definition at a version, saving its draft,
 making a version, checking a definition on its own, who reads it, copying
-one, and a version's inputs and outputs for drawing it as a box; the
+one, a version's inputs and outputs for drawing it as a box, and the files
+a version was frozen with, listed and downloaded; the
 platform's primitives at each version for the palette; and the types they
 come back as.
 """
@@ -33,6 +34,7 @@ from forge.services.workflows import (
     copy,
     create,
     create_version,
+    draft_download,
     file_slot,
     files,
     listing,
@@ -42,6 +44,8 @@ from forge.services.workflows import (
     set_visibility,
     share,
     unshare,
+    version_download,
+    version_files,
     view,
 )
 
@@ -69,6 +73,7 @@ __all__ = [
     "copy",
     "create",
     "create_version",
+    "draft_download",
     "file_slot",
     "files",
     "listing",
@@ -79,5 +84,7 @@ __all__ = [
     "set_visibility",
     "share",
     "unshare",
+    "version_download",
+    "version_files",
     "view",
 ]
