@@ -1,6 +1,7 @@
 """The workflow and primitive areas in memory."""
 
 from collections.abc import Mapping
+from urllib.parse import quote
 
 from forge.adapters.git.fake.state import Repo, State, token_of
 from forge.adapters.git.fake.uploads import FakeUploads
@@ -17,6 +18,7 @@ from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected
 from forge.domain.identity import PLATFORM, Identity, User
 from forge.domain.ids import PrimitiveId, VersionId, WorkflowId
 from forge.domain.roles import Role, Scope
+from forge.domain.uploads import Door
 from forge.domain.workflows import Primitive, Visibility, Workflow
 
 DECLARATION = "primitive.yaml"
@@ -26,6 +28,7 @@ class FakeWorkflows:
     def __init__(self, state: State, uploads: FakeUploads) -> None:
         self._state = state
         self._uploads = uploads
+        self._doors: dict[str, tuple[Identity, WorkflowId, VersionId, str]] = {}
 
     async def create_workflow(
         self, as_: Identity, owner: str, name: str, files: Files, visibility: Visibility
@@ -190,6 +193,27 @@ class FakeWorkflows:
         if len(content) > max_size:
             raise Rejected(f"{path} is larger than {max_size} bytes")
         return content
+
+    async def workflow_media_door(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str
+    ) -> Door:
+        self._state.record("workflow_media_door", as_, workflow=workflow, at=at, path=path)
+        repo = self._repo(workflow)
+        self._state.require_read(as_, repo)
+        ref = parse_workflow(workflow)
+        address = f"/api/v1/repos/{ref.owner}/{ref.repo}/media/{quote(path)}?ref={at}"
+        self._doors[address] = (as_, workflow, at, path)
+        return Door(path=address, authorization=f"fake {address}")
+
+    async def fetch(self, door: Door) -> bytes:
+        """What the proxy gets for a door `workflow_media_door` opened: the
+        file's bytes at the commit, an upload's as the bytes its pointer
+        names, read as the person the door was opened for, as Forgejo checks it.
+        """
+        as_, workflow, at, path = self._doors[door.path]
+        if door.authorization != f"fake {door.path}":
+            raise Forbidden("not the credential this door was opened with")
+        return await self.read_workflow_media(as_, workflow, at, path, max_size=2**63)
 
     async def read_workflow_file(
         self, as_: Identity, workflow: WorkflowId, version: str, path: str

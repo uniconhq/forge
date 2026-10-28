@@ -189,3 +189,122 @@ async def test_an_upload_is_for_one_person_workflow_and_path(setup: Setup, acme:
     await workflows.save(
         setup, bob, "bob", "tuned", draft.text, draft.token, changes={"x": Edit(Uploaded(slot.id))}
     )
+
+
+async def test_a_versions_files_are_listed_and_downloaded_by_whoever_reads_it(
+    setup: Setup, acme: Acme
+) -> None:
+    import hashlib
+
+    from forge.domain.content import EntryKind
+    from forge.domain.errors import InvalidPath
+    from forge.domain.workflows import Visibility
+
+    bob = await _own(setup, acme)
+    draft = (await workflows.view(setup, bob, "bob", "tuned")).draft
+    assert draft is not None
+    content = b"print(42)\n"
+    slot = await workflows.file_slot(
+        setup,
+        bob,
+        "bob",
+        "tuned",
+        path="scorer/main.py",
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+    door = await uploads.door(setup, bob, slot.id, length=len(content))
+    acme.fake.uploads.send(door.path, door.authorization, content)
+    await workflows.complete_file(setup, bob, "bob", "tuned", slot.id)
+    saved = await workflows.save(
+        setup,
+        bob,
+        "bob",
+        "tuned",
+        draft.text,
+        draft.token,
+        changes={"scorer/main.py": Edit(Uploaded(slot.id)), "tests/1.in": Edit(b"1 2\n")},
+    )
+    await workflows.create_version(
+        setup, bob, "bob", "tuned", "v1", saved.token, revision=saved.revision
+    )
+    await workflows.save(
+        setup,
+        bob,
+        "bob",
+        "tuned",
+        saved.text,
+        saved.token,
+        changes={"tests/2.in": Edit(b"3 4\n")},
+    )
+
+    # What the version was frozen with, not what the draft holds since.
+    listed = await workflows.version_files(setup, bob, "bob/tuned@v1", "tests")
+    assert [(entry.path, entry.kind) for entry in listed] == [("tests/1.in", EntryKind.FILE)]
+    [scorer] = await workflows.version_files(setup, bob, "bob/tuned@v1", "scorer")
+    assert scorer.upload is not None and scorer.upload.size == len(content)
+    opened = await workflows.version_download(setup, bob, "bob/tuned@v1", "scorer/main.py")
+    assert await acme.fake.workflows.fetch(opened) == content
+
+    ada = await signed_in(setup, acme.fake, 7)
+    with pytest.raises(NotFound):
+        await workflows.version_files(setup, ada, "bob/tuned@v1", "")
+    with pytest.raises(NotFound):
+        await workflows.version_download(setup, ada, "bob/tuned@v1", "tests/1.in")
+    await workflows.set_visibility(setup, bob, "bob", "tuned", Visibility.PUBLIC)
+    assert [
+        entry.path for entry in await workflows.version_files(setup, ada, "bob/tuned@v1", "tests")
+    ] == ["tests/1.in"]
+    opened = await workflows.version_download(setup, ada, "bob/tuned@v1", "tests/1.in")
+    assert await acme.fake.workflows.fetch(opened) == b"1 2\n"
+
+    with pytest.raises(NotFound):
+        await workflows.version_files(setup, ada, "bob/tuned@v2", "")
+    with pytest.raises(InvalidPath):
+        await workflows.version_download(setup, ada, "bob/tuned@v1", "../secret")
+
+
+async def test_a_drafts_file_is_downloaded_by_whoever_may_change_the_workflow(
+    setup: Setup, acme: Acme
+) -> None:
+    from forge.domain.errors import InvalidPath
+    from forge.domain.workflows import Visibility
+
+    bob = await _own(setup, acme)
+    draft = (await workflows.view(setup, bob, "bob", "tuned")).draft
+    assert draft is not None
+    saved = await workflows.save(
+        setup,
+        bob,
+        "bob",
+        "tuned",
+        draft.text,
+        draft.token,
+        changes={"tests/1.in": Edit(b"1 2\n")},
+    )
+    await workflows.create_version(
+        setup, bob, "bob", "tuned", "v1", saved.token, revision=saved.revision
+    )
+    await workflows.save(
+        setup,
+        bob,
+        "bob",
+        "tuned",
+        saved.text,
+        saved.token,
+        changes={"tests/2.in": Edit(b"3 4\n")},
+    )
+
+    # The draft as it stands, with what it holds since the version.
+    opened = await workflows.draft_download(setup, bob, "bob", "tuned", "tests/2.in")
+    assert await acme.fake.workflows.fetch(opened) == b"3 4\n"
+    with pytest.raises(InvalidPath):
+        await workflows.draft_download(setup, bob, "bob", "tuned", "../secret")
+
+    # Reading the workflow is not enough: its draft is its writers'.
+    ada = await signed_in(setup, acme.fake, 7)
+    with pytest.raises(NotFound):
+        await workflows.draft_download(setup, ada, "bob", "tuned", "tests/1.in")
+    await workflows.set_visibility(setup, bob, "bob", "tuned", Visibility.PUBLIC)
+    with pytest.raises(Forbidden):
+        await workflows.draft_download(setup, ada, "bob", "tuned", "tests/1.in")

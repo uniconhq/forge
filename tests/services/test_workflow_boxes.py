@@ -616,6 +616,9 @@ async def test_the_cap_counts_every_use_of_the_expansion(setup: Setup, acme: Acm
 
 
 TIMED = """\
+description: |
+  Compiles a solution and runs it once,
+  under a second.
 inputs:
   code: {type: folder, title: Solution}
   language: {type: enum, options: [python], title: Language}
@@ -661,6 +664,7 @@ async def test_a_run_workflow_version_is_a_box_with_its_inputs_and_outputs(
             BoxOutput("time_ms", "number", None, None, "lower", 0, None),
         ),
         "v2",
+        "Compiles a solution and runs it once,\nunder a second.\n",
     )
     assert later.newer_version is None
 

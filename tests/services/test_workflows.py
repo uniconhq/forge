@@ -1,7 +1,7 @@
 """Making a workflow is open to anyone signed in, under their own name or
 under an org where they hold the manager role or above. The platform makes
 the place and the person writes its first commit, a `workflow.yaml` in the
-current format, the built-in workflow's under a comment naming it
+current format, empty under a comment naming it
 `<owner>/<name>`; the workflow is private. An observer of the
 org, a person with no role there, a role held only at one of its contests,
 an org that is not there and another person's name are all refused the same
@@ -18,14 +18,13 @@ import pytest
 from forge.domain.errors import Conflict, Forbidden, InvalidName, Unavailable
 from forge.domain.identity import AsUser
 from forge.domain.ids import ContestId, WorkflowId
-from forge.domain.primitives import parse_primitive
 from forge.domain.roles import Role, Scope
-from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
-from forge.domain.workflow_definition import WORKFLOW_FILE, parse_run_workflow
+from forge.domain.workflow_definition import WORKFLOW_FILE
+from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import workflows
 from forge.services.workflows import NewWorkflow
-from forge.testing import CLASSIC, PRIMITIVES, logged
+from forge.testing import logged
 from tests.services.conftest import Acme, signed_in
 
 
@@ -40,26 +39,31 @@ async def test_a_person_makes_a_workflow_under_their_own_name(setup: Setup, acme
     assert repo.readers == set()
     assert [change.author_id for change in repo.history] == [8]
     assert repo.files["workflow.yaml"].startswith(b"# bob/tuned, a workflow.")
-    parse_run_workflow(repo.files["workflow.yaml"])
+    assert repo.files["workflow.yaml"].endswith(b"steps: []\n")
     (call,) = acme.fake.calls_to("create_workflow")
     assert isinstance(call.identity, AsUser)
     assert call.identity.user_id == 8
 
 
-async def test_the_starter_workflow_is_the_built_in_one_and_checks_as_a_version(
+async def test_a_new_workflow_is_an_empty_draft_that_cannot_be_versioned(
     setup: Setup, acme: Acme
 ) -> None:
     bob = await signed_in(setup, acme.fake, 8)
-
     await workflows.create(setup, bob, "bob", "tuned")
-
-    repo = acme.fake.state.repos[("bob", "tuned.workflow")]
-    files = dict(repo.files)
-    starter = parse_run_workflow(files[WORKFLOW_FILE])
-    assert starter == parse_run_workflow(CLASSIC[WORKFLOW_FILE])
-    declarations = {ref: parse_primitive(declaration) for ref, declaration in PRIMITIVES.items()}
-    held = WorkflowFiles(frozenset(files), files)
-    assert check_run_workflow(starter, declarations, held).problems == []
+    page = await workflows.view(setup, bob, "bob", "tuned")
+    assert page.draft is not None
+    assert page.summary.versions == ()
+    assert acme.fake.state.repos[("bob", "tuned.workflow")].files == {
+        WORKFLOW_FILE: page.draft.text.encode()
+    }
+    checked = await workflows.check(setup, bob, page.draft.text)
+    assert list(checked) == [
+        {"path": "steps", "message": "A workflow needs at least one step. Add one from the tray."}
+    ]
+    with pytest.raises(InvalidDefinition) as raised:
+        await workflows.create_version(setup, bob, "bob", "tuned", "v1")
+    assert raised.value.errors == list(checked)
+    assert acme.fake.state.repos[("bob", "tuned.workflow")].versions == {}
 
 
 async def test_ones_own_name_is_matched_whatever_its_case(setup: Setup, acme: Acme) -> None:
