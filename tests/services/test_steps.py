@@ -15,7 +15,8 @@ where a step may write, within its bounds, before it is done; done and
 the report answered the same when said again; links short-lived and for
 one object; a large task file by its link and no other hash given one;
 entrant paths never leaving their folder, and an empty one made by the
-job; a block of box users held while a step runs.
+job; a file given to a folder port a folder holding it under its name; a
+block of box users held while a step runs.
 """
 
 import asyncio
@@ -96,15 +97,20 @@ async def _islands(
     text: str = TASKS["islands"][0],
     contest: str = DRAFT,
     files: Mapping[str, bytes] | None = None,
+    workflow_text: Callable[[bytes], bytes] | None = None,
 ) -> Islands:
     """islands saved as `text`, with `files` beside its own, and published
-    over the workflow `unicon/islands@v1` in `contest`, `before` called on
-    the task once it is made."""
+    over the workflow `unicon/islands@v1` in `contest`, its `workflow.yaml`
+    changed by `workflow_text`, `before` called on the task once it is
+    made."""
     task = await make_task(setup, acme, "islands")
     _, held, data = TASKS["islands"]
     data = {**data, **(files or {})}
+    held = dict(held)
+    if workflow_text is not None:
+        held["workflow.yaml"] = workflow_text(held["workflow.yaml"])
     workflow = await acme.fake.workflows.create_workflow(
-        PLATFORM, "unicon", "islands", dict(held), Visibility.PUBLIC
+        PLATFORM, "unicon", "islands", held, Visibility.PUBLIC
     )
     await acme.fake.workflows.create_workflow_version(PLATFORM, workflow, "v1")
     await write_contest(acme.fake, contest)
@@ -1124,6 +1130,24 @@ async def test_an_entrants_folder_with_no_file_is_made_empty_by_the_job(
 
     source = job["inputs"]["inputs"]["source"]["folder"]
     assert job["files"] == [{"path": source, "folder": True}]
+
+
+async def test_a_file_given_to_a_folder_port_is_a_folder_holding_it_under_its_name(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    code_file = await _islands(
+        setup,
+        acme,
+        workflow_text=lambda text: text.replace(b"code: {type: folder", b"code: {type: file"),
+    )
+    await _saved(setup, acme, code_file)
+    row = await _grading(setup, acme, code_file)
+
+    job = await _job(setup, row, "compile", await _mint(setup, row, "early", "compile"))
+
+    source = job["inputs"]["inputs"]["source"]["folder"]
+    held = [entry for entry in job["files"] if entry["path"].startswith(f"{source}/")]
+    assert [entry["path"] for entry in held] == [f"{source}/main.py"]
 
 
 @pytest.mark.parametrize(
