@@ -332,6 +332,77 @@ async def test_a_protection_that_fails_with_none_made_meanwhile_still_fails(
     assert f"PUT {repo}/collaborators/bob" not in recorder.calls()
 
 
+async def test_a_place_another_maker_made_at_the_same_moment_counts_as_made(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    repo = f"/api/v1/repos/acme/spring.sum.{U8}.sub"
+    recorder.on("GET", f"{repo}/collaborators/bob/permission", ok({}, 404))
+    recorder.on("GET", repo, ok({}, 404), ok({}, 404), ok({"name": f"spring.sum.{U8}.sub"}))
+    recorder.on("POST", "/api/v1/orgs/acme/repos", ok({"message": "duplicate key"}, 500))
+    recorder.on("GET", f"{repo}/branch_protections/main", ok({"branch_name": "main"}))
+    recorder.on(
+        "GET",
+        "/api/v1/orgs/acme/teams/search",
+        ok(
+            {
+                "data": [
+                    {"id": 1, "name": "acme.spring-admin"},
+                    {"id": 2, "name": "acme.spring-manager"},
+                    {"id": 3, "name": "acme.spring-observer"},
+                    {"id": 4, "name": "acme.spring.sum-admin"},
+                    {"id": 5, "name": "acme.spring.sum-manager"},
+                    {"id": 6, "name": "acme.spring.sum-observer"},
+                ]
+            }
+        ),
+    )
+    workspace = forgejo.workspaces.workspace_of(
+        ContestId("acme/spring"), EntrantOwner(uuid.UUID(int=8))
+    )
+
+    await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
+
+    assert len(recorder.sent("POST", "/api/v1/orgs/acme/repos")) == 1
+    assert f"PUT {repo}/collaborators/bob" in recorder.calls()
+
+
+async def test_a_place_that_fails_to_be_made_with_none_made_meanwhile_still_fails(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [{**USER, "id": 8, "login": "bob"}]}))
+    repo = f"/api/v1/repos/acme/spring.sum.{U8}.sub"
+    recorder.on("GET", f"{repo}/collaborators/bob/permission", ok({}, 404))
+    recorder.on("GET", repo, ok({}, 404))
+    recorder.on("POST", "/api/v1/orgs/acme/repos", ok({"message": "database is down"}, 500))
+    workspace = forgejo.workspaces.workspace_of(
+        ContestId("acme/spring"), EntrantOwner(uuid.UUID(int=8))
+    )
+
+    with pytest.raises(Unavailable):
+        await forgejo.workspaces.open_submission_place(workspace, TaskId("acme/spring/sum"), [8])
+    assert f"PUT {repo}/collaborators/bob" not in recorder.calls()
+
+
+async def test_a_task_another_maker_made_and_filled_at_the_same_moment_is_a_conflict(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/spring.sum.task"
+    recorder.on("GET", "/api/v1/orgs/acme", ok({"username": "acme"}))
+    recorder.on("POST", "/api/v1/orgs/acme/repos", ok({"message": "duplicate key"}, 500))
+    recorder.on("GET", repo, ok({"name": "spring.sum.task"}))
+    recorder.on("GET", f"{repo}/branches/main", ok({"name": "main"}))
+    recorder.on(
+        "GET",
+        f"{repo}/git/trees/main",
+        ok({"tree": [{"path": "task.yaml", "type": "blob", "sha": "b-1"}]}),
+    )
+
+    with pytest.raises(Conflict):
+        await forgejo.content.create_task(ContestId("acme/spring"), "sum", {"task.yaml": b"x\n"})
+    assert f"POST {repo}/contents" not in recorder.calls()
+
+
 async def test_a_place_a_member_only_reads_is_made_up_to_writing(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:
