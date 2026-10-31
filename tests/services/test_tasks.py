@@ -84,7 +84,7 @@ async def test_a_contest_manager_makes_the_task_with_its_files(
     assert sorted(repo.files) == ["statement.md", "task.yaml", "tests/1.ans", "tests/1.in"]
     assert (repo.files["tests/1.in"], repo.files["tests/1.ans"]) == (b"1 2\n", b"3\n")
     starter = parse_task(repo.files["task.yaml"])
-    assert (starter.name, str(starter.workflow)) == ("Sum of Two", "unicon/classic@v3")
+    assert (starter.name, str(starter.workflow)) == ("Sum of Two", "unicon/classic@v4")
     assert repo.teams == {Scope("acme", "spring"), Scope("acme", "spring", "sum")}
     assert repo.reserved == {"published/"}
     assert repo.rewrites_refused is True

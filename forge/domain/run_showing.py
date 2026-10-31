@@ -35,8 +35,9 @@ section 6, item 134).
   in two groups listed is shown in each. **A run no group listed holds is
   never shown,** early or not: a run can be early only because a value
   shown then reads it.
-- **What the steps done once reported,** the compile log among them, of
-  the rows the entrant reads: each report `show` lists, by its name, once
+- **What the steps done once reported,** and what a batch step gives
+  once for all its runs, the compile log among them, of the rows the
+  entrant reads: each report `show` lists, by its name, once
   any run is shown (stage 5 section 6 item 30); one not listed never, nor
   one named like a group or a value, since the entry names that.
 - **`compiled`** is shown from the time `show` lists it under, by its

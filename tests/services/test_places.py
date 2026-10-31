@@ -55,13 +55,11 @@ inputs:
   time_limit: {type: number, title: Time limit, unit: seconds}
   memory_limit: {type: number, title: Memory limit, unit: MB}
 steps:
-  - id: compile
-    use: unicon/compile@v3
-    with: {source: "${{ inputs.code }}", language: "${{ inputs.language }}"}
   - id: solution
-    use: unicon/exec@v1
+    use: unicon/exec@v2
     with:
-      program: ${{ steps.compile.program }}
+      source: ${{ inputs.code }}
+      language: ${{ inputs.language }}
       stdin: ${{ inputs.input }}
       time_limit: ${{ inputs.time_limit }}
       memory_limit: ${{ inputs.memory_limit }}
@@ -143,7 +141,7 @@ async def test_a_first_live_publication_makes_the_places_though_an_earlier_one_w
     assert _made(acme.fake) == []
 
     head = await acme.fake.content.list_files(PLATFORM, sum_task)
-    unchecked = starter.content.replace(b"unicon/classic@v3", b"unicon/unchecked@v1")
+    unchecked = starter.content.replace(b"unicon/classic@v4", b"unicon/unchecked@v1")
     live = await task_save.save(
         setup,
         acme.ada,

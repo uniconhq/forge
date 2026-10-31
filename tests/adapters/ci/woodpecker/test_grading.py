@@ -254,13 +254,13 @@ PIPELINE_VARIABLES = {
     "UNICON_SUBMISSION_REPO": f"acme/spring.sum.{U8}.sub",
     "UNICON_SUBMISSION_COMMIT": SUBMISSION_COMMIT,
 }
-COMPILE = "ghcr.io/uniconhq/primitive-compile@sha256:" + "3" * 64
+LINK = "ghcr.io/acme/link@sha256:" + "3" * 64
 EXEC = "ghcr.io/uniconhq/primitive-exec@sha256:" + "4" * 64
 BASE = "ghcr.io/uniconhq/primitive-base@sha256:" + "5" * 64
 PIPELINE_SPEC = PipelineSpec(
     clone_image=CLONE,
     steps=(
-        PipelineStepSpec("compile", COMPILE, {"data_url": "u1", "data_token": "t1"}, user=10007),
+        PipelineStepSpec("compile", LINK, {"data_url": "u1", "data_token": "t1"}, user=10007),
         PipelineStepSpec(
             "solution", EXEC, {"data_url": "u2", "data_token": "t2"}, ("compile",), cache=True
         ),
@@ -547,7 +547,7 @@ async def test_a_pipeline_is_answered_with_its_checkout_and_each_step_a_plugin(
         "steps": [
             {
                 "name": "compile",
-                "image": COMPILE,
+                "image": LINK,
                 "settings": {"data_url": "u1", "data_token": "t1"},
                 "backend_options": {"docker": {"user": "10007:10007"}},
                 "depends_on": [],

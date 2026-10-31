@@ -27,15 +27,18 @@ from forge.domain.blocks.evaluate import Column
 from forge.domain.blocks.numbers import Better
 from forge.domain.definitions import Scoring, parse_task
 from forge.domain.release import seconds, seconds_late
+from forge.domain.run_plan import RunPlan
 from forge.domain.run_results import (
     NOT_RUN,
     Worked,
+    compilers,
     facts_of,
     run_grading,
     worked_out,
 )
 from forge.domain.run_showing import Shown, TextAt, addresses, bare, shown, texts
 from forge.domain.run_task import Run
+from tests.conftest import released
 from tests.test_run_task import CARTPOLE_TASK, ISLANDS
 
 COLUMNS = {
@@ -489,11 +492,11 @@ def test_seconds_late_counts_from_the_due_and_seconds_from_the_start_each_0_befo
     }
 
 
-def test_compiled_is_0_on_a_compile_error_of_an_untainted_step_done_once() -> None:
+def test_compiled_is_0_on_a_compile_error_of_a_step_compiling_the_entrants_code() -> None:
     every = dict.fromkeys(("r1", "r2"), "compile_error")
     failed = _row(every, outcomes={"compile": "compile_error"})
     stopped = run_grading(ISLAND_RUNS, failed, None, waiting=(), compiling={"compile"})
-    tainted = run_grading(ISLAND_RUNS, failed, None, waiting=(), compiling=set())
+    elsewhere = run_grading(ISLAND_RUNS, failed, None, waiting=(), compiling=set())
     built = run_grading(
         ISLAND_RUNS,
         _row({"r1": "accepted"}, outcomes={"compile": "accepted"}),
@@ -501,7 +504,16 @@ def test_compiled_is_0_on_a_compile_error_of_an_untainted_step_done_once() -> No
         waiting=(),
         compiling={"compile"},
     )
-    assert (stopped.compiled, tainted.compiled, built.compiled) == (0, 1, 1)
+    assert (stopped.compiled, elsewhere.compiled, built.compiled) == (0, 1, 1)
+
+
+def test_a_plan_saved_before_steps_said_they_compile_reads_compiled_as_it_did() -> None:
+    """The runner's last release's plan runs compile@v3 and says no step's
+    `compiled`: the steps done once that are not tainted are what
+    `compiled` reads, a value's program's build not among them."""
+    old = RunPlan.model_validate_json(released("runner", "v0.10.0", "examples/plan-v6.json"))
+
+    assert compilers(old) == {"runner"}
 
 
 def test_compiled_waits_while_a_row_whose_plan_compiles_is_still_to_give_it() -> None:

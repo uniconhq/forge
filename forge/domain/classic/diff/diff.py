@@ -1,4 +1,4 @@
-"""The diff script of unicon/classic@v3: does a run's output match the answer?
+"""The diff script of unicon/classic@v4: does a run's output match the answer?
 
 exec runs it with the run's `output` and the test's `answer` placed in its
 working directory, and `program.yaml` beside this file as its manifest. It

@@ -219,7 +219,7 @@ EXEC = "exec"
 value at most (SIMPLER-CORE.md 14)."""
 LANGUAGES = ("c", "cpp", "java", "python", "ipynb")
 """The languages an `exec` block's program may be written in: those
-`unicon/compile@v3` takes."""
+`unicon/exec@v2` takes."""
 EXEC_TIME_LIMIT = 2
 """The seconds of CPU an `exec` block's program may use when it gives none,
 `unicon/exec`'s own."""

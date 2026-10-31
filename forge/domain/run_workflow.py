@@ -826,7 +826,7 @@ class _Checker:
             self.refuse(
                 at,
                 f"Give the programs as a mapping of names to each one's settings, one to "
-                f"{MAX_PROGRAMS}, such as entrant: {{program: ${{{{ steps.compile.program }}}}}}.",
+                f"{MAX_PROGRAMS}, such as entrant: {{source: ${{{{ inputs.code }}}}}}.",
             )
             return {}
         if len(raw) > MAX_PROGRAMS:
@@ -852,8 +852,8 @@ class _Checker:
             if not isinstance(given, dict):
                 self.refuse(
                     where,
-                    f"Give the program's settings, such as program: "
-                    f"${{{{ steps.compile.program }}}}. {use} takes {', '.join(inner)}.",
+                    f"Give the program's settings, such as source: "
+                    f"${{{{ inputs.code }}}}. {use} takes {', '.join(inner)}.",
                 )
                 continue
             self._ports(where, use, inner, given)

@@ -1,11 +1,11 @@
-"""A primitive's declaration, `primitive.yaml`: the two the built-in workflow
-uses parse, keep the runner's contract and are their repos' own with the
+"""A primitive's declaration, `primitive.yaml`: the one the built-in workflow
+uses parses, keeps the runner's contract and is its repo's own with the
 image line written in; a declaration says `schema_version: 6`; a file or
 folder input says whether the primitive runs it (P1); `secret` is an
 input's word; every primitive declares its outcome; and the keys and words
-the format no longer has are refused at their paths. `exec`'s and
-`compile@v3`'s declarations from their checkouts parse with what they add
-kept, and what breaks the format's rules is refused.
+the format no longer has are refused at their paths. `exec`'s declaration
+from its checkout parses with what it adds kept, what a batch step gives
+once among it, and what breaks the format's rules is refused.
 """
 
 import json
@@ -24,6 +24,8 @@ from forge.domain.primitives import (
     PrimitiveForm,
     parse_primitive,
 )
+from forge.domain.roles import PRIMITIVE_OWNER
+from forge.domain.run_plan import retired
 from forge.domain.types import Type
 from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml
 from forge.testing import PLACEHOLDER_DIGEST, PRIMITIVES
@@ -44,30 +46,29 @@ def refused(text: str) -> list[Problem]:
     return raised.value.errors
 
 
-def test_the_two_seeded_primitives_parse() -> None:
-    compile_ = parse_primitive(PRIMITIVES["unicon/compile@v3"])
-    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v1"])
+def test_the_seeded_primitive_parses() -> None:
+    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v2"])
 
-    assert (compile_.batch, exec_.batch) == (False, True)
-    assert not (compile_.network or exec_.network)
-    assert compile_.image == f"ghcr.io/uniconhq/primitive-compile@{PLACEHOLDER_DIGEST}"
-    assert compile_.inputs["source"].type is Type.FOLDER
-    assert compile_.inputs["source"].runs is True
-    assert compile_.inputs["language"].options == ("c", "cpp", "java", "python", "ipynb")
-    assert compile_.inputs["entry"].optional is True
-    assert compile_.limits is not None and compile_.limits.as_mapping() == {
-        "time_ms": 60000,
-        "cpu_ms": 60000,
-        "memory_mb": 1024,
-        "pids": 128,
+    assert list(PRIMITIVES) == ["unicon/exec@v2"]
+    assert (exec_.batch, exec_.network, exec_.cache) == (True, False, True)
+    assert exec_.image == f"ghcr.io/uniconhq/primitive-exec@{PLACEHOLDER_DIGEST}"
+    assert set(exec_.forms) == {"one", "programs", "build"}
+    one = exec_.forms["one"]
+    assert (one.inputs["source"].type, one.inputs["source"].runs) == (Type.FOLDER, True)
+    assert one.inputs["stdin"].runs is False
+    assert one.inputs["language"].options == ("c", "cpp", "java", "python", "ipynb")
+    assert one.inputs["entry"].optional is True
+    assert one.limits is not None and one.limits.as_mapping() == {
+        "time_ms": 2000,
+        "cpu_ms": 2000,
+        "memory_mb": 1136,
+        "pids": 160,
         "output_mb": 64,
         "gpus": 0,
     }
-    assert set(exec_.forms) == {"one", "programs"}
-    one = exec_.forms["one"]
-    assert (one.inputs["program"].runs, one.inputs["stdin"].runs) == (True, False)
+    assert one.limits.once_time_ms == 40000
     assert one.limits_from["time_ms"] == FromInput(input="time_limit", scale=2000, add=3000)
-    assert not any(port.secret for port in compile_.inputs.values())
+    assert not any(port.secret for port in one.inputs.values())
 
 
 @pytest.mark.parametrize("name", list(PRIMITIVES))
@@ -99,15 +100,15 @@ def test_each_seeded_primitive_is_its_repos_own_with_the_image_written_in(
 
 
 def test_a_primitive_and_its_ports_say_what_they_are_for() -> None:
-    compile_ = parse_primitive(PRIMITIVES["unicon/compile@v3"])
+    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v2"])
     plain = parse_primitive(BASE + OUTCOME)
 
-    assert compile_.title == "Compile"
-    assert compile_.description is not None and compile_.description.startswith("Compiles")
-    assert compile_.inputs["language"].description == (
-        "The language the source files are written in."
+    assert exec_.title == "Run programs"
+    assert exec_.description is not None and exec_.description.startswith("Compiles")
+    assert exec_.forms["build"].inputs["language"].description == (
+        "The language the source is written in; ipynb is a Jupyter notebook."
     )
-    assert compile_.outputs["outcome"].outcomes
+    assert exec_.forms["build"].outputs["outcome"].outcomes
     assert (plain.title, plain.description, plain.outputs["outcome"].description) == (
         None,
         None,
@@ -128,25 +129,23 @@ def test_a_title_or_description_is_one_line_of_text(extra: str, path: str) -> No
 
 
 def test_each_seeded_primitive_says_what_each_outcome_it_reports_means() -> None:
-    compile_ = parse_primitive(PRIMITIVES["unicon/compile@v3"])
-    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v1"])
-    said = {
-        "compile": compile_.outputs["outcome"].outcomes,
-        "exec": exec_.forms["one"].outputs["outcome"].outcomes,
-    }
+    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v2"])
+    said = {name: form.outputs["outcome"].outcomes for name, form in exec_.forms.items()}
 
     assert {name: list(outcomes or {}) for name, outcomes in said.items()} == {
-        "compile": ["accepted", "compile_error"],
-        "exec": [
+        "one": [
             "accepted",
             "wrong_answer",
             "time_limit",
             "memory_limit",
             "output_limit",
             "runtime_error",
+            "compile_error",
         ],
+        "programs": ["accepted", "compile_error"],
+        "build": ["accepted", "compile_error"],
     }
-    assert (said["compile"] or {})["accepted"] == "the source compiles"
+    assert (said["build"] or {})["accepted"] == "the source compiles"
 
 
 def test_the_outcomes_a_step_may_report_are_the_contracts_own_in_their_order() -> None:
@@ -432,7 +431,9 @@ def mirrored(name: str) -> PrimitiveDeclaration:
 
 def test_exec_reads_the_cache_names_files_and_takes_outputs_from_a_manifest() -> None:
     formed = mirrored("exec")
-    stepped = formed.for_step(("program", "time_limit", "memory_limit"), "unicon/exec@v1")
+    stepped = formed.for_step(
+        ("source", "language", "time_limit", "memory_limit"), "unicon/exec@v2"
+    )
     assert isinstance(stepped, PrimitiveDeclaration)
     exec_ = stepped
 
@@ -454,7 +455,7 @@ def test_exec_reads_the_cache_names_files_and_takes_outputs_from_a_manifest() ->
 
 def test_execs_programs_form_runs_programs_linked_and_sizes_its_container() -> None:
     formed = mirrored("exec")
-    several = formed.for_step(("programs",), "unicon/exec@v1")
+    several = formed.for_step(("programs",), "unicon/exec@v2")
     assert isinstance(several, PrimitiveDeclaration)
 
     assert (several.schema_version, several.cache, several.outputs_from) == (
@@ -466,7 +467,9 @@ def test_execs_programs_form_runs_programs_linked_and_sizes_its_container() -> N
     assert programs.type is Type.PROGRAMS and programs.runs is None
     assert programs.inputs is not None and programs.outputs is not None
     assert list(programs.inputs) == [
-        "program",
+        "source",
+        "language",
+        "entry",
         "files",
         "args",
         "time_limit",
@@ -474,7 +477,9 @@ def test_execs_programs_form_runs_programs_linked_and_sizes_its_container() -> N
         "manifest",
         "stops_others",
     ]
-    assert programs.inputs["program"].runs is True
+    assert programs.inputs["source"].runs is True
+    assert programs.inputs["source"].type is Type.FOLDER
+    assert programs.outputs["log"].once is True
     assert programs.inputs["files"].type is Type.NAMED_FILES
     assert programs.outputs["ended"].options == (
         "finished",
@@ -487,21 +492,30 @@ def test_execs_programs_form_runs_programs_linked_and_sizes_its_container() -> N
     assert programs.outputs["ended_at"].at_least == 0
     assert several.inputs["links"].type is Type.LINKS
     assert set(several.outputs) == {"facts", "outcome"}
+    assert several.outputs["outcome"].once == ("compile_error",)
     assert several.limits_from["time_ms"] == FromMax(
         max="programs.time_limit", scale=4000, add=6000
     )
     assert several.limits_from["memory_mb"] == FromSum(sum="programs.memory_limit", add=512)
 
 
-def test_compile_v3_speaks_contract_6_and_reads_no_cache() -> None:
-    compile_ = mirrored("compile")
+def test_exec_compiles_once_and_gives_its_log_and_a_compile_error_once() -> None:
+    formed = mirrored("exec")
+    one = formed.forms["one"]
+    built = formed.for_step(("source", "language"), "unicon/exec@v2")
+    assert isinstance(built, PrimitiveDeclaration)
 
-    assert (compile_.schema_version, compile_.cache, compile_.outputs_from) == (6, False, None)
-    assert set(compile_.outputs) == {"program", "log", "outcome"}
-    assert compile_.inputs["language"].options == ("c", "cpp", "java", "python", "ipynb")
+    assert one.outputs["log"].once is True
+    assert one.outputs["outcome"].once == ("compile_error",)
+    assert one.outputs["outcome"].once_outcomes == ("compile_error",)
+    assert one.outputs["output"].once is None
+    assert one.limits is not None and one.limits.once_time_ms == 40000
+    assert (built.outputs_from, set(built.inputs)) == (None, {"source", "language", "entry"})
+    assert set(built.outputs) == {"log", "outcome"}
+    assert built.limits is not None and built.limits.once_time_ms == 40000
 
 
-@pytest.mark.parametrize("name", ["exec", "compile"])
+@pytest.mark.parametrize("name", ["exec"])
 def test_each_contract_6_primitive_keeps_the_contract(name: str) -> None:
     text = sibling(f"primitive-{name}", "primitive.yaml").read_text(encoding="utf-8")
     image = f"image: ghcr.io/uniconhq/primitive-{name}@{PLACEHOLDER_DIGEST}\n"
@@ -511,10 +525,14 @@ def test_each_contract_6_primitive_keeps_the_contract(name: str) -> None:
 def test_every_primitive_deploy_pins_reads_as_it_did() -> None:
     """Each version `images.json` pins, from its release. One that says
     `schema_version: 6` parses. An older declaration, with `name` and
-    `version` lines and no schema version, is refused as before.
+    `version` lines and no schema version, is refused as before. A retired
+    version is refused by name before its declaration is read, so it is
+    not read here.
     """
     for name, versions in pins().items():
         for version, pin in versions.items():
+            if retired(PRIMITIVE_OWNER, name, version):
+                continue
             text = released(f"primitive-{name}", pin["source"]["tag"], "primitive.yaml")
             with_image = f"image: {pin['image']}\n" + text
             if "schema_version:" in text:
@@ -569,7 +587,7 @@ inputs:
   programs:
     type: programs
     inputs:
-      program: {type: file, runs: true}
+      source: {type: folder, runs: true}
       memory_limit: number
       manifest: {type: file, runs: false, optional: true}
     outputs:
@@ -651,18 +669,25 @@ def test_a_named_files_port_keeps_its_names_and_a_number_output_its_meaning() ->
         ),
         (
             PROGRAMS_V6,
-            "      program: {type: file, runs: true}\n",
+            "      source: {type: folder, runs: true}\n",
             "",
-            "inputs.programs.inputs.program",
-            "A programs port's programs each take a program, a file input called program "
+            "inputs.programs.inputs.source",
+            "A programs port's programs each take a source, a folder input called source "
             "with runs: true.",
         ),
         (
             PROGRAMS_V6,
-            "      program: {type: file, runs: true}",
-            "      program: {type: file, runs: false}",
-            "inputs.programs.inputs.program",
-            "A programs port's programs each take a program",
+            "      source: {type: folder, runs: true}",
+            "      source: {type: folder, runs: false}",
+            "inputs.programs.inputs.source",
+            "A programs port's programs each take a source",
+        ),
+        (
+            PROGRAMS_V6,
+            "      source: {type: folder, runs: true}",
+            "      source: {type: file, runs: true}",
+            "inputs.programs.inputs.source",
+            "A programs port's programs each take a source",
         ),
         (
             PROGRAMS_V6,
@@ -762,6 +787,100 @@ def test_a_contract_6_declaration_that_breaks_a_rule_is_refused_saying_which(
     assert message in next(problem["message"] for problem in problems if problem["path"] == path)
 
 
+ONCE = (
+    BASE
+    + """\
+batch: true
+inputs:
+  source: {type: folder, runs: true}
+outputs:
+  log: {type: text, once: true}
+  outcome:
+    type: outcome
+    once: [compile_error]
+    outcomes: {accepted: it runs, compile_error: it does not compile}
+"""
+)
+
+
+def test_an_output_a_batch_step_gives_once_says_so_and_the_outcome_lists_which() -> None:
+    declared = parse_primitive(ONCE)
+
+    assert declared.outputs["log"].once is True
+    assert declared.outputs["outcome"].once == ("compile_error",)
+    assert declared.outputs["outcome"].once_outcomes == ("compile_error",)
+    assert declared.outputs["log"].once_outcomes == ()
+    plain = parse_primitive(ONCE.replace("    once: [compile_error]\n", ""))
+    assert plain.outputs["outcome"].once is None
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "path", "message"),
+    [
+        (
+            "  log: {type: text, once: true}",
+            "  log: {type: text, once: [compile_error]}",
+            "outputs.log.once",
+            "Only the outcome port lists outcomes here. Say true.",
+        ),
+        (
+            "    once: [compile_error]",
+            "    once: []",
+            "outputs.outcome.once",
+            "List at least one outcome, such as compile_error.",
+        ),
+        (
+            "    once: [compile_error]",
+            "    once: [compile_error, compile_error]",
+            "outputs.outcome.once[1]",
+            "already listed",
+        ),
+        (
+            "    once: [compile_error]",
+            "    once: [time_limit]",
+            "outputs.outcome.once[0]",
+            "time_limit is not among the port's outcomes.",
+        ),
+        (
+            "    once: [compile_error]",
+            "    once: true",
+            "outputs.outcome.once",
+            "List the outcomes the step gives once, such as [compile_error].",
+        ),
+        (
+            "  source: {type: folder, runs: true}",
+            "  source: {type: folder, runs: true, once: true}",
+            "inputs.source.once",
+            "This applies only to an output.",
+        ),
+    ],
+)
+def test_once_that_breaks_a_rule_is_refused_saying_which(
+    old: str, new: str, path: str, message: str
+) -> None:
+    changed = ONCE.replace(old, new)
+    assert changed != ONCE
+
+    problems = refused(changed)
+
+    assert path in [problem["path"] for problem in problems]
+    assert message in next(problem["message"] for problem in problems if problem["path"] == path)
+
+
+def test_the_time_a_batch_step_takes_once_is_a_limit_of_its_own() -> None:
+    limits = "{time_ms: 1, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1, gpus: 0}"
+    timed = ONCE.replace(limits, limits[:-1] + ", once_time_ms: 40000}")
+    assert timed != ONCE
+
+    declared = parse_primitive(timed)
+
+    assert declared.limits is not None and declared.limits.once_time_ms == 40000
+    assert parse_primitive(ONCE).limits.once_time_ms is None  # type: ignore[union-attr]
+    assert "limits.once_time_ms" in [
+        problem["path"] for problem in refused(timed.replace("40000", "0"))
+    ]
+
+
 def test_a_programs_port_is_called_programs() -> None:
     problems = refused(PROGRAMS_V6.replace("  programs:\n    type", "  players:\n    type"))
 
@@ -827,18 +946,40 @@ def test_a_form_name_must_be_a_port_name() -> None:
     assert problem["message"].startswith("A form's name may use only")
 
 
-def test_a_form_needs_a_required_input_of_its_own() -> None:
+def test_two_forms_that_each_declare_every_input_either_requires_are_refused() -> None:
+    text = FORMS.replace(
+        "      program: {type: text}\n",
+        "      program: {type: text}\n      bundle: {type: text, optional: true}\n",
+        1,
+    ).replace(
+        "      bundle: {type: text}\n",
+        "      bundle: {type: text}\n      program: {type: text, optional: true}\n",
+    )
+    assert refused(text) == [
+        {
+            "path": "forms.several",
+            "message": "A step giving bundle, program fits both one and several. Give one of "
+            "them a required input the other does not declare.",
+        }
+    ]
+    alike = FORMS.replace("      bundle: {type: text}\n", "      program: {type: text}\n")
+    assert refused(alike)[0]["message"].startswith("A step giving program fits both one and")
+
+
+def test_a_form_whose_inputs_are_part_of_anothers_is_told_apart_by_what_it_lacks() -> None:
+    """As exec's `build` is of `one`: a step giving `program` alone fits
+    `several`, and one giving `only` too fits `one`."""
     text = FORMS.replace(
         "      program: {type: text}\n",
         "      program: {type: text}\n      only: {type: text}\n",
         1,
     ).replace("      bundle: {type: text}\n", "      program: {type: text}\n")
-    assert refused(text) == [
-        {
-            "path": "forms.several",
-            "message": "A form needs a required input no other form declares.",
-        }
-    ]
+    declared = parse_primitive(text)
+
+    one = declared.for_step(("program", "only"), "acme/two@v1")
+    several = declared.for_step(("program",), "acme/two@v1")
+    assert isinstance(one, PrimitiveDeclaration) and isinstance(several, PrimitiveDeclaration)
+    assert (set(one.inputs), set(several.inputs)) == ({"program", "only"}, {"program"})
 
 
 def test_for_step_picks_the_one_form_the_inputs_fit() -> None:

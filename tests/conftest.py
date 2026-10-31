@@ -20,15 +20,16 @@ SIBLINGS = Path(__file__).resolve().parents[2]
 
 def sibling(repo: str, *path: str) -> Path:
     """`path` in the repo `repo` beside this one. On a machine without that
-    checkout the test is skipped; in CI, which checks every one of them out,
-    a missing file fails the test, so a comparison never passes by not
-    running.
+    checkout the test is skipped, or the whole module when a module reads it
+    as it is imported, as a module importing that one does too; in CI, which
+    checks every one of them out, a missing file fails the test, so a
+    comparison never passes by not running.
     """
     found = SIBLINGS.joinpath(repo, *path)
     if not found.exists():
         if os.environ.get("CI"):
             pytest.fail(f"{found} is missing; CI checks {repo} out beside this repo")
-        pytest.skip(f"the {repo} repo is not checked out beside this one")
+        pytest.skip(f"the {repo} repo is not checked out beside this one", allow_module_level=True)
     return found
 
 

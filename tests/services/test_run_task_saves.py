@@ -88,8 +88,8 @@ TOUR_DATA = {"parts/1.in": b"5 cities\n", "parts/2.in": b"9 cities\n"}
 
 TASKS: dict[str, tuple[str, Mapping[str, bytes], Mapping[str, bytes]]] = {
     "islands": (
-        ISLANDS.replace("unicon/classic@v3", "unicon/islands@v1"),
-        deployed("unicon/classic@v3")[1],
+        ISLANDS.replace("unicon/classic@v4", "unicon/islands@v1"),
+        deployed("unicon/classic@v4")[1],
         ISLANDS_DATA,
     ),
     "cartpole": (

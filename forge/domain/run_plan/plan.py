@@ -24,7 +24,7 @@ from forge.domain.run_plan.models import (
 )
 from forge.domain.run_plan.plan_checks import cache_problems, order_problems
 from forge.domain.run_plan.planner import _last, _Planner
-from forge.domain.run_plan.records import COMPILE_USE, EXEC_USE, PIPELINES
+from forge.domain.run_plan.records import EXEC_USE, PIPELINES
 from forge.domain.run_task import RunTask, key_json
 from forge.domain.run_workflow import RunWorkflowCheck
 from forge.domain.types import FILES
@@ -63,7 +63,9 @@ def plan_runs(
     the largest a step may take; `programs` the declarations of
     `PROGRAM_USES`, by use, when a value has an `exec` program, which is
     compiled at the save and run once per grading in the pipeline its
-    value is shown from, after its group's runs (`_Planner.programs`).
+    value is shown from, after its group's runs (`_Planner.programs`), or
+    the workflow uses `EXEC_USE`, whose sources of the task's own are
+    compiled at the save too (`_Planner.builds`).
     The plan holds both splits of a grading (9.4): the one made before any
     release, and when a release moves anything, the one made while the
     task's results are released (`RunPlan.released`), each fitted to the
@@ -86,10 +88,14 @@ def plan_runs(
         *cache_problems(checked),
         *order_problems(planner.classes, planner.reads),
         *planner.shown_reports(),
+        *planner.once_problems(),
     ]
+    if any(step.use == EXEC_USE for step in checked.steps.values()):
+        assert programs is not None, "a save reads the program primitives the workflow uses"
+        problems += planner.builds(programs[EXEC_USE])
     if task.programs:
         assert programs is not None, "a save reads the program primitives when a value has one"
-        problems += planner.programs(programs[COMPILE_USE], programs[EXEC_USE])
+        problems += planner.programs(programs[EXEC_USE])
     if problems:
         return RunPlanCheck(problems, None)
     pipelines = planner.pipelines()

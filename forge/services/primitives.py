@@ -1,7 +1,10 @@
 """The platform's primitives as a workflow reads them: the declaration a
 step's `use:` names, read at its version as the person whose save or check
 needs it, and every primitive the platform holds at each of its versions,
-for the editor's palette.
+for the editor's palette. `unicon/compile`, every version, and
+`unicon/exec@v1` are retired, since `unicon/exec@v2` compiles what it runs:
+a step naming one is refused, and the palette lists one a forge that was
+never reset still holds with no declaration and why.
 """
 
 from dataclasses import dataclass
@@ -11,6 +14,7 @@ from forge.domain.identity import AsUser, Identity
 from forge.domain.port_values import natural
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.roles import PRIMITIVE_OWNER, primitive_id_of
+from forge.domain.run_plan import RETIRED, retired
 from forge.domain.sessions import Session
 from forge.domain.workflow_definition import WORKFLOW_FILE, WorkflowRef
 from forge.domain.yaml_models import InvalidDefinition
@@ -33,8 +37,10 @@ async def declaration(
     there or not shared with them. With `workflows`, a workflow they can
     read is a box and the answer is `(None, None)`. A primitive whose image
     the platform has withdrawn (`Settings.withdrawn_images`) is refused, so
-    nothing new is saved to run it.
+    nothing new is saved to run it, and so is a retired one (`RETIRED`).
     """
+    if retired(use.owner, use.name, use.version):
+        return None, RETIRED
     primitive = primitive_id_of(use)
     if primitive is not None:
         try:
@@ -88,12 +94,16 @@ class PrimitiveVersion:
 async def listing(ctx: Context, session: Session) -> tuple[PrimitiveVersion, ...]:
     """Every primitive the platform holds at every version, by name and then
     version in natural order, each with its declaration, read as the person
-    signed in. Every primitive is public, so a session is all it needs.
+    signed in, a retired one with none and why. Every primitive is public,
+    so a session is all it needs.
     """
     as_ = AsUser(session.user_id, await sessions.credential_for(ctx, session.id))
     found: list[PrimitiveVersion] = []
     for primitive in sorted(await ctx.forge.primitives.list_primitives(), key=lambda p: p.name):
         for version in sorted(primitive.versions, key=natural):
+            if retired(PRIMITIVE_OWNER, primitive.name, version):
+                found.append(PrimitiveVersion(primitive.name, version, None, RETIRED))
+                continue
             try:
                 text = await ctx.forge.primitives.read_declaration(as_, primitive.id, version)
             except NotFound, Forbidden:
