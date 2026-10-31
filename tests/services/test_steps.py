@@ -1,12 +1,14 @@
 """A task's steps through their door, and the store of what they did
 (SIMPLER-CORE.md 11.6, 11.9): islands graded step by step as a machine
-would, each job checked against runner's `job.schema.json`; a run an
+would, each job checked against runner's `job.schema.json`, the solution
+compiling the entrant's code in its own batch, early and late; a run an
 earlier step did not accept left out, and a step left with nothing to do
-answered so while the rest still run; a compile error a verdict, stored
-or not, and a malformed `outputs.json`, a NUL in it or a file listed and
-never put a `system_error`; the store reusing a step, a checker change
-running only the compare steps, and from scratch reusing nothing and
-replacing what is reused; an output never reused across orgs or from a
+answered so while the rest still run; a compile error from the solution's
+batch every run's verdict and its log told once, stored or not, and a
+malformed `outputs.json`, a NUL in it or a file listed and never put a
+`system_error`; the store reusing a step, a checker change building the
+checker again and running only the compare steps, and from scratch
+reusing nothing and replacing what is reused; an output never reused across orgs or from a
 late pipeline into an early one; two gradings making one key keeping
 one; a step holding only its own row and the report every step's; and
 the door's rules: a token opens only its own step of its own grading,
@@ -68,7 +70,6 @@ from tests.services.conftest import SPRING, Acme, make_task, write_contest
 from tests.services.test_run_task_saves import DRAFT, ISLANDS_DATA, TASKS
 
 CODE = b"print(1)\n"
-PROGRAM = b"\x7fELF compiled\n"
 CHECKER = b"\x7fELF checker\n"
 JOB = json.loads(sibling("runner", "schemas", "job.schema.json").read_text("utf-8"))
 JOB_CHECK = Draft202012Validator(JOB, format_checker=FormatChecker())
@@ -265,28 +266,27 @@ def _outputs(document: Mapping[str, Any]) -> bytes:
     return json.dumps(document).encode()
 
 
-def _compiled(program: bytes = PROGRAM, outcome: str = "accepted") -> Callable[..., Written]:
+def _built(outcome: str = "accepted", log: str = "built") -> Callable[..., Written]:
+    """A build at the save: whether its source compiled, and the log."""
+
     def write(job: Mapping[str, Any]) -> Written:
-        outputs: dict[str, Any] = {"outcome": outcome, "log": "built"}
-        files: Written = {}
-        if outcome == "accepted":
-            outputs["program"] = {"file": "out/program"}
-            files["out/program"] = program
-        return {"outputs.json": _outputs({"schema_version": 6, "outputs": outputs}), **files}
+        outputs = {"outcome": outcome, "log": log}
+        return {"outputs.json": _outputs({"schema_version": 6, "outputs": outputs})}
 
     return write
 
 
 def _batch(
-    outcome: Mapping[str, str] | None = None, *, score: bool = False
+    outcome: Mapping[str, str] | None = None, *, score: bool = False, log: str = "built"
 ) -> Callable[..., Written]:
-    """A batch of exec runs, each accepted but those `outcome` names."""
+    """A batch of exec runs, each accepted but those `outcome` names, each
+    giving the compile `log`."""
 
     def write(job: Mapping[str, Any]) -> Written:
         entries: list[dict[str, Any]] = []
         files: Written = {}
         for run in _runs(job):
-            outputs: dict[str, Any] = {"outcome": (outcome or {}).get(run, "accepted")}
+            outputs: dict[str, Any] = {"outcome": (outcome or {}).get(run, "accepted"), "log": log}
             if outputs["outcome"] == "accepted":
                 outputs |= {"output": {"file": f"out/{run}/output"}, "memory_kb": 1500}
                 outputs |= {"time_ms": 12} | ({"score": 1, "message": "Right."} if score else {})
@@ -297,10 +297,21 @@ def _batch(
     return write
 
 
-async def _saved(setup: Setup, acme: Acme, islands: Islands, checker: bytes = CHECKER) -> uuid.UUID:
-    """The save pipeline's diff run for islands and its grading reported."""
+def _other_output(job: Mapping[str, Any]) -> Written:
+    """A batch of exec runs, each accepted with an output other than
+    `_batch`'s."""
+    written = _batch()(job)
+    return {
+        path: content + b"other\n" if path.startswith("out/") else content
+        for path, content in written.items()
+    }
+
+
+async def _saved(setup: Setup, acme: Acme, islands: Islands) -> uuid.UUID:
+    """The save pipeline's build of islands' checker run and its grading
+    reported."""
     row = await _grading(setup, acme, islands)
-    await _step(setup, acme, row, "save", "diff", _compiled(checker))
+    await _step(setup, acme, row, "save", "build-compare", _built())
     assert await _report(setup, row, "save") is GradingStatus.DONE
     return row
 
@@ -309,8 +320,7 @@ async def _early(
     setup: Setup, acme: Acme, row: uuid.UUID, solution: Mapping[str, str] | None = None
 ) -> dict[str, dict[str, Any]]:
     """The early pipeline run to its report; each step's job."""
-    jobs = {"compile": await _step(setup, acme, row, "early", "compile", _compiled())}
-    jobs["solution"] = await _step(setup, acme, row, "early", "solution", _batch(solution))
+    jobs = {"solution": await _step(setup, acme, row, "early", "solution", _batch(solution))}
     jobs["compare"] = await _step(setup, acme, row, "early", "compare", _batch(score=True))
     await _report(setup, row, "early")
     return jobs
@@ -349,10 +359,11 @@ def _download(job: Mapping[str, Any], path: str) -> dict[str, Any]:
 async def test_islands_is_graded_through_the_door_step_by_step(
     setup: Setup, acme: Acme, islands: Islands
 ) -> None:
-    await _saved(setup, acme, islands)
+    saved = await _grading(setup, acme, islands)
+    build = await _step(setup, acme, saved, "save", "build-compare", _built())
+    assert await _report(setup, saved, "save") is GradingStatus.DONE
     row = await _grading(setup, acme, islands)
 
-    compile_job = await _step(setup, acme, row, "early", "compile", _compiled())
     solution = await _step(setup, acme, row, "early", "solution", _batch())
     access = await _mint(setup, row, "early", "compare")
     compare_job = await _job(setup, row, "compare", access)
@@ -363,15 +374,9 @@ async def test_islands_is_graded_through_the_door_step_by_step(
     await _finish(setup, acme, row, "compare", access, _batch(score=True)(compare_job))
     await _report(setup, row, "early")
 
-    assert compile_job["fail_on_non_accepted"] is True and "box_users" not in compile_job
-    assert "step_memory_mb" not in compile_job
-    assert compile_job["time_limit"] == 60 and "secrets" not in compile_job
-    given = compile_job["inputs"]
-    assert violation(given, "primitive", "inputs_file") is None
-    assert given["inputs"]["language"] == "python"
-    [copied] = compile_job["files"]
-    assert copied == {"path": given["inputs"]["source"]["folder"], "workspace": "files/code"}
+    assert violation(build["inputs"], "primitive", "inputs_file") is None
     assert _runs(solution) == ["r1", "r2"] and solution["fail_on_non_accepted"] is False
+    assert "secrets" not in solution
     users = solution["box_users"]
     assert users["last"] - users["first"] == BOX_BLOCK - 1
     async with setup.unit_of_work() as ctx:
@@ -381,9 +386,9 @@ async def test_islands_is_graded_through_the_door_step_by_step(
     first = solution["inputs"]["batch"][0]["inputs"]
     stdin = _download(solution, first["stdin"]["file"])
     assert stdin["cached"] is True and stdin["path"].startswith("cache/")
-    program = _download(solution, first["program"]["file"])
-    assert acme.fake.objects.get(program["url"]) == PROGRAM
-    assert program["sha256"] == hashlib.sha256(PROGRAM).hexdigest()
+    assert first["language"] == "python"
+    source = _download(solution, first["source"]["folder"])
+    assert source == {"path": first["source"]["folder"], "workspace": "files/code"}
     assert set(compare["files"]["files"]) == {"answer", "output"}
     answer = _download(compare_job, compare["files"]["files"]["answer"]["file"])
     assert answer["path"].endswith("/answer") and answer["cached"] is True
@@ -398,17 +403,18 @@ async def test_islands_is_graded_through_the_door_step_by_step(
         ("r2", "accepted", 1),
     ]
     assert result["runs"][0]["reports"] == {"memory_kb": 1500, "score": 1, "time_ms": 12}
-    [log] = await _stored(setup, grading_id=row, step="compile")
+    [log] = await _stored(setup, grading_id=row, step="solution", run="r1")
     assert result["once"] == {
         "reports": {},
         "texts": {"log": {"output": str(log.id), "name": "log"}},
-        "outcomes": {"compile": "accepted"},
+        "outcomes": {"solution": "accepted", "compare": "accepted"},
     }
+    assert "log" not in result["runs"][0]["texts"]
     assert result["runs"][0]["message"]["name"] == "message"
-    assert len(await _stored(setup, grading_id=row)) == 5
+    assert len(await _stored(setup, grading_id=row)) == 4
 
 
-async def test_a_late_grading_does_only_the_late_runs_reading_the_early_compile(
+async def test_a_late_grading_does_only_the_late_runs_compiling_the_code_again(
     setup: Setup, acme: Acme, islands: Islands
 ) -> None:
     await _saved(setup, acme, islands)
@@ -418,8 +424,8 @@ async def test_a_late_grading_does_only_the_late_runs_reading_the_early_compile(
     assert await _to_run(setup, late, "late") == [("solution", []), ("compare", ["solution"])]
     solution = await _step(setup, acme, late, "late", "solution", _batch())
     assert _runs(solution) == ["r3", "r4"]
-    program = _download(solution, solution["inputs"]["batch"][0]["inputs"]["program"]["file"])
-    assert acme.fake.objects.get(program["url"]) == PROGRAM
+    first = solution["inputs"]["batch"][0]["inputs"]
+    assert _download(solution, first["source"]["folder"])["workspace"] == "files/code"
     with pytest.raises(Conflict):
         await _mint(setup, late, "early", "solution")
     await _step(setup, acme, late, "late", "compare", _batch(score=True))
@@ -431,7 +437,8 @@ async def test_a_late_grading_does_only_the_late_runs_reading_the_early_compile(
         ("r3", "accepted"),
         ("r4", "accepted"),
     ]
-    assert result["once"] == {"reports": {}, "texts": {}, "outcomes": {}}
+    assert result["once"]["outcomes"] == {"solution": "accepted", "compare": "accepted"}
+    assert set(result["once"]["texts"]) == {"log"}
 
 
 async def test_a_run_an_earlier_step_did_not_accept_is_left_out(
@@ -451,20 +458,28 @@ async def test_a_run_an_earlier_step_did_not_accept_is_left_out(
     ]
 
 
-async def test_a_compile_error_is_every_runs_verdict_and_the_grading_is_done(
+NOT_COMPILED = {"r1": "compile_error", "r2": "compile_error"}
+"""What the solution's batch gives when the entrant's code does not compile:
+every item the same compile error."""
+
+
+async def test_a_compile_error_from_the_solutions_batch_is_every_runs_verdict_told_once(
     setup: Setup, acme: Acme, islands: Islands
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    await _step(setup, acme, row, "early", "compile", _compiled(outcome="compile_error"))
+    await _step(setup, acme, row, "early", "solution", _batch(NOT_COMPILED, log="main.py:1: no"))
 
-    access = await _mint(setup, row, "early", "solution")
+    access = await _mint(setup, row, "early", "compare")
     assert await steps.step_job(setup, row, _named(access), _bearer(access)) is None
     assert await _report(setup, row, "early") is GradingStatus.DONE
 
     result = (await _row(setup, row)).result
     assert result is not None and result["error"] is None
     assert {run["verdict"] for run in result["runs"]} == {"compile_error"}
+    assert result["once"]["outcomes"] == {"solution": "compile_error"}
+    assert set(result["once"]["texts"]) == {"log"}
+    assert all("log" not in run["texts"] for run in result["runs"])
 
 
 async def test_a_stored_compile_error_leaves_no_step_to_run(
@@ -472,7 +487,7 @@ async def test_a_stored_compile_error_leaves_no_step_to_run(
 ) -> None:
     await _saved(setup, acme, islands)
     first = await _grading(setup, acme, islands)
-    await _step(setup, acme, first, "early", "compile", _compiled(outcome="compile_error"))
+    await _step(setup, acme, first, "early", "solution", _batch(NOT_COMPILED))
     await _report(setup, first, "early")
     again = await _grading(setup, acme, islands)
 
@@ -491,17 +506,12 @@ async def test_a_step_another_grading_did_first_has_nothing_to_do_and_the_rest_r
 ) -> None:
     await _saved(setup, acme, islands)
     late, early = await _grading(setup, acme, islands), await _grading(setup, acme, islands)
-    assert [name for name, _ in await _to_run(setup, late, "early")] == [
-        "compile",
-        "solution",
-        "compare",
-    ]
-    await _step(setup, acme, early, "early", "compile", _compiled())
+    assert [name for name, _ in await _to_run(setup, late, "early")] == ["solution", "compare"]
+    await _step(setup, acme, early, "early", "solution", _batch())
 
-    access = await _mint(setup, late, "early", "compile")
+    access = await _mint(setup, late, "early", "solution")
     assert await steps.step_job(setup, late, _named(access), _bearer(access)) is None
     assert await steps.step_job(setup, late, _named(access), _bearer(access)) is None
-    await _step(setup, acme, late, "early", "solution", _batch())
     await _step(setup, acme, late, "early", "compare", _batch(score=True))
 
     assert await _report(setup, late, "early") is GradingStatus.DONE
@@ -515,7 +525,6 @@ async def test_a_malformed_outputs_json_is_a_system_error_and_kept_nowhere(
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    await _step(setup, acme, row, "early", "compile", _compiled())
 
     await _step(setup, acme, row, "early", "solution", lambda job: {"outputs.json": b"{not json"})
     assert await _report(setup, row, "early") is GradingStatus.SYSTEM_ERROR
@@ -534,12 +543,12 @@ async def test_an_error_the_step_wrote_is_a_system_error(
     row = await _grading(setup, acme, islands)
     failed = {"outputs.json": _outputs({"schema_version": 6, "error": "No isolate."})}
 
-    await _step(setup, acme, row, "early", "compile", lambda job: failed)
+    await _step(setup, acme, row, "early", "solution", lambda job: failed)
     await _report(setup, row, "early")
 
     graded = await _row(setup, row)
     assert graded.status == GradingStatus.SYSTEM_ERROR
-    assert graded.error == "The step compile faulted: The step failed: No isolate."
+    assert graded.error == "The step solution faulted: The step failed: No isolate."
 
 
 # The store
@@ -564,28 +573,25 @@ async def test_the_store_reuses_every_step_and_from_scratch_reuses_none_and_repl
 
     scratch = await _grading(setup, acme, islands)
     assert [name for name, _ in await _to_run(setup, scratch, "early", True)] == [
-        "compile",
         "solution",
         "compare",
     ]
-    fixed = b"\x7fELF compiled again\n"
-    job = await _step(setup, acme, scratch, "early", "compile", _compiled(fixed), True)
-    assert job["inputs"]["inputs"]["language"] == "python"
-    [mine] = await _stored(setup, grading_id=scratch, step="compile")
-    [before] = await _stored(setup, grading_id=first, step="compile")
-    assert mine.reusable is True and before.reusable is False
+    job = await _step(setup, acme, scratch, "early", "solution", _other_output, True)
+    assert _runs(job) == ["r1", "r2"]
+    assert job["inputs"]["batch"][0]["inputs"]["language"] == "python"
+    mine = await _stored(setup, grading_id=scratch, step="solution")
+    before = await _stored(setup, grading_id=first, step="solution")
+    assert [each.reusable for each in mine] == [True, True]
+    assert [each.reusable for each in before] == [False, False]
 
     later = await _grading(setup, acme, islands)
-    reusing = await _job(setup, later, "solution", await _mint(setup, later, "early", "solution"))
-    program = _download(reusing, reusing["inputs"]["batch"][0]["inputs"]["program"]["file"])
-    assert acme.fake.objects.get(program["url"]) == fixed
-    solution = await _step(setup, acme, scratch, "early", "solution", _batch(), True)
-    assert _runs(solution) == ["r1", "r2"]
-    with pytest.raises(Conflict):
-        await _mint(setup, scratch, "early", "compare")
+    assert await _to_run(setup, later, "early") == [("compare", [])]
+    compare = await _job(setup, later, "compare", await _mint(setup, later, "early", "compare"))
+    output = compare["inputs"]["batch"][0]["inputs"]["files"]["files"]["output"]["file"]
+    assert acme.fake.objects.get(_download(compare, output)["url"]) == b"r1\nother\n"
 
 
-async def test_a_checker_change_runs_only_the_compare_steps(
+async def test_a_checker_change_builds_it_again_and_runs_only_the_compare_steps(
     setup: Setup, acme: Acme, islands: Islands
 ) -> None:
     await _saved(setup, acme, islands)
@@ -606,7 +612,10 @@ async def test_a_checker_change_runs_only_the_compare_steps(
     published = await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
     changed = Islands(islands.task, published.publication, islands.workflow)
 
-    await _saved(setup, acme, changed, checker=b"\x7fELF stricter\n")
+    save = await _grading(setup, acme, changed)
+    assert await _to_run(setup, save, "save") == [("build-compare", [])]
+    await _step(setup, acme, save, "save", "build-compare", _built())
+    assert await _report(setup, save, "save") is GradingStatus.DONE
     regrade = await _grading(setup, acme, changed)
 
     assert await _to_run(setup, regrade, "early") == [("compare", [])]
@@ -619,18 +628,19 @@ async def test_an_output_is_never_reused_by_another_org_or_from_a_late_pipeline(
 ) -> None:
     await _saved(setup, acme, islands)
     first = await _grading(setup, acme, islands)
-    await _step(setup, acme, first, "early", "compile", _compiled())
-    [compiled] = await _stored(setup, grading_id=first, step="compile")
+    await _step(setup, acme, first, "early", "solution", _batch())
 
     for changes in ({"org_id": "beta"}, {"org_id": "acme", "pipeline": "late"}):
         async with setup.unit_of_work() as ctx:
             await ctx.db.execute(
-                update(StepOutput).where(StepOutput.id == compiled.id).values(**changes)
+                update(StepOutput)
+                .where(StepOutput.grading_id == first, StepOutput.step == "solution")
+                .values(**changes)
             )
         row = await _grading(setup, acme, islands)
-        assert (await _to_run(setup, row, "early"))[0][0] == "compile"
-        job = await _job(setup, row, "compile", await _mint(setup, row, "early", "compile"))
-        assert job["inputs"]["inputs"]["language"] == "python"
+        assert (await _to_run(setup, row, "early"))[0][0] == "solution"
+        job = await _job(setup, row, "solution", await _mint(setup, row, "early", "solution"))
+        assert _runs(job) == ["r1", "r2"]
 
 
 async def test_two_gradings_making_one_key_at_once_keep_one(
@@ -638,16 +648,19 @@ async def test_two_gradings_making_one_key_at_once_keep_one(
 ) -> None:
     await _saved(setup, acme, islands)
     rows = [await _grading(setup, acme, islands) for _ in range(2)]
-    access = [await _mint(setup, row, "early", "compile") for row in rows]
-    for row, each in zip(rows, access, strict=True):
-        await _job(setup, row, "compile", each)
+    access = [await _mint(setup, row, "early", "solution") for row in rows]
+    jobs = [
+        await _job(setup, row, "solution", each) for row, each in zip(rows, access, strict=True)
+    ]
 
-    for row, each in zip(rows, access, strict=True):
-        await _finish(setup, acme, row, "compile", each, _compiled()({}))
+    for row, each, job in zip(rows, access, jobs, strict=True):
+        await _finish(setup, acme, row, "solution", each, _batch()(job))
 
-    found = await _stored(setup, step="compile")
-    assert len({row.key for row in found}) == 1
-    assert [row.reusable for row in found] == [True, False]
+    found = await _stored(setup, step="solution")
+    kept: dict[str, list[bool]] = {}
+    for output in found:
+        kept.setdefault(output.key, []).append(output.reusable)
+    assert list(kept.values()) == [[True, False], [True, False]]
     assert {row.grading_id for row in found} == set(rows)
 
 
@@ -656,7 +669,7 @@ async def test_a_step_holds_only_its_own_row_and_the_report_holds_every_steps(
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    access = await _mint(setup, row, "early", "compile")
+    access = await _mint(setup, row, "early", "solution")
     report = await _mint(setup, row, "early", "report")
 
     async with setup.unit_of_work() as ctx:
@@ -666,7 +679,7 @@ async def test_a_step_holds_only_its_own_row_and_the_report_holds_every_steps(
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(
             select(GradingStep)
-            .where(GradingStep.grading_id == row, GradingStep.step == "compile")
+            .where(GradingStep.grading_id == row, GradingStep.step == "solution")
             .with_for_update()
         )
         with pytest.raises(TimeoutError):
@@ -684,13 +697,13 @@ async def test_a_token_opens_only_its_own_step_of_its_own_grading(
 ) -> None:
     await _saved(setup, acme, islands)
     row, other = await _grading(setup, acme, islands), await _grading(setup, acme, islands)
-    access = await _mint(setup, row, "early", "compile")
-    solution = await _mint(setup, row, "early", "solution")
-    other_compile = await _mint(setup, other, "early", "compile")
+    access = await _mint(setup, row, "early", "solution")
+    compare = await _mint(setup, row, "early", "compare")
+    other_solution = await _mint(setup, other, "early", "solution")
 
     for grading, step, header in (
-        (row, _named(solution), _bearer(access)),
-        (other, _named(other_compile), _bearer(access)),
+        (row, _named(compare), _bearer(access)),
+        (other, _named(other_solution), _bearer(access)),
         (row, _named(access), None),
         (row, _named(access), f"Basic {access.token}"),
         (row, _named(access), _bearer(access.token[:-1])),
@@ -699,9 +712,9 @@ async def test_a_token_opens_only_its_own_step_of_its_own_grading(
         with pytest.raises(InvalidToken):
             await steps.step_job(setup, grading, step, header)
     with pytest.raises(NotFound):
-        await _mint(setup, row, "early", "diff")
+        await _mint(setup, row, "early", "compile")
     assert access.data_url.endswith(f"/api/v1/gradings/{row}/steps/s1")
-    assert solution.data_url.endswith(f"/api/v1/gradings/{row}/steps/s2")
+    assert compare.data_url.endswith(f"/api/v1/gradings/{row}/steps/s2")
 
 
 async def test_the_door_finds_a_step_by_its_woodpecker_name_and_an_older_row_by_its_own(
@@ -709,23 +722,23 @@ async def test_the_door_finds_a_step_by_its_woodpecker_name_and_an_older_row_by_
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    access = await _mint(setup, row, "early", "compile")
+    access = await _mint(setup, row, "early", "solution")
 
     assert await steps.step_job(setup, row, "s1", _bearer(access)) is not None
     with pytest.raises(InvalidToken):
-        await steps.step_job(setup, row, "compile", _bearer(access))
+        await steps.step_job(setup, row, "solution", _bearer(access))
 
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(
             update(GradingStep)
-            .where(GradingStep.grading_id == row, GradingStep.step == "compile")
+            .where(GradingStep.grading_id == row, GradingStep.step == "solution")
             .values(woodpecker=None)
         )
-    assert await steps.step_job(setup, row, "compile", _bearer(access)) is not None
+    assert await steps.step_job(setup, row, "solution", _bearer(access)) is not None
     with pytest.raises(InvalidToken):
         await steps.step_job(setup, row, "s1", _bearer(access))
-    again = await _mint(setup, row, "early", "compile")
-    assert again.data_url.endswith("/steps/compile") and again.token == access.token
+    again = await _mint(setup, row, "early", "solution")
+    assert again.data_url.endswith("/steps/solution") and again.token == access.token
 
 
 async def test_a_token_is_refused_once_its_step_is_done_or_it_has_expired(
@@ -733,24 +746,24 @@ async def test_a_token_is_refused_once_its_step_is_done_or_it_has_expired(
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    access = await _mint(setup, row, "early", "compile")
-    await _job(setup, row, "compile", access)
-    links = await _finish(setup, acme, row, "compile", access, _compiled()({}))
+    access = await _mint(setup, row, "early", "solution")
+    job = await _job(setup, row, "solution", access)
+    links = await _finish(setup, acme, row, "solution", access, _batch()(job))
 
     with pytest.raises(InvalidToken):
         await steps.step_job(setup, row, _named(access), _bearer(access))
     with pytest.raises(InvalidToken):
         await steps.step_uploads(setup, row, _named(access), _bearer(access), b'{"files": []}')
     with pytest.raises(GradingClosed):
-        await _mint(setup, row, "early", "compile")
+        await _mint(setup, row, "early", "solution")
     assert links
 
-    solution = await _mint(setup, row, "early", "solution")
+    compare = await _mint(setup, row, "early", "compare")
     clock.advance(TOKEN_LIFE)
     with pytest.raises(InvalidToken):
-        await steps.step_job(setup, row, _named(solution), _bearer(solution))
+        await steps.step_job(setup, row, _named(compare), _bearer(compare))
     with pytest.raises(InvalidToken):
-        await steps.step_done(setup, row, _named(solution), _bearer(solution), b"{}")
+        await steps.step_done(setup, row, _named(compare), _bearer(compare), b"{}")
 
 
 async def test_a_finished_grading_takes_no_more_work(
@@ -758,7 +771,7 @@ async def test_a_finished_grading_takes_no_more_work(
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    access = await _mint(setup, row, "early", "compile")
+    access = await _mint(setup, row, "early", "solution")
     async with setup.unit_of_work() as ctx:
         found = await gradings.find(ctx, row, lock=True)
         assert found is not None
@@ -767,7 +780,7 @@ async def test_a_finished_grading_takes_no_more_work(
     with pytest.raises(GradingClosed):
         await steps.step_job(setup, row, _named(access), _bearer(access))
     with pytest.raises(GradingClosed):
-        await _mint(setup, row, "early", "solution")
+        await _mint(setup, row, "early", "compare")
 
 
 async def test_done_and_the_report_answer_the_same_when_said_again(
@@ -775,12 +788,12 @@ async def test_done_and_the_report_answer_the_same_when_said_again(
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    access = await _mint(setup, row, "early", "compile")
-    await _job(setup, row, "compile", access)
-    await _finish(setup, acme, row, "compile", access, _compiled()({}))
+    access = await _mint(setup, row, "early", "solution")
+    job = await _job(setup, row, "solution", access)
+    await _finish(setup, acme, row, "solution", access, _batch()(job))
 
     await steps.step_done(setup, row, _named(access), _bearer(access), b"{}")
-    assert len(await _stored(setup, grading_id=row)) == 1
+    assert len(await _stored(setup, grading_id=row)) == 2
     report = await _mint(setup, row, "early", "report")
     first = await steps.step_report(setup, row, "report", _bearer(report), b"{}")
     result = (await _row(setup, row)).result
@@ -815,8 +828,8 @@ async def test_a_step_uploads_only_where_it_may_write(
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    access = await _mint(setup, row, "early", "compile")
-    await _job(setup, row, "compile", access)
+    access = await _mint(setup, row, "early", "solution")
+    await _job(setup, row, "solution", access)
     listed = [
         {"path": "outputs.json", "sha256": "0" * 64, "size": 2},
         {"path": path, "sha256": "0" * 64, "size": 1},
@@ -833,14 +846,14 @@ async def test_uploads_are_bounded_listed_after_the_job_and_put_under_the_step(
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    access = await _mint(setup, row, "early", "compile")
+    access = await _mint(setup, row, "early", "solution")
     one = {"path": "outputs.json", "sha256": "0" * 64, "size": 2}
     body = json.dumps({"files": [one]}).encode()
 
     with pytest.raises(InvalidCallback):
         await steps.step_uploads(setup, row, _named(access), _bearer(access), body)
-    await _job(setup, row, "compile", access)
-    over = {"path": "out/program", "sha256": "0" * 64, "size": 64 * 1024 * 1024 + 1}
+    await _job(setup, row, "solution", access)
+    over = {"path": "out/r1/output", "sha256": "0" * 64, "size": 64 * 1024 * 1024 + 1}
     with pytest.raises(InvalidCallback):
         await steps.step_uploads(
             setup, row, _named(access), _bearer(access), json.dumps({"files": [one, over]}).encode()
@@ -850,7 +863,7 @@ async def test_uploads_are_bounded_listed_after_the_job_and_put_under_the_step(
     links = await steps.step_uploads(setup, row, _named(access), _bearer(access), body)
 
     assert (
-        f"/unicon-results/results/{row}/steps/compile/outputs.json?"
+        f"/unicon-results/results/{row}/steps/solution/outputs.json?"
         in links["files"]["outputs.json"]
     )
 
@@ -858,8 +871,8 @@ async def test_uploads_are_bounded_listed_after_the_job_and_put_under_the_step(
 @pytest.mark.parametrize(
     ("put", "fault"),
     [
-        ({"out/program"}, "outputs.json was not uploaded."),
-        ({"outputs.json"}, "out/program was not uploaded."),
+        ({"out/r1/output", "out/r2/output"}, "outputs.json was not uploaded."),
+        ({"outputs.json", "out/r1/output"}, "out/r2/output was not uploaded."),
     ],
 )
 async def test_a_file_listed_and_not_put_is_a_fault_and_a_put_writes_only_what_was_listed(
@@ -867,9 +880,8 @@ async def test_a_file_listed_and_not_put_is_a_fault_and_a_put_writes_only_what_w
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    access = await _mint(setup, row, "early", "compile")
-    await _job(setup, row, "compile", access)
-    written = _compiled()({})
+    access = await _mint(setup, row, "early", "solution")
+    written = _batch()(await _job(setup, row, "solution", access))
     listed = [
         {"path": path, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
         for path, content in written.items()
@@ -886,7 +898,7 @@ async def test_a_file_listed_and_not_put_is_a_fault_and_a_put_writes_only_what_w
     await steps.step_done(setup, row, _named(access), _bearer(access), b"{}")
 
     async with setup.unit_of_work() as ctx:
-        held = await ctx.db.get(GradingStep, (row, "compile"))
+        held = await ctx.db.get(GradingStep, (row, "solution"))
         assert held is not None
     assert held.fault == fault
     assert await _stored(setup, grading_id=row) == []
@@ -895,14 +907,11 @@ async def test_a_file_listed_and_not_put_is_a_fault_and_a_put_writes_only_what_w
 async def test_a_nul_in_outputs_json_is_a_fault(setup: Setup, acme: Acme, islands: Islands) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    outputs = {"outcome": "compile_error", "log": "main.py:1: bad \x00 byte"}
-    written = {"outputs.json": _outputs({"schema_version": 6, "outputs": outputs})}
-
-    await _step(setup, acme, row, "early", "compile", lambda job: written)
+    await _step(setup, acme, row, "early", "solution", _batch(NOT_COMPILED, log="bad \x00 byte"))
     assert await _report(setup, row, "early") is GradingStatus.SYSTEM_ERROR
 
     graded = await _row(setup, row)
-    assert graded.error == "The step compile faulted: outputs.json holds a NUL character."
+    assert graded.error == "The step solution faulted: outputs.json holds a NUL character."
     assert await _stored(setup, grading_id=row) == []
 
 
@@ -916,10 +925,10 @@ async def test_a_fault_is_kept_without_a_nul(
     row = await _grading(setup, acme, islands)
     monkeypatch.setattr(steps, "read_outputs", refuse)
 
-    await _step(setup, acme, row, "early", "compile", _compiled())
+    await _step(setup, acme, row, "early", "solution", _batch())
 
     async with setup.unit_of_work() as ctx:
-        held = await ctx.db.get(GradingStep, (row, "compile"))
+        held = await ctx.db.get(GradingStep, (row, "solution"))
         assert held is not None
     assert held.fault == "bad  byte"
 
@@ -932,7 +941,7 @@ async def test_the_token_never_reaches_a_link_or_a_log(
     row = await _grading(setup, acme, islands)
     tokens: list[str] = []
     jobs: list[dict[str, Any]] = []
-    for step, write in (("compile", _compiled()), ("solution", _batch())):
+    for step, write in (("solution", _batch()), ("compare", _batch(score=True))):
         access = await _mint(setup, row, "early", step)
         tokens.append(access.token)
         jobs.append(await _job(setup, row, step, access))
@@ -952,12 +961,13 @@ async def test_a_link_lives_a_short_while_and_reads_one_object(
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    await _step(setup, acme, row, "early", "compile", _compiled())
-    solution = await _job(setup, row, "solution", await _mint(setup, row, "early", "solution"))
-    link = _download(solution, solution["inputs"]["batch"][0]["inputs"]["program"]["file"])["url"]
+    await _step(setup, acme, row, "early", "solution", _batch())
+    compare = await _job(setup, row, "compare", await _mint(setup, row, "early", "compare"))
+    output = compare["inputs"]["batch"][0]["inputs"]["files"]["files"]["output"]["file"]
+    link = _download(compare, output)["url"]
 
-    assert f"/unicon-results/results/{row}/steps/compile/out/program?" in link
-    assert acme.fake.objects.get(link) == PROGRAM
+    assert f"/unicon-results/results/{row}/steps/solution/out/r1/output?" in link
+    assert acme.fake.objects.get(link) == b"r1\n"
     with pytest.raises(Forbidden):
         acme.fake.objects.put(link, b"replaced")
     clock.advance(LINK_LIFE + timedelta(seconds=1))
@@ -1014,7 +1024,7 @@ async def test_an_entrants_paths_never_leave_their_folder(
         "inputs": {"code": {"files": files}, "language": {"value": "python"}},
     }
     row = await _grading(setup, acme, islands, document=document)
-    access = await _mint(setup, row, "early", "compile")
+    access = await _mint(setup, row, "early", "solution")
 
     with pytest.raises(Misconfigured):
         await steps.step_job(setup, row, _named(access), _bearer(access))
@@ -1025,8 +1035,6 @@ async def test_a_boxed_step_holds_a_block_of_box_users_while_it_runs(
 ) -> None:
     await _saved(setup, acme, islands)
     rows = [await _grading(setup, acme, islands, code=f"print({n})".encode()) for n in range(2)]
-    for row in rows:
-        await _step(setup, acme, row, "early", "compile", _compiled(program=row.bytes))
     access = [await _mint(setup, row, "early", "solution") for row in rows]
     jobs = [
         await _job(setup, row, "solution", each) for row, each in zip(rows, access, strict=True)
@@ -1046,20 +1054,19 @@ inputs:
   code: folder
   grid: file
 steps:
-  - id: compile
-    use: unicon/compile@v3
-    with: {source: "${{ inputs.code }}", language: python}
   - id: game
-    use: unicon/exec@v1
+    use: unicon/exec@v2
     with:
       programs:
         first:
-          program: ${{ steps.compile.program }}
+          source: ${{ inputs.code }}
+          language: python
           files: {grid: "${{ inputs.grid }}"}
           time_limit: 1
           memory_limit: 64
         second:
-          program: ${{ steps.compile.program }}
+          source: ${{ inputs.code }}
+          language: python
           files: {grid: "${{ inputs.grid }}"}
           time_limit: 1
           memory_limit: 64
@@ -1093,7 +1100,6 @@ async def test_a_programs_forms_cached_files_are_each_in_its_own_item(
     duel = Islands(task, (await _save(setup, acme, task, contents)).publication, workflow)
     document = {"schema_version": 6, "inputs": {"code": {"files": ["files/code/main.py"]}}}
     row = await _grading(setup, acme, duel, document=document)
-    await _step(setup, acme, row, "early", "compile", _compiled())
 
     access = await _mint(setup, row, "early", "game")
     job = await _job(setup, row, "game", access)
@@ -1108,6 +1114,7 @@ async def test_a_programs_forms_cached_files_are_each_in_its_own_item(
     outputs: dict[str, Any] = {"outcome": "accepted", "facts": {"file": "out/facts"}}
     for name in ("first", "second"):
         outputs |= {f"{name}.{output}": value for output, value in measured.items()}
+        outputs[f"{name}.log"] = "built"
     written = {"outputs.json": _outputs({"schema_version": 6, "outputs": outputs})}
     await _finish(setup, acme, row, "game", access, written | {"out/facts": b"{}"})
     assert await _report(setup, row, "early") is GradingStatus.DONE
@@ -1126,10 +1133,11 @@ async def test_an_entrants_folder_with_no_file_is_made_empty_by_the_job(
     }
     row = await _grading(setup, acme, islands, document=document)
 
-    job = await _job(setup, row, "compile", await _mint(setup, row, "early", "compile"))
+    job = await _job(setup, row, "solution", await _mint(setup, row, "early", "solution"))
 
-    source = job["inputs"]["inputs"]["source"]["folder"]
-    assert job["files"] == [{"path": source, "folder": True}]
+    source = job["inputs"]["batch"][0]["inputs"]["source"]["folder"]
+    assert {"path": source, "folder": True} in job["files"]
+    assert not [entry for entry in job["files"] if entry["path"].startswith(f"{source}/")]
 
 
 async def test_a_file_given_to_a_folder_port_is_a_folder_holding_it_under_its_name(
@@ -1143,9 +1151,9 @@ async def test_a_file_given_to_a_folder_port_is_a_folder_holding_it_under_its_na
     await _saved(setup, acme, code_file)
     row = await _grading(setup, acme, code_file)
 
-    job = await _job(setup, row, "compile", await _mint(setup, row, "early", "compile"))
+    job = await _job(setup, row, "solution", await _mint(setup, row, "early", "solution"))
 
-    source = job["inputs"]["inputs"]["source"]["folder"]
+    source = job["inputs"]["batch"][0]["inputs"]["source"]["folder"]
     held = [entry for entry in job["files"] if entry["path"].startswith(f"{source}/")]
     assert [entry["path"] for entry in held] == [f"{source}/main.py"]
 
@@ -1153,10 +1161,10 @@ async def test_a_file_given_to_a_folder_port_is_a_folder_holding_it_under_its_na
 @pytest.mark.parametrize(
     ("replaced", "later_runs"),
     [
-        (_compiled(outcome="compile_error"), []),
-        (_compiled(b"\x7fELF other\n"), ["solution", "compare"]),
+        (_batch(NOT_COMPILED), []),
+        (_other_output, ["compare"]),
     ],
-    ids=["a compile error", "another program"],
+    ids=["a compile error", "another output"],
 )
 async def test_a_grading_under_way_keeps_what_it_reused_when_from_scratch_replaces_it(
     setup: Setup,
@@ -1166,14 +1174,13 @@ async def test_a_grading_under_way_keeps_what_it_reused_when_from_scratch_replac
     later_runs: list[str],
 ) -> None:
     await _saved(setup, acme, islands)
-    await _step(setup, acme, await _grading(setup, acme, islands), "early", "compile", _compiled())
+    await _step(setup, acme, await _grading(setup, acme, islands), "early", "solution", _batch())
     under_way = await _grading(setup, acme, islands)
-    access = await _mint(setup, under_way, "early", "compile")
+    access = await _mint(setup, under_way, "early", "solution")
     assert await steps.step_job(setup, under_way, _named(access), _bearer(access)) is None
-    await _step(setup, acme, under_way, "early", "solution", _batch())
 
     scratch = await _grading(setup, acme, islands)
-    await _step(setup, acme, scratch, "early", "compile", replaced, True)
+    await _step(setup, acme, scratch, "early", "solution", replaced, True)
     compare = await _step(setup, acme, under_way, "early", "compare", _batch(score=True))
 
     assert _runs(compare) == ["r1", "r2"]
@@ -1190,9 +1197,9 @@ async def test_an_earlier_step_that_gave_nothing_is_a_fault_not_nothing_to_do(
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    access = await _mint(setup, row, "early", "solution")
+    access = await _mint(setup, row, "early", "compare")
 
-    with pytest.raises(Misconfigured, match="The step solution reads a step"):
+    with pytest.raises(Misconfigured, match="The step compare reads a step"):
         await steps.step_job(setup, row, _named(access), _bearer(access))
 
 
@@ -1201,9 +1208,8 @@ async def test_a_step_keeps_to_the_first_upload_list_it_sent(
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    access = await _mint(setup, row, "early", "compile")
-    await _job(setup, row, "compile", access)
-    written = _compiled()({})
+    access = await _mint(setup, row, "early", "solution")
+    written = _batch()(await _job(setup, row, "solution", access))
 
     def listing(files: Written) -> bytes:
         return json.dumps(
@@ -1221,7 +1227,7 @@ async def test_a_step_keeps_to_the_first_upload_list_it_sent(
 
     first = await steps.step_uploads(setup, row, _named(access), _bearer(access), listing(written))
     again = await steps.step_uploads(setup, row, _named(access), _bearer(access), listing(written))
-    tampered = {**written, "out/program": PROGRAM + b"tampered"}
+    tampered = {**written, "out/r1/output": b"tampered\n"}
     with pytest.raises(InvalidCallback, match="listed other uploads"):
         await steps.step_uploads(setup, row, _named(access), _bearer(access), listing(tampered))
 
@@ -1230,12 +1236,12 @@ async def test_a_step_keeps_to_the_first_upload_list_it_sent(
         acme.fake.objects.put(link, written[path])
     await steps.step_done(setup, row, _named(access), _bearer(access), b"{}")
     with pytest.raises(Rejected):
-        acme.fake.objects.put(first["files"]["out/program"], tampered["out/program"])
-    [kept] = await _stored(setup, grading_id=row, step="compile")
-    assert kept.files["out/program"]["sha256"] == hashlib.sha256(PROGRAM).hexdigest()
+        acme.fake.objects.put(first["files"]["out/r1/output"], tampered["out/r1/output"])
+    [kept] = await _stored(setup, grading_id=row, step="solution", run="r1")
+    assert kept.files["out/r1/output"]["sha256"] == hashlib.sha256(b"r1\n").hexdigest()
 
 
-@pytest.mark.parametrize("name", ["a\x00b", "../compile", "Compile", "compile.r1/x", "x" * 200])
+@pytest.mark.parametrize("name", ["a\x00b", "../solution", "Solution", "solution.r1/x", "x" * 200])
 async def test_a_step_name_no_plan_gives_is_refused_before_anything_is_read(
     setup: Setup, acme: Acme, islands: Islands, name: str
 ) -> None:
@@ -1259,7 +1265,7 @@ async def test_a_token_is_admitted_before_a_body_is_read(
 ) -> None:
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    access = await _mint(setup, row, "early", "compile")
+    access = await _mint(setup, row, "early", "solution")
 
     await steps.step_admits(setup, row, _named(access), _bearer(access))
     with pytest.raises(InvalidToken):
@@ -1273,7 +1279,6 @@ async def _done_with(
     question with `head`."""
     await _saved(setup, acme, islands)
     row = await _grading(setup, acme, islands)
-    await _step(setup, acme, row, "early", "compile", _compiled())
     access = await _mint(setup, row, "early", "solution")
     written = _batch()(await _job(setup, row, "solution", access))
     listed = [

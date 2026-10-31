@@ -91,13 +91,13 @@ async def test_a_declaration_is_read_as_the_organiser_at_its_version(fake: FakeF
     ada = AsUser(7, fake.mint(7))
 
     assert (
-        await fake.primitives.read_declaration(ada, PrimitiveId("compile"), "v3")
-        == (PRIMITIVES["unicon/compile@v3"])
+        await fake.primitives.read_declaration(ada, PrimitiveId("exec"), "v2")
+        == (PRIMITIVES["unicon/exec@v2"])
     )
     assert await fake.primitives.read_declaration(ada, PrimitiveId("scorer"), "v1") == b"one"
     assert fake.calls_to("read_declaration")[0].identity == ada
     with pytest.raises(NotFound):
-        await fake.primitives.read_declaration(PLATFORM, PrimitiveId("compile"), "v9")
+        await fake.primitives.read_declaration(PLATFORM, PrimitiveId("exec"), "v9")
 
 
 async def test_the_door_takes_only_the_bytes_its_address_names(fake: FakeForge) -> None:

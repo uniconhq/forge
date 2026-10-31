@@ -740,7 +740,7 @@ which must be there; each checks the name and makes the thing before it
 answers. A contest or task asked for with no title, or a blank one, is
 titled by its name. A contest takes two steps, its place with a starter
 `contest.yaml` that is valid as written and its roles and protection. A task
-takes three: its place with `task.yaml` on `unicon/classic@v3`,
+takes three: its place with `task.yaml` on `unicon/classic@v4`,
 `statement.md` and one test, `tests/1.in` and `tests/1.ans`; its roles and
 protection, its publications reserved for the platform; and its entry at
 the end of the `tasks` list in `contest.yaml`. The CI is not told of the
@@ -791,7 +791,7 @@ a person's own workflows are named by their username in lower case, and a
 username that breaks the name rules then, one with a dot in it, is
 `InvalidName`. The name follows the name rules, at most 40 characters. The
 port makes the place as the platform and the person writes its first
-commit, the files of `unicon/classic@v3` but its README, its
+commit, the files of `unicon/classic@v4` but its README, its
 `workflow.yaml` headed with the new workflow's name, valid as written; the
 workflow is private. A
 workflow's name is not reserved in `names`: the forge holds one place per
@@ -840,7 +840,11 @@ gives, so no draft is reached through it. `draft_download` opens the same
 door to a file of the draft at its head, for whoever may change the
 workflow, as `files` lists it. `primitives.listing` is every
 primitive at every version with its declaration, for the editor's palette;
-a version in a format no longer read comes with the reason instead.
+a version in a format no longer read comes with the reason instead, and so
+does a retired one: `unicon/compile`, every version, and `unicon/exec@v1`,
+since `unicon/exec@v2` compiles what it runs. A step naming a retired
+version is refused at its `use`: "unicon/compile and unicon/exec@v1 are
+retired; use unicon/exec@v2."
 
 Who may do what is decided once per request: `access.organiser` checks the
 session, reads the person's roles with their own credential, applies the
@@ -1001,7 +1005,7 @@ is removing each file under it, named one by one.
    the latest publication: its plan and the digests of the task's files the
    plan names. A changed plan in which a primitive version runs on another
    image than before, because a release moved that version's image in
-   place, also names it: "A release updated exec@v1 in place.", so a save
+   place, also names it: "A release updated exec@v2 in place.", so a save
    that changed only the statement says why it asks. `scoring` and
    `submissions` are read on every read and change nothing that grades. Once the contest has
    started, until it is archived (its `state` is `published` and its
@@ -1123,7 +1127,23 @@ file the plan reads by its digest, the entrant's inputs, every run
 digest and its limits, the pipelines each step runs in (`early`, `late`
 and `save`) and the reports. `forge/domain/run_workflow.py` checks a
 workflow as a version (`check_run_workflow`), needing only the primitives
-its steps use. The plan is the same bytes every time for the same state. A
+its steps use. The plan is the same bytes every time for the same state.
+
+`unicon/exec@v2` compiles what it runs, once for a whole batch: its
+declaration marks the compile `log` `once: true` and lists `compile_error`
+under the outcome's `once`, and its `once_time_ms` is added once to a
+step's time, whatever runs it holds. The plan carries both on each step
+graded per run (`once_outputs`, `once_outcomes`), and the result reads
+them from the first item the step gave in a pipeline, so a compile error
+is every run's verdict and the log is kept once. A step whose `source` the
+entrant's code reaches is marked `compiled`, which the `compiled` fact
+reads; a late row whose early row's step gave `compile_error` is concluded
+with no pipeline. Every exec step whose `source`, `language` and `entry`
+are the workflow's or the task's own gets a `build-<step>` at the save
+(`build-<step>-<program>` for a program of its programs port), in the
+`build` form, so a checker that does not compile refuses the save; a
+value's program gets `build-<value>` there and one `exec-<value>` run,
+which compiles the folder again. A
 new task's starter carries one test, so its first save publishes, and
 shows `public/` at once, where the statement editor puts its pictures,
 since `show` is the only way a file reaches an entrant.
@@ -2180,11 +2200,10 @@ deployment does, for the tests that tell a name from its key, and
 records a test caused as the JSON objects they are written as, and
 `register_contestant(setup, contest, user_id)` writes the row that makes
 someone a contestant, with a status and an extension. `seed_classic(fake)`
-puts the built-in workflow `unicon/classic@v3` at the fake from `CLASSIC`, a
+puts the built-in workflow `unicon/classic@v4` at the fake from `CLASSIC`, a
 copy of the files deploy's bootstrap seeds, and with `seed_primitives` the
-two primitives it uses from `PRIMITIVES`, `unicon/compile@v3` and
-`unicon/exec@v1`, each primitive repo's own
-`primitive.yaml` at the release deploy pins, with an image of
+primitive it uses from `PRIMITIVES`, `unicon/exec@v2`, the primitive repo's
+own `primitive.yaml` at the release deploy pins, with an image of
 `PLACEHOLDER_DIGEST`, so a task's first save finds a workflow and every
 step's image; the package's tests check the copies against deploy's file and
 the primitives' own when those repos are checked out beside this one.
@@ -2256,7 +2275,8 @@ workflow `deploy` seeds, `PRIMITIVES` with each `primitive-<name>`'s
 read with git at its tag whatever the checkout's branch, and `program_manifest.py`'s name rules
 and JSON with `exec`'s own. Without a repo or a tag they are
 skipped, unless `CI` is set, when they fail. CI checks the runner out at
-`v0.10.0`, deploy at `main`, compile at `v3.0.0` and exec at `v1.0.1`.
+`feat/exec-compiles`, deploy at `main` and exec at `feat/exec-compiles`,
+until the runner and exec releases that carry exec 2 are cut.
 
 ## Releasing
 

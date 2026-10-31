@@ -1,5 +1,5 @@
 """A value a program of the task works out (`exec`, SIMPLER-CORE.md 14),
-beside one a manager enters (`entered`): the task saves, compiling the
+beside one a manager enters (`entered`): the task saves, building the
 program in its save pipeline; a grading runs the program after the runs
 it reads, handing it their runs file through the door, and scores; the
 same runs reuse the number stored; a program that faults is retried once
@@ -42,12 +42,11 @@ from tests.services.test_pipelines import (
 from tests.services.test_run_task_saves import _errors
 from tests.services.test_run_task_saves import _save as _saved_as
 from tests.services.test_steps import (
-    CHECKER,
     Islands,
     Written,
     _batch,
     _bearer,
-    _compiled,
+    _built,
     _download,
     _finish,
     _islands,
@@ -64,7 +63,6 @@ from tests.services.test_steps import (
 
 MEAN_YAML = b"reports:\n  mean: {better: higher, at_least: 0, at_most: 1}\n"
 MEAN_FILES = {"programs/mean/mean.py": b"print(0.75)\n", "programs/mean/program.yaml": MEAN_YAML}
-MEAN_PROGRAM = b"\x7fELF mean\n"
 TEXT = REVIEWED.replace(
     "    total:\n",
     "    mean: {block: exec, program: programs/mean/, language: python, over: {runs: all}}\n"
@@ -91,7 +89,7 @@ def _reported(mean: object = 0.75, outcome: str = "accepted") -> Callable[..., W
     `outcome`; no report at all when `mean` is none."""
 
     def write(job: Any) -> Written:
-        outputs: dict[str, Any] = {"outcome": outcome}
+        outputs: dict[str, Any] = {"outcome": outcome, "log": "built"}
         files: Written = {}
         if outcome == "accepted":
             outputs |= {"output": {"file": "out/output"}, "time_ms": 3, "memory_kb": 900}
@@ -105,13 +103,17 @@ def _reported(mean: object = 0.75, outcome: str = "accepted") -> Callable[..., W
 
 async def _checked(setup: Setup, acme: Acme, text: str = TEXT) -> Islands:
     """islands as `text`, published in a running contest, its checker and
-    the program compiled in its save pipeline."""
+    the program built in its save pipeline."""
     islands = await _islands(setup, acme, text=text, contest=LIVE, files=MEAN_FILES)
     [save] = await _rows(setup, "save")
-    assert await _to_run(setup, save.id, "save") == [("diff", []), ("build-mean", ["diff"])]
-    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER))
-    built = await _step(setup, acme, save.id, "save", "build-mean", _compiled(MEAN_PROGRAM))
+    assert await _to_run(setup, save.id, "save") == [
+        ("build-compare", []),
+        ("build-mean", ["build-compare"]),
+    ]
+    await _step(setup, acme, save.id, "save", "build-compare", _built())
+    built = await _step(setup, acme, save.id, "save", "build-mean", _built())
     assert built["inputs"]["inputs"]["language"] == "python"
+    assert set(built["inputs"]["inputs"]["source"]) == {"folder"}
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
     return islands
@@ -157,8 +159,10 @@ async def test_a_task_with_a_program_and_an_entered_value_saves_grades_and_score
     runs = _download(job, given["files"]["files"]["runs.json"]["file"])
     sha256 = runs["url"].rpartition("/files/")[2]
     served = await steps.step_file(setup, late.id, _named(access), sha256, _bearer(access))
-    program = _download(job, given["program"]["file"])
-    assert acme.fake.objects.get(program["url"]) == MEAN_PROGRAM
+    # The program is compiled from its source in the step, never handed over built.
+    assert (given["language"], "program" in given) == ("python", False)
+    source = given["source"]["folder"]
+    assert f"{source}/mean.py" in {each["path"] for each in job["files"]}
     assert (given["time_limit"], given["memory_limit"]) == (2, 256)
     assert hashlib.sha256(served).hexdigest() == sha256 == runs["sha256"]
     read = json.loads(served)
@@ -298,7 +302,6 @@ async def test_an_early_programs_fault_with_no_retry_by_itself_holds_only_its_va
     islands = await _checked(setup, acme, EARLY)
     await _submit(setup, acme, islands)
     [early] = await _rows(setup, "early")
-    await _step(setup, acme, early.id, "early", "compile", _compiled())
     await _step(setup, acme, early.id, "early", "solution", _batch())
     await _step(setup, acme, early.id, "early", "compare", _batch(score=True))
     await _step(setup, acme, early.id, "early", "exec-mean", _reported(outcome="runtime_error"))
@@ -326,7 +329,6 @@ async def test_an_early_programs_fault_is_retried_once_alone_then_holds_only_its
     islands = await _checked(setup, acme, EARLY)
     session = await _submit(setup, acme, islands)
     [early] = await _rows(setup, "early")
-    await _step(setup, acme, early.id, "early", "compile", _compiled())
     await _step(setup, acme, early.id, "early", "solution", _batch())
     await _step(setup, acme, early.id, "early", "compare", _batch(score=True))
     await _step(setup, acme, early.id, "early", "exec-mean", _reported(outcome="runtime_error"))

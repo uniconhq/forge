@@ -15,7 +15,7 @@ read of a leaderboard works every value of every submission out.
 
 A value holds one `entered` block at most, its bounds numbers written
 out, the lower first, and one `exec` block at most, its program a folder,
-its language one `unicon/compile@v3` takes and its limits numbers more
+its language one `unicon/exec@v2` takes and its limits numbers more
 than 0; the save checks the folder and its `program.yaml`
 (`run_task`).
 

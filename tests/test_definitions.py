@@ -149,7 +149,7 @@ def at(problems: list[Problem], path: str) -> str:
 
 
 def task_text(extra: str = "") -> str:
-    return "name: T\nworkflow: unicon/classic@v3\nscoring: {}\n" + extra
+    return "name: T\nworkflow: unicon/classic@v4\nscoring: {}\n" + extra
 
 
 # contest.yaml
@@ -613,10 +613,10 @@ def test_an_input_named_contestant_in_the_new_mapping_is_still_the_old_shape() -
 @pytest.mark.parametrize(
     ("text", "path"),
     [
-        ("workflow: unicon/classic@v3\nscoring: {}\n", "name"),
+        ("workflow: unicon/classic@v4\nscoring: {}\n", "name"),
         ("name: T\nscoring: {}\n", "workflow"),
-        ("name: T\nworkflow: unicon/classic@v3\n", "scoring"),
-        ("name: '  '\nworkflow: unicon/classic@v3\nscoring: {}\n", "name"),
+        ("name: T\nworkflow: unicon/classic@v4\n", "scoring"),
+        ("name: '  '\nworkflow: unicon/classic@v4\nscoring: {}\n", "name"),
         ("name: T\nworkflow: unicon/classic\nscoring: {}\n", "workflow"),
         (task_text("colour: red\n"), "colour"),
         (task_text("submissions: {max: 0}\n"), "submissions.max"),
@@ -723,7 +723,7 @@ def test_the_starter_task_is_the_formats() -> None:
     task = parse_task(files["task.yaml"])
 
     assert task.name == "Sum of two"
-    assert task.workflow == WorkflowRef("unicon", "classic", "v3")
+    assert task.workflow == WorkflowRef("unicon", "classic", "v4")
     assert task.inputs == {
         "code": {"entrant": {"label": "Your solution"}},
         "language": {"entrant": {"label": "Language", "options": ["python"]}},

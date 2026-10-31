@@ -1,9 +1,10 @@
 """A task's gradings as pipelines on the org's dispatch repository
 (SIMPLER-CORE.md 11.3, 11.7, 11.8), against the fake CI, which asks the
 platform what each pipeline is as it starts it, as Woodpecker does:
-islands' early pipeline holds the compile and the sample runs, its late
-one the rest, made only once the early one ends `done`; an early compile
-error gives every late run its verdict with no late pipeline; an early
+islands' early pipeline holds the sample runs, compiled within their
+batch, its late one the rest, made only once the early one ends `done`;
+an early compile error gives every late run its verdict with no late
+pipeline and `compiled` 0; an early
 `system_error` is retried once and makes no late row, nor does a cancel;
 a late one is retried once, lost or failed, found so by its entrant's
 read, and told to no entrant until the reveal; islands' values are worked
@@ -18,14 +19,14 @@ again once a regrade replaced its early row; a late row reads what its
 early row read, and reuses as it did; an upload is linked only when the
 submission took it; a task with nothing early makes its late row at
 once, told as submitted until the reveal, with or without the platform's
-images, and `compiled` waits for every reader until that row compiles; a
+images, and `compiled` waits for every reader until that row has run; a
 step whose image the platform withdrew ends its start saying so and is
 refused at a save; each row has a user of its own, and takes one a lost
 row held; a save is checked by a pipeline of its own before
 it takes over, compared with the publication entrants are graded on, and
-one whose checker does not compile is refused while the old version
-keeps grading, shown so to its organisers and checked again by a save of
-the same files; a save that fails, or is cut off by a restart, once its
+one whose checker does not build is refused while the old version keeps
+grading, the build's log kept, shown so to its organisers and checked
+again by a save of the same files; a save that fails, or is cut off by a restart, once its
 publication is made leaves it held back until a save of the same files
 checks it; a lost save row is found by its organisers' read; a take-over
 whose work never ran is finished by the next read; and the platform
@@ -36,6 +37,7 @@ a task's regrade is summed up by each value and verdict it changed,
 for a manager of the task, a save moving the pin asking first.
 """
 
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -46,7 +48,7 @@ import pytest
 from sqlalchemy import func, select, text, update
 
 from forge.adapters.ci.fake import dispatch_of, pipeline_variables
-from forge.db.tables import Grading, GradingStep, Regrade, StepOutput
+from forge.db.tables import Grading, GradingStep, Regrade
 from forge.db.tables import Upload as UploadRow
 from forge.db.tables.entrants import Entrant
 from forge.db.tables.gradings import PASSED
@@ -109,13 +111,11 @@ from forge.testing import APP_URL, CALLBACK_PATH, FORGE_URL, FakeClock, register
 from tests.services.conftest import RUNNING, SPRING, Acme, organiser, signed_in, upload
 from tests.services.test_run_task_saves import TASKS
 from tests.services.test_steps import (
-    CHECKER,
     CODE,
-    PROGRAM,
     Islands,
     _batch,
     _bearer,
-    _compiled,
+    _built,
     _download,
     _islands,
     _job,
@@ -126,6 +126,7 @@ from tests.services.test_steps import (
     _runs,
     _save,
     _step,
+    _stored,
 )
 
 LIVE = RUNNING.format(visibility="everyone") + "  - id: islands\n"
@@ -136,8 +137,8 @@ NOTHING_EARLY = TASKS["islands"][0].replace(
     "now: [sample_score, sample_time, sample_tests, samples/]", "now: [samples/]"
 )
 LOG_SHOWN = TASKS["islands"][0].replace("sample_tests, samples/]", "sample_tests, samples/, log]")
-"""islands showing the compile log, a report of its step done once, with
-its runs."""
+"""islands showing the compile log, a report solution gives once for its
+batch, with its runs."""
 
 
 @pytest.fixture
@@ -196,7 +197,7 @@ async def _checked(
     reported, so its publication has taken over."""
     islands = await _islands(setup, acme, text=text, contest=contest)
     [save] = await _rows(setup, "save")
-    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER))
+    await _step(setup, acme, save.id, "save", "build-compare", _built())
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
     return islands
@@ -238,7 +239,6 @@ async def _rows(setup: Setup, pipeline: PipelineKind) -> list[Grading]:
 
 
 async def _early(setup: Setup, acme: Acme, row: uuid.UUID) -> GradingStatus:
-    await _step(setup, acme, row, "early", "compile", _compiled())
     await _step(setup, acme, row, "early", "solution", _batch())
     await _step(setup, acme, row, "early", "compare", _batch(score=True))
     status = await _report(setup, row, "early")
@@ -249,8 +249,7 @@ async def _early(setup: Setup, acme: Acme, row: uuid.UUID) -> GradingStatus:
 async def _fault(setup: Setup, acme: Acme, row: uuid.UUID, pipeline: PipelineKind) -> None:
     """The row's first step writing an `outputs.json` that does not read,
     and its report."""
-    step = "compile" if pipeline == "early" else "solution"
-    await _step(setup, acme, row, pipeline, step, lambda job: {"outputs.json": b"{"})
+    await _step(setup, acme, row, pipeline, "solution", lambda job: {"outputs.json": b"{"})
     assert await _report(setup, row, pipeline) is GradingStatus.SYSTEM_ERROR
     await setup.settle()
 
@@ -281,18 +280,21 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     assert acme.fake.ci.runs[RunId(early.run_id)].task == dispatch_of("acme")
     assert await _rows(setup, "late") == []
     save, first = asked
-    # Every pipeline takes any slot of its size, first come, first served.
-    assert (save["labels"], save["clone"]) == ([PLATFORM_POOL, SMALL], None)
+    # Every pipeline takes any slot of its size, first come, first served,
+    # the save's too, since the build of the checker runs in exec's box.
+    assert (save["labels"], save["clone"]) == ([PLATFORM_POOL, BOXED_SHAPE, SMALL], None)
+    assert _steps(save) == [("s3", None, []), ("report", save["steps"][-1]["user"], ["s3"])]
     assert first["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL]
     assert first["clone"]["image"] == setup.settings.plugin_git_image
     assert first["clone"]["submission"] == early.submission_id
     user = early.run_user
     assert user is not None and user >= USER_FIRST
+    # solution compiles in its box as root, so only the report takes the
+    # row's user.
     assert _steps(first) == [
-        ("s1", user, []),
+        ("s1", None, []),
         ("s2", None, ["s1"]),
-        ("s4", None, ["s2"]),
-        ("report", user, ["s1", "s2", "s4"]),
+        ("report", user, ["s1", "s2"]),
     ]
     assert all(
         step["settings"]["data_url"].endswith(f"/steps/{step['name']}") for step in first["steps"]
@@ -308,7 +310,7 @@ async def test_islands_runs_its_early_pipeline_and_then_its_late_one_on_the_disp
     [late] = await _rows(setup, "late")
     assert (late.early_id, late.attempt, late.status) == (early.id, 1, GradingStatus.DISPATCHED)
     assert late.idempotency_key is None
-    assert [step[0] for step in _steps(asked[-1])] == ["s2", "s4", "report"]
+    assert [step[0] for step in _steps(asked[-1])] == ["s1", "s2", "report"]
     assert asked[-1]["labels"] == [PLATFORM_POOL, BOXED_SHAPE, SMALL]
     await _step(setup, acme, late.id, "late", "solution", _batch())
     await _step(setup, acme, late.id, "late", "compare", _batch(score=True))
@@ -777,16 +779,28 @@ async def test_an_early_compile_error_gives_every_late_run_its_verdict_and_no_la
     await _submit(setup, acme, islands)
     [early] = await _rows(setup, "early")
 
-    await _step(setup, acme, early.id, "early", "compile", _compiled(outcome="compile_error"))
-    access = await _mint(setup, early.id, "early", "solution")
+    # solution compiles once for its batch, and every item says it did not.
+    failed = {"r1": "compile_error", "r2": "compile_error"}
+    await _step(setup, acme, early.id, "early", "solution", _batch(failed, log="main.py:1: no"))
+    access = await _mint(setup, early.id, "early", "compare")
     assert await steps.step_job(setup, early.id, _named(access), _bearer(access)) is None
     assert await _report(setup, early.id, "early") is GradingStatus.DONE
     await setup.settle()
 
+    [done] = await _rows(setup, "early")
+    assert _verdicts(done) == [("r1", "compile_error"), ("r2", "compile_error")]
+    assert done.result is not None
+    assert done.result["once"]["outcomes"]["solution"] == "compile_error"
     [late] = await _rows(setup, "late")
     assert (late.status, late.run_id, late.automatic) == (GradingStatus.DONE, None, False)
     assert _verdicts(late) == [("r3", "compile_error"), ("r4", "compile_error")]
     assert len(asked) == 2
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    async with setup.unit_of_work() as ctx:
+        entrant = await ctx.db.scalar(select(Entrant.id))
+    assert entrant is not None
+    graded = await submissions.organised(setup, manager, islands.task, EntrantOwner(entrant), 1)
+    assert graded.grading is not None and graded.grading.compiled == 0
 
 
 async def test_an_early_system_error_is_retried_once_and_makes_no_late_row(
@@ -878,7 +892,7 @@ async def test_a_late_row_whose_early_row_was_replaced_is_not_tried_again(
     # the grading it follows.
     await _save(setup, acme, islands.task, {"task.yaml": (await _v2(acme, islands)).encode()})
     _, save = await _rows(setup, "save")
-    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))
+    await _step(setup, acme, save.id, "save", "build-compare", _built())
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
     _, regraded = await _rows(setup, "early")
@@ -901,15 +915,8 @@ async def test_a_late_row_reads_what_its_early_row_read_and_reuses_as_it_did(
         await ctx.db.execute(
             update(GradingStep).where(GradingStep.grading_id == early.id).values(from_scratch=True)
         )
-    await _step(setup, acme, early.id, "early", "compile", _compiled(), from_scratch=True)
     await _step(setup, acme, early.id, "early", "solution", _batch(), from_scratch=True)
     await _step(setup, acme, early.id, "early", "compare", _batch(score=True), from_scratch=True)
-    # Another grading from scratch has since made another compile the
-    # reused one of its key.
-    async with setup.unit_of_work() as ctx:
-        await ctx.db.execute(
-            update(StepOutput).where(StepOutput.grading_id == early.id).values(reusable=False)
-        )
 
     report = await _mint(setup, early.id, "early", "report", from_scratch=True)
     ended = await steps.step_report(setup, early.id, "report", _bearer(report), b"{}")
@@ -927,8 +934,11 @@ async def test_a_late_row_reads_what_its_early_row_read_and_reuses_as_it_did(
     assert minted and all(minted)
     access = await _mint(setup, late.id, "late", "solution", from_scratch=True)
     job = await _job(setup, late.id, "solution", access)
-    program = _download(job, job["inputs"]["batch"][0]["inputs"]["program"]["file"])
-    assert acme.fake.objects.get(program["url"]) == PROGRAM
+    # The late row compiles the entrant's code again, from the submission,
+    # as the early row did.
+    source = job["inputs"]["batch"][0]["inputs"]["source"]["folder"]
+    code = _download(job, f"{source}/main.py")
+    assert code["sha256"] == hashlib.sha256(CODE).hexdigest()
 
 
 async def test_a_pointer_to_an_upload_the_submission_did_not_take_is_given_no_link(
@@ -937,7 +947,7 @@ async def test_a_pointer_to_an_upload_the_submission_did_not_take_is_given_no_li
     islands = await _checked(setup, acme)
     await _submit(setup, acme, islands)
     [early] = await _rows(setup, "early")
-    access = await _mint(setup, early.id, "early", "compile")
+    access = await _mint(setup, early.id, "early", "solution")
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(update(UploadRow).values(consumed_by="acme/spring/@u9/islands#1"))
 
@@ -957,7 +967,7 @@ async def test_a_task_with_nothing_early_makes_its_late_row_at_once(
     assert early.result is not None and early.result["runs"] == []
     [late] = await _rows(setup, "late")
     assert (late.early_id, late.status) == (early.id, GradingStatus.DISPATCHED)
-    assert [step[0] for step in _steps(asked[-1])] == ["s1", "s2", "s4", "report"]
+    assert [step[0] for step in _steps(asked[-1])] == ["s1", "s2", "report"]
     # Submitted, results after the contest: not graded, with nothing run.
     assert await _seen(setup, session, islands) == [(1, SubmissionState.SUBMITTED)]
     clock.set(AFTER_CLOSE)
@@ -968,7 +978,7 @@ BUILT_LATE = NOTHING_EARLY.replace(
     "  values:\n", "  values:\n    built: {fact: compiled}\n"
 ).replace("after_close: [st1, st2, total, all]", "after_close: [st1, st2, total, all, built]")
 """islands with nothing early and a value reading `compiled` shown after
-the close, so its compile runs in the late row."""
+the close, so the step that compiles runs in the late row."""
 BUILT_LEADERBOARD = (
     LIVE
     + "leaderboards:\n  built:\n    audience: {who: staff}\n    columns:\n"
@@ -1005,7 +1015,6 @@ async def test_compiled_waits_for_every_reader_until_the_late_row_that_compiles_
     assert await read() == ("waiting", None, None, waiting, None)
     clock.set(AFTER_CLOSE)
     assert await read() == ("waiting", None, None, waiting, "waiting")
-    await _step(setup, acme, late.id, "late", "compile", _compiled())
     await _step(setup, acme, late.id, "late", "solution", _batch())
     await _step(setup, acme, late.id, "late", "compare", _batch(score=True))
     assert await _report(setup, late.id, "late") is GradingStatus.DONE
@@ -1041,8 +1050,8 @@ async def test_a_withdrawn_image_ends_a_start_saying_so_and_refuses_a_save(
     [first] = await _rows(setup, "early")
     async with setup.unit_of_work() as ctx:
         plan, _ = await steps.plan_of(ctx, first)
-    image = plan.steps["compile"].image
-    renamed = "mirror.example/compile:v1@" + image.partition("@")[2]
+    image = plan.steps["solution"].image
+    renamed = "mirror.example/exec:v1@" + image.partition("@")[2]
     monkeypatch.setattr(
         setup,
         "_settings",
@@ -1065,8 +1074,8 @@ async def test_a_withdrawn_image_ends_a_start_saying_so_and_refuses_a_save(
     assert isinstance(saved, Draft)
     messages = [problem["message"] for problem in saved.errors]
     assert messages[0] == (
-        "In the workflow unicon/islands@v1, the step compile cannot run: "
-        + primitives.WITHDRAWN.format(use=plan.steps["compile"].primitive)
+        "In the workflow unicon/islands@v1, the step solution cannot run: "
+        + primitives.WITHDRAWN.format(use=plan.steps["solution"].primitive)
     )
     same = {step.primitive for step in plan.steps.values() if step.image.endswith(image[-64:])}
     assert {
@@ -1124,6 +1133,10 @@ async def test_a_user_held_by_a_lost_automatic_retry_is_freed_for_the_next_start
     assert (freed.status, freed.error) == (GradingStatus.SYSTEM_ERROR, NEVER_BEGAN)
 
 
+BROKEN_LOG = "diff.py:52: SyntaxError: '(' was never closed"
+"""What the build of a broken checker prints."""
+
+
 async def test_a_save_whose_checker_does_not_compile_is_refused_and_the_old_version_grades(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
@@ -1146,12 +1159,18 @@ async def test_a_save_whose_checker_does_not_compile_is_refused_and_the_old_vers
     assert saved.check == "checking"
     _, save = await _rows(setup, "save")
     assert (save.publication_id, save.status) == (saved.publication, GradingStatus.DISPATCHED)
-    await _step(setup, acme, save.id, "save", "diff", _compiled(outcome="compile_error"))
+    await _step(setup, acme, save.id, "save", "build-compare", _built("compile_error", BROKEN_LOG))
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
 
+    # The build's compile error is every run's verdict, and its log is kept
+    # with what the step gave.
     refused = await _row(setup, save.id)
     assert {verdict for _, verdict in _verdicts(refused)} == {"compile_error"}
+    assert refused.result is not None
+    assert refused.result["once"]["outcomes"] == {"build-compare": "compile_error"}
+    [built] = await _stored(setup, grading_id=save.id, step="build-compare")
+    assert built.outputs["log"] == BROKEN_LOG
     async with setup.unit_of_work() as ctx:
         current = await entrant_view.task(ctx, islands.task)
     assert current is not None and current.publication.id == islands.publication
@@ -1191,7 +1210,7 @@ async def _held_back_then_checked(setup: Setup, acme: Acme, islands: Islands) ->
     assert (again.publication, again.check) == (made[-1].id, "checking")
     _, save = await _rows(setup, "save")
     assert (save.publication_id, save.attempt) == (made[-1].id, 1)
-    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))
+    await _step(setup, acme, save.id, "save", "build-compare", _built())
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
     async with setup.unit_of_work() as ctx:
@@ -1282,7 +1301,7 @@ async def test_a_save_while_another_is_checked_is_compared_with_what_entrants_ar
         checker.publication,
         GradingStatus.CANCELLED,
     )
-    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))
+    await _step(setup, acme, save.id, "save", "build-compare", _built())
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
 
@@ -1321,13 +1340,13 @@ async def test_a_regrade_of_compares_alone_is_said_at_the_save_and_checks_nothin
         ),
     )
     _, save = await _rows(setup, "save")
-    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))
+    await _step(setup, acme, save.id, "save", "build-compare", _built())
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
 
     _, regraded = await _rows(setup, "early")
     assert regraded.run_id is not None
-    assert [step[0] for step in _steps(asked[-1])] == ["s4", "report"]
+    assert [step[0] for step in _steps(asked[-1])] == ["s2", "report"]
     assert asked[-1]["clone"] is None
 
 
@@ -1339,7 +1358,7 @@ async def test_a_take_over_whose_work_never_ran_is_finished_by_the_next_read(
     await _save(setup, acme, islands.task, {"task.yaml": (await _v2(acme, islands)).encode()})
     _, save = await _rows(setup, "save")
     monkeypatch.setattr(pipelines, "_take_over_later", lambda ctx, task: None)
-    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))
+    await _step(setup, acme, save.id, "save", "build-compare", _built())
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
     assert (await _row(setup, save.id)).taken_over_at is None
@@ -1463,16 +1482,16 @@ async def _checks_run(
     save: uuid.UUID,
     good: dict[str, str] | None = None,
     *,
-    diff: bool = True,
+    build: bool = True,
 ) -> dict[str, dict[str, Any]]:
-    """A save row's diff, unless it was done before, and its three checks'
-    copies run as a machine would: the good one accepted on every run but
-    those `good` names, the empty one a wrong answer on every run, and the
-    slow one out of time on r4; each step's job. Each check's steps write
-    files of their own, so no copy reuses another's."""
+    """A save row's build of the checker, unless it was done before, and
+    its three checks' copies run as a machine would: the good one accepted
+    on every run but those `good` names, the empty one a wrong answer on
+    every run, and the slow one out of time on r4; each step's job. Each
+    check's steps write files of their own, so no copy reuses another's."""
     jobs = {}
-    if diff:
-        jobs["diff"] = await _step(setup, acme, save, "save", "diff", _compiled(CHECKER))
+    if build:
+        jobs["build-compare"] = await _step(setup, acme, save, "save", "build-compare", _built())
     compare = {
         1: _batch(good, score=True),
         2: _batch(dict.fromkeys(EVERY, "wrong_answer"), score=True),
@@ -1483,7 +1502,6 @@ async def _checks_run(
         name = f"c{index}-"
         tag = name.encode()
         for step, write in (
-            ("compile", _compiled()),
             ("solution", solution[index]),
             ("compare", compare[index]),
         ):
@@ -1504,12 +1522,16 @@ async def test_a_saves_checks_are_graded_by_its_pipeline_and_each_gets_what_it_e
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
 
-    compiled = jobs["c1-compile"]
-    assert compiled["fail_on_non_accepted"] is False
-    assert compiled["inputs"]["inputs"]["language"] == "cpp"
-    assert {entry["path"] for entry in compiled["files"]} == {
-        f"{compiled['inputs']['inputs']['source']['folder']}/main.cpp"
-    }
+    # The check's copy of solution compiles the check's code within its
+    # batch, as it does an entrant's.
+    solution = jobs["c1-solution"]
+    assert solution["fail_on_non_accepted"] is False
+    first = solution["inputs"]["batch"][0]["inputs"]
+    assert first["language"] == "cpp"
+    folder = first["source"]["folder"]
+    assert {
+        entry["path"] for entry in solution["files"] if entry["path"].startswith(f"{folder}/")
+    } == {f"{folder}/main.cpp"}
     assert _runs(jobs["c3-compare"]) == ["r1", "r2", "r3"]
     row = await _row(setup, save.id)
     assert row.status == GradingStatus.DONE and row.result is not None
@@ -1542,7 +1564,7 @@ async def test_a_check_that_does_not_get_what_it_expects_refuses_its_save_saying
 
     monkeypatch.setattr(Context, "nudge", heard)
 
-    await _checks_run(setup, acme, save.id, good={"r4": "wrong_answer"}, diff=False)
+    await _checks_run(setup, acme, save.id, good={"r4": "wrong_answer"}, build=False)
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
     [checks] = [each for each in told if each.kind is NudgeKind.CHECKS]
@@ -1560,7 +1582,8 @@ async def test_a_check_that_does_not_get_what_it_expects_refuses_its_save_saying
         ("The run r4 got wrong_answer, not accepted.", "total is 40, not 100."),
     )
     assert [(run.id, run.verdict) for run in failed.runs][-1] == ("r4", "wrong_answer")
-    assert failed.outcomes == {"compile": "accepted"} and failed.error is None
+    assert failed.outcomes == {"solution": "accepted", "compare": "accepted"}
+    assert failed.error is None
     state = await tasks.state(setup, manager, islands.task)
     assert state.latest is not None and state.latest.failed_checks == listed[1].failed_checks
 
@@ -1633,12 +1656,11 @@ async def test_a_check_that_faults_ends_the_save_row_a_system_error_and_it_is_tr
     text = TASKS["islands"][0] + CHECKS
     islands = await _islands(setup, acme, text=text, contest=LIVE, files=CHECK_FILES)
     [save] = await _rows(setup, "save")
-    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER))
+    await _step(setup, acme, save.id, "save", "build-compare", _built())
     for step, write in (
-        ("c1-compile", _compiled()),
         ("c1-solution", _batch()),
         ("c1-compare", _batch(score=True)),
-        ("c2-compile", lambda job: {"outputs.json": b"{"}),
+        ("c2-solution", lambda job: {"outputs.json": b"{"}),
     ):
         await _step(setup, acme, save.id, "save", step, _tagged(write, step[:3].encode()))
 
@@ -1654,10 +1676,8 @@ async def test_a_check_that_faults_ends_the_save_row_a_system_error_and_it_is_tr
     assert again.attempt == 2
     wrong = dict.fromkeys(EVERY, "wrong_answer")
     for step, write in (
-        ("c2-compile", _compiled()),
         ("c2-solution", _batch()),
         ("c2-compare", _batch(wrong, score=True)),
-        ("c3-compile", _compiled()),
         ("c3-solution", _batch({"r4": "time_limit"})),
         ("c3-compare", _batch(score=True)),
     ):
@@ -1681,7 +1701,7 @@ async def test_checks_at_a_publication_whose_settings_do_not_read_fail_saying_so
         raise ValueError("unread")
 
     monkeypatch.setattr(steps, "parse_task", unread)
-    await _checks_run(setup, acme, save.id, diff=False)
+    await _checks_run(setup, acme, save.id, build=False)
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
 
@@ -1706,15 +1726,16 @@ RUNS = {
 }
 
 
-def _result(runs: dict[str, str], compile: str = "accepted") -> dict[str, Any]:
+def _result(runs: dict[str, str], compiled: str = "accepted") -> dict[str, Any]:
     """A result version 6 holding `runs`, each with its verdict, an accepted
-    run scoring 1, and the compile's outcome when it holds one."""
+    run scoring 1, and the outcome solution gave once for its batch, which
+    compiles, when it holds the early runs."""
     return {
         "schema_version": 6,
         "once": {
             "texts": {},
             "reports": {},
-            "outcomes": {"compile": compile} if "r1" in runs else {},
+            "outcomes": {"solution": compiled} if "r1" in runs else {},
         },
         "runs": [
             {
@@ -2134,7 +2155,7 @@ async def test_a_regrade_that_makes_a_submission_fail_to_compile_lists_its_verdi
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     islands, regrade, [row, _] = await _regraded(setup, acme, 2)
-    # The late row takes the early compile's verdict for every run.
+    # The late row takes the early row's compile error for every run.
     await _ended(
         setup,
         row,
@@ -2224,7 +2245,7 @@ async def test_a_save_moving_the_pin_asks_first_and_its_regrade_is_summed_up(
             await task_save.save(setup, acme.ada, islands.task, edits, confirm=True, asked=answer)
     saved = await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
     _, save = await _rows(setup, "save")
-    await _step(setup, acme, save.id, "save", "diff", _compiled(CHECKER + b"# changed\n"))
+    await _step(setup, acme, save.id, "save", "build-compare", _built())
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
     async with setup.unit_of_work() as ctx:

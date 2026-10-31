@@ -39,13 +39,14 @@ jobs:
       # The tests compare the package's copies with their originals in the
       # repos beside it: the contract schemas with the runner's, the classic
       # workflow with the one deploy seeds, each primitive version deploy's
-      # images.json pins read at its tag (so those checkouts fetch every
-      # tag), and the contract 6 primitives' declarations and name rules
-      # with exec's and compile's own. They fail in CI when a checkout is
-      # missing, so the repos sit beside each other the way they do on a
-      # laptop. Deploy is main, which carries the workflows before this
-      # repo is tagged. The runner and the primitives are the releases
-      # those copies were taken from.
+      # images.json pins read at its tag, and a plan the runner's last
+      # release wrote, read at that tag (so those checkouts fetch every
+      # tag), and the contract 6 primitive's declaration and name rules
+      # with exec's own. They fail in CI when a checkout is missing, so the
+      # repos sit beside each other the way they do on a laptop. Deploy is
+      # main, which carries the workflows before this repo is tagged. The
+      # runner and exec are the branch those copies were taken from, until
+      # their releases are cut.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: forge
@@ -53,8 +54,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: uniconhq/runner
-          ref: v0.10.0
+          ref: feat/exec-compiles
           path: runner
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,15 +66,8 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: uniconhq/primitive-compile
-          ref: v3.0.0
-          path: primitive-compile
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
           repository: uniconhq/primitive-exec
-          ref: v1.0.1
+          ref: feat/exec-compiles
           path: primitive-exec
           fetch-depth: 0
           persist-credentials: false

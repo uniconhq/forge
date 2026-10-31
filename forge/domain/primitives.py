@@ -26,6 +26,13 @@ compiles`, `compile_error: it does not compile` (P2). The keys are the words
 a step may report, and the port is the only one that takes it. Like a title
 or a description, it changes nothing a plan holds.
 
+A batch primitive may say what it gives the same for every item, from work
+it does once before them, such as compiling the source it was given: an
+output with `once: true`, the outcome port with `once: [compile_error]`,
+each of those among its `outcomes` when it lists them, and the time that
+work takes as `limits.once_time_ms`, which the planner adds to the step's
+time once, where the rest is summed over its items.
+
 `schema_version: 6` is required, the one contract a primitive speaks. Each
 of these is read and kept here; what they add to a step's outputs is worked
 out per step, since it depends on what is wired in:
@@ -33,9 +40,9 @@ out per step, since it depends on what is wired in:
 - a `named_files` input, with `runs`, whose `names`, when given, are the
   names its files must have;
 - a `programs` input, named `programs`, declaring under `inputs` what each
-  program it runs side by side takes, `program` among them, and under
-  `outputs` what it gives of each; and a `links` input beside it, the pipes
-  between them;
+  program it runs side by side takes, `source` among them, the folder it
+  compiles and runs, and under `outputs` what it gives of each; and a
+  `links` input beside it, the pipes between them;
 - `better`, `at_least` and `at_most` on a `number` output;
 - `outputs_from`: `manifest`, the reports of the `program.yaml` given on the
   `manifest` input are outputs too, or `programs`, each program's outputs
@@ -89,6 +96,8 @@ PROGRAM_INPUT = re.compile(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*")
 `max` reads."""
 PROGRAMS = "programs"
 """The name a programs port has, and the `outputs_from` that comes with it."""
+SOURCE = "source"
+"""The folder a programs port's every program is compiled and run from."""
 MANIFEST = "manifest"
 """The file input a program's `program.yaml` is given on, under either
 `outputs_from`."""
@@ -202,7 +211,9 @@ class Port(Model):
     `programs` port the `inputs` each program takes and the `outputs` the
     primitive gives of each, a sentence for the workflow editor saying what
     it takes or gives back, and, on the `outcome` port, what each outcome
-    the step can report means, in the order the file gives them.
+    the step can report means, in the order the file gives them. `once` on
+    an output says a batch step gives it the same for every item, and on
+    the `outcome` port lists the outcomes it gives that way.
     """
 
     type: Type
@@ -218,10 +229,31 @@ class Port(Model):
     outputs: dict[str, Declared] | None = None
     description: Line | None = None
     outcomes: dict[OutcomeWord, Line] | None = None
+    once: Flag | tuple[OutcomeWord, ...] | None = None
+
+    @property
+    def once_outcomes(self) -> tuple[str, ...]:
+        """The outcomes the `outcome` port says a batch step gives the same
+        for every item, none on any other port."""
+        return self.once if isinstance(self.once, tuple) else ()
 
     @model_validator(mode="after")
     def _check(self) -> Port:
         problems = Problems()
+        if isinstance(self.once, tuple):
+            if self.type is not Type.OUTCOME:
+                problems.add(("once",), "Only the outcome port lists outcomes here. Say true.")
+            elif not self.once:
+                problems.add(("once",), "List at least one outcome, such as compile_error.")
+            for index, outcome in enumerate(self.once):
+                if outcome in self.once[:index]:
+                    problems.add(("once", index), already_listed(outcome))
+                elif self.outcomes is not None and outcome not in self.outcomes:
+                    problems.add(("once", index), f"{outcome} is not among the port's outcomes.")
+        elif self.once is not None and self.type is Type.OUTCOME:
+            problems.add(
+                ("once",), "List the outcomes the step gives once, such as [compile_error]."
+            )
         if self.outcomes is not None and not self.outcomes:
             problems.add(
                 ("outcomes",),
@@ -256,7 +288,8 @@ class Port(Model):
 class Limits(Model):
     """What one run of the container may use: wall time and CPU time in
     milliseconds, memory in megabytes, processes, output in megabytes, and
-    GPU devices.
+    GPU devices; and the wall time a batch step takes once before its
+    items, none when it does no such work.
     """
 
     time_ms: Limit
@@ -265,6 +298,7 @@ class Limits(Model):
     pids: Limit
     output_mb: Limit
     gpus: Annotated[int, Field(strict=True, ge=0)]
+    once_time_ms: Limit | None = None
 
     def as_mapping(self) -> dict[str, int]:
         return {name: getattr(self, name) for name in LIMIT_NAMES}
@@ -507,7 +541,7 @@ class PrimitiveDeclaration(Model):
 
     def _check_forms(self) -> PrimitiveDeclaration:
         """Each form, checked as the shared keys plus that form's keys, and
-        the rule that every form has a required input of its own.
+        the rule that no step's inputs fit two forms (`_fitting_both`).
         """
         problems = Problems()
         if len(self.forms) > 4:
@@ -523,7 +557,7 @@ class PrimitiveDeclaration(Model):
                     "starting with a letter.",
                 )
             self._check_form(problems, name, form)
-        self._own_required(problems)
+        self._fitting_both(problems)
         problems.raise_any()
         return self
 
@@ -556,19 +590,26 @@ class PrimitiveDeclaration(Model):
                 tail = tuple(part for part in problem["path"].split(".") if part)
                 problems.add(("forms", name, *tail), problem["message"])
 
-    def _own_required(self, problems: Problems) -> None:
-        declared = {name: set(form.inputs) for name, form in self.forms.items()}
-        for name, form in self.forms.items():
-            required = {key for key, port in form.inputs.items() if not port.optional}
-            others: set[str] = set()
-            for other, keys in declared.items():
-                if other != name:
-                    others |= keys
-            if not required - others:
-                problems.add(
-                    ("forms", name),
-                    "A form needs a required input no other form declares.",
-                )
+    def _fitting_both(self, problems: Problems) -> None:
+        """Each two forms some step's inputs fit both of, as `for_step`
+        picks a form: a step fits a form when it gives every input the form
+        requires and none it does not declare, so two forms clash when each
+        declares every input either requires. A form whose inputs are a part
+        of another's, as `build` is of `one`, is told apart by an input the
+        other requires.
+        """
+        names = list(self.forms)
+        for at, first in enumerate(names):
+            for second in names[at + 1 :]:
+                one, other = self.forms[first], self.forms[second]
+                given = _required(one) | _required(other)
+                if given <= set(one.inputs) & set(other.inputs):
+                    inputs = ", ".join(sorted(given)) or "no inputs"
+                    problems.add(
+                        ("forms", second),
+                        f"A step giving {inputs} fits both {first} and {second}. Give one of "
+                        "them a required input the other does not declare.",
+                    )
 
     def for_step(self, given: Collection[str], use: str) -> PrimitiveDeclaration | str:
         """This declaration when it lists no forms, else the one form whose
@@ -582,8 +623,7 @@ class PrimitiveDeclaration(Model):
         fits = [
             form
             for form in self.forms.values()
-            if {key for key, port in form.inputs.items() if not port.optional} <= wanted
-            and wanted <= set(form.inputs)
+            if _required(form) <= wanted and wanted <= set(form.inputs)
         ]
         if len(fits) == 1:
             form = fits[0]
@@ -610,6 +650,11 @@ class PrimitiveDeclaration(Model):
             "Give every required input of one form and no input it lacks: "
             f"{listed}."
         )
+
+
+def _required(form: PrimitiveForm) -> set[str]:
+    """The inputs a form requires: every one it declares not optional."""
+    return {key for key, port in form.inputs.items() if not port.optional}
 
 
 def _names(problems: Problems, where: Path, ports: Mapping[str, Port]) -> None:
@@ -657,19 +702,19 @@ def _input_problems(
             )
         if port.type not in RUNS_TYPES and port.runs is not None:
             problems.add((*at, "runs"), "This applies only to a file, folder or named_files port.")
-        for key in ("better", "at_least", "at_most"):
+        for key in ("better", "at_least", "at_most", "once"):
             if getattr(port, key) is not None:
                 problems.add((*at, key), "This applies only to an output.")
         if port.type is Type.PROGRAMS:
             inputs, outputs = port.inputs or {}, port.outputs or {}
             _input_problems(problems, (*at, "inputs"), inputs, inner=True)
             _output_problems(problems, (*at, "outputs"), outputs, inner=True)
-            program = inputs.get("program")
-            if program is None or program.type is not Type.FILE or program.runs is not True:
+            source = inputs.get(SOURCE)
+            if source is None or source.type is not Type.FOLDER or source.runs is not True:
                 problems.add(
-                    (*at, "inputs", "program"),
-                    "A programs port's programs each take a program, a file input called "
-                    "program with runs: true.",
+                    (*at, "inputs", SOURCE),
+                    "A programs port's programs each take a source, a folder input called "
+                    "source with runs: true.",
                 )
 
 

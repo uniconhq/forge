@@ -39,7 +39,12 @@ every text, a text report, `label`, `message`, `staff_message`, and the
 name, `{"output": <id>, "name": <name>}`, so a 64 KB text on each of a
 thousand runs leaves the result small. Reports of steps done once go in
 `once` on the grading whose pipeline ran the step, with the outcome each
-of those steps returned, which the `compiled` fact reads.
+of those steps returned, which the `compiled` fact reads. So do the
+outputs and outcomes a step done per run gives the same for every item of
+its batch (`once_outputs`, `once_outcomes`), such as a compile log and a
+`compile_error`, read from the first item it gave in the pipeline, and
+`accepted` when that item's outcome is not one of them; those outputs are
+not each run's reports too.
 
 **A save's checks** (SIMPLER-CORE.md 9.6) are graded in its pipeline by
 each check's copies of the steps graded per submission: a check's run goes
@@ -547,12 +552,25 @@ def _graded(
         and holds(plan, kind, step, None)
         and _counted(plan, (step, None), check)
     ]
-    once_reports, once_texts = _reports(plan, found, once_items)
+    batched = [
+        first
+        for step in order
+        if (plan.steps[step].once_outputs or plan.steps[step].once_outcomes)
+        and _counted(plan, (step, None), check)
+        and (first := _first(plan, kind, step, found)) is not None
+    ]
+    once_reports, once_texts = _reports(plan, found, [*once_items, *batched], once=True)
     outcomes = {
         origin(plan, step): got.outputs["outcome"]
         for step, _ in once_items
         if isinstance(got := found.get((step, None)), Found)
     }
+    for first in batched:
+        got = found[first]
+        assert isinstance(got, Found)
+        given = got.outputs["outcome"]
+        once_outcomes = plan.steps[first[0]].once_outcomes or ()
+        outcomes[origin(plan, first[0])] = given if given in once_outcomes else "accepted"
     values: dict[str, Any] = {}
     for step, _ in once_items:
         value = plan.steps[step].value
@@ -575,6 +593,21 @@ def _graded(
         "staff": staff,
         "error": error,
     }
+
+
+def _first(
+    plan: RunPlan, kind: PipelineKind, step: str, found: Mapping[Item, Found | Faulted]
+) -> Item | None:
+    """The first item of a step done per run that a `kind` pipeline holds
+    and that gave its outputs, in the order its batch holds them; none when
+    none did."""
+    for held in plan.pipeline(kind):
+        if held.step != step:
+            continue
+        for run in held.runs or ():
+            if isinstance(found.get((step, run)), Found):
+                return step, run
+    return None
 
 
 def _counted(plan: RunPlan, item: Item, check: int | None) -> bool:
@@ -704,10 +737,16 @@ def _text(found: Found, name: str) -> dict[str, str]:
 
 
 def _reports(
-    plan: RunPlan, found: Mapping[Item, Found | Faulted], items: Sequence[Item]
+    plan: RunPlan,
+    found: Mapping[Item, Found | Faulted],
+    items: Sequence[Item],
+    *,
+    once: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """The report entries the steps of `items` wrote: numbers as they are,
-    texts named."""
+    texts named. An output a step done per run gives the same for every
+    item is read from an item of it only for the reports given `once`, and
+    every other output only for the rest."""
     reports: dict[str, Any] = {}
     texts: dict[str, Any] = {}
     for name, entry in sorted(plan.reports.items()):
@@ -717,6 +756,10 @@ def _reports(
                 origin(plan, step) != entry.step
                 or not isinstance(got, Found)
                 or entry.output not in got.outputs
+                or (
+                    run is not None
+                    and (entry.output in (plan.steps[step].once_outputs or ())) != once
+                )
             ):
                 continue
             declared = output_type(plan.steps[step], entry.output)

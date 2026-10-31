@@ -66,13 +66,11 @@ inputs:
   predictions: {type: file, title: Predictions}
   answers: file
 steps:
-  - id: scorer
-    use: unicon/compile@v3
-    with: {source: "${{ workflow.scorer/ }}", language: python}
   - id: score
-    use: unicon/exec@v1
+    use: unicon/exec@v2
     with:
-      program: ${{ steps.scorer.program }}
+      source: ${{ workflow.scorer/ }}
+      language: python
       manifest: ${{ workflow.scorer/program.yaml }}
       files: {predictions: "${{ inputs.predictions }}", answers: "${{ inputs.answers }}"}
       time_limit: 60
@@ -310,32 +308,37 @@ def _result(
     }
 
 
+ONCE_ACCEPTED = {"solution": "accepted", "compare": "accepted"}
+"""What islands' steps give once when the entrant's code and the checker
+both compile."""
+
+
 def _tests(accepted: int, *, compiled: bool = True) -> dict[str, Any]:
     """A result of the four tests of a task over the islands workflow: the
     first `accepted` accepted, each scoring 1, the rest wrong answers; or,
     not `compiled`, a compile error, every test's verdict."""
     if not compiled:
         failed: tuple[str, Mapping[str, Any]] = ("compile_error", {})
-        return _result({f"r{n}": failed for n in range(1, 5)}, {"compile": "compile_error"})
+        return _result({f"r{n}": failed for n in range(1, 5)}, {"solution": "compile_error"})
     runs = {
         f"r{n}": ("accepted", {"score": 1, "time_ms": 12, "memory_kb": 1500})
         if n <= accepted
         else ("wrong_answer", {})
         for n in range(1, 5)
     }
-    return _result(runs, {"compile": "accepted"})
+    return _result(runs, ONCE_ACCEPTED)
 
 
 def _islands(verdicts: Mapping[str, str]) -> dict[str, Any]:
     """A result of islands' runs, each with its verdict, an accepted one
-    scoring 1; the compile's outcome with the samples."""
+    scoring 1; the once outcomes of its steps with the samples."""
     runs = {
         run: ("accepted", {"score": 1, "time_ms": 12, "memory_kb": 1500})
         if verdict == "accepted"
         else (verdict, {})
         for run, verdict in verdicts.items()
     }
-    return _result(runs, {"compile": "accepted"} if "r1" in runs else {})
+    return _result(runs, ONCE_ACCEPTED if "r1" in runs else {})
 
 
 def _kaggle(rmse: float | None, run: str) -> dict[str, Any]:
