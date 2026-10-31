@@ -2,7 +2,7 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from forge.domain.content import named_by
 from forge.domain.definitions import DEFAULT_MAX_SIZE, Scoring, TaskDefinition
@@ -13,6 +13,7 @@ from forge.domain.primitives import (
     BATCH_SCALED,
     LIMIT_NAMES,
     PROGRAMS,
+    SOURCE,
     FromInput,
     FromMax,
     FromSum,
@@ -33,14 +34,15 @@ from forge.domain.run_plan.records import (
     _UNSHOWN,
     BOX_MEMORY,
     BOXED,
+    BUILT,
     COMPILE_ERROR,
-    COMPILE_USE,
     COMPILED,
     EXEC_USE,
     ONCE,
     PIPELINE_WORDS,
     PIPELINES,
     PRIMITIVE_ROOM_MB,
+    PROGRAM_MB,
     RUN_ENTRY_KB,
     RUNS_FILE,
     SHOWN_DURING,
@@ -125,8 +127,20 @@ class _Planner:
         self.output_mb: dict[str, int] = {}
         """The most any run of each step may write, which bounds a file it
         gives another step."""
+        self.once_ms: dict[str, int] = {}
+        """The time each step's container takes once before its items, as
+        its declaration gives it (`once_time_ms`)."""
+        self.compiling: set[str] = set()
+        """The steps that compile the entrant's code and give a compile
+        error the same for every item, which `compiled` reads."""
+        self.leaking: dict[str, str | None] = {}
+        """The steps that would be among `compiling` but for a compile
+        error that could say what a hidden file holds, each with the run of
+        such an item, None for a step done once."""
         self.program_steps: dict[str, RunStep] = {}
-        """The steps of each value's `exec` program, by id."""
+        """The steps the planner adds to the workflow's, by id: the build
+        of each source of the task's own at the save (`builds`), and each
+        value's `exec` program (`programs`)."""
 
     # Binding
 
@@ -147,6 +161,8 @@ class _Planner:
         )
         self_reported = self._self_reported(resolved)
         declaration = resolved.declaration
+        assert declaration.limits is not None
+        self.once_ms[step_id] = declaration.limits.once_time_ms or 0
         for run in self.task.runs if kind not in ONCE else [None]:
             values: dict[str, Any] = {}
             hidden: list[dict[str, Any]] = []
@@ -174,6 +190,25 @@ class _Planner:
         self.output_mb[step_id] = max(
             bound.limits["output_mb"] for (each, _), bound in self.bound.items() if each == step_id
         )
+        if self._entrant_source(given) and COMPILE_ERROR in self._once_outcomes(step_id):
+            leaked = self._leaked(step_id, resolved.use)
+            if leaked is False:
+                self.compiling.add(step_id)
+            else:
+                self.leaking[step_id] = leaked
+
+    def _leaked(self, step_id: str, use: str) -> str | Literal[False] | None:
+        """The run of an item of `step_id` whose compile error could say what
+        a hidden file holds, None for a step done once; False when none can.
+        A step that runs the entrant's code beside a hidden file is one,
+        unless it is `EXEC_USE`, whose compile box sees only the source; one
+        that reads a tainted step's output always is.
+        """
+        for (each, run), bound in self.bound.items():
+            tainted = bound.tainted
+            if each == step_id and tainted is not None and ("reads" in tainted or use != EXEC_USE):
+                return run
+        return False
 
     def _of(self, step_id: str, run: Any) -> _Bound:
         """The run of `step_id` that `run` reads: its own, or the one run of a
@@ -341,7 +376,9 @@ class _Planner:
         primitive the files it copies into its boxes, its memory what its
         declaration gives, its boxes' memory limits and the room it adds,
         with those files on top, and at least its boxes' memory limits,
-        those files and `PRIMITIVE_ROOM_MB`. The primitive caps its step at
+        those files and `PRIMITIVE_ROOM_MB`. A source is compiled in a box
+        of its own, before any run, and the program it makes is what a run
+        box takes, at most `PROGRAM_MB`. The primitive caps its step at
         this figure, handed to it in the step's job, and does not work it
         out again.
         """
@@ -369,7 +406,11 @@ class _Planner:
                 copy
                 for values in (inputs, *given.values())
                 for port in copied
-                for copy in self._copies(values.get(port))
+                for copy in (
+                    [_Copy(PROGRAM_MB * 1024, "the compiled program", None)]
+                    if port == SOURCE and port in values
+                    else self._copies(values.get(port))
+                )
             ]
             kb = sum(copy.kb for copy in copies)
             boxes_mb = sum(
@@ -446,44 +487,196 @@ class _Planner:
             PartDetails(title=title, max_size=size) for title, size in entrant.part_details
         )
 
-    # A value's program
+    # The steps the planner adds
 
-    def programs(self, build: PrimitiveDeclaration, run: PrimitiveDeclaration) -> list[Problem]:
+    def builds(self, exec_: PrimitiveDeclaration) -> list[Problem]:
+        """A `build-<step>` step at the save for each `EXEC_USE` step whose
+        source is the task's own: given only the workflow's files, the
+        task's settings and words written in, never the entrant's nor a
+        repeated input, so the same for every grading. It compiles that
+        source with the `build` form of `exec_` and runs nothing, so a
+        source that does not compile refuses the publication before it
+        takes over. A programs-form step's own program of the task's
+        is `build-<step>-<program>`. A workflow step of that name is refused.
+        A step done at the save is not built: its own run refuses the save.
+        """
+        problems: list[Problem] = []
+        for step in self.workflow.steps:
+            if self.checked.steps[step.id].use != EXEC_USE or self.classes[step.id] in (
+                "save_once",
+                "save_per_run",
+            ):
+                continue
+            given = step.with_.get(PROGRAMS)
+            sources = (
+                {f"build-{step.id}-{name}": values for name, values in given.items()}
+                if isinstance(given, dict)
+                else {f"build-{step.id}": step.with_}
+            )
+            for build, values in sources.items():
+                if not self._own_source(values):
+                    continue
+                if build in self.classes or build in self.program_steps:
+                    taken = (
+                        f"The workflow has a step called {build}"
+                        if build in self.classes
+                        else f"Another source of the workflow's is checked as {build}"
+                    )
+                    problems.append(
+                        Problem(
+                            path="workflow",
+                            message=f"{taken}, the name the check that {step.id}'s source "
+                            "compiles takes. Rename that step.",
+                        )
+                    )
+                    continue
+                ports = self.checked.steps[step.id].declaration.inputs
+                if isinstance(given, dict):
+                    ports = ports[PROGRAMS].inputs or {}
+                inputs: dict[str, Any] = {}
+                for key in BUILT:
+                    if key in values:
+                        value, _ = self._plain(values[key], ports[key], None)
+                        if value is not _ABSENT:
+                            inputs[key] = value
+                if SOURCE in inputs:
+                    self._build(build, exec_, inputs, None)
+        return problems
+
+    def _entrant_source(self, given: Mapping[str, Any]) -> bool:
+        """Whether a `source` the step gives, its own or a program's of its
+        programs port, reads an entrant input, directly or through an
+        earlier step that does: the code a compile error of the step is the
+        entrant's.
+        """
+        programs = given.get(PROGRAMS)
+        held = programs.values() if isinstance(programs, dict) else ()
+        sources = [
+            given.get(SOURCE),
+            *(each.get(SOURCE) for each in held if isinstance(each, dict)),
+        ]
+        return any(
+            (each.kind == "inputs" and each.name in self.entrant)
+            or (each.kind == "steps" and _READS[self.classes[each.name]][0])
+            for each in _references_in(sources)
+        )
+
+    def once_problems(self) -> list[Problem]:
+        """A step whose declaration gives an output or an outcome the same
+        for every item of a batch, given a `source`, `language` or `entry`,
+        its own or a program's, that differs by run: its batch would build
+        programs that differ, and tell the first one's for all of them.
+        """
+        problems: list[Problem] = []
+        for step in self.workflow.steps:
+            outputs = self.checked.steps[step.id].outputs
+            if not self._once_outcomes(step.id) and not any(
+                port.once is True for port in outputs.values()
+            ):
+                continue
+            programs = step.with_.get(PROGRAMS)
+            held = (
+                [each for each in programs.values() if isinstance(each, dict)]
+                if isinstance(programs, dict)
+                else []
+            )
+            built = [given.get(key) for given in (step.with_, *held) for key in BUILT]
+            if any(
+                (each.kind == "inputs" and each.name in self.repeated)
+                or (each.kind == "steps" and _READS[self.classes[each.name]][1])
+                for each in _references_in(built)
+            ):
+                problems.append(
+                    Problem(
+                        path="workflow",
+                        message=f"{step.id} is given a source, language or entry that differs by "
+                        "run, but tells its compile once for every run. Give it one the same for "
+                        "every run.",
+                    )
+                )
+        return problems
+
+    def _own_source(self, given: Mapping[str, Any]) -> bool:
+        """Whether a program's `source`, `language` and `entry`, as the
+        workflow gives them, are the task's own: they read no step, no
+        entrant input and no repeated input."""
+        found = _references_in([given.get(key) for key in BUILT])
+        return SOURCE in given and all(
+            each.kind == "workflow"
+            or (each.kind == "inputs" and each.name not in self.entrant | self.repeated)
+            for each in found
+        )
+
+    def _build(
+        self, step: str, exec_: PrimitiveDeclaration, inputs: dict[str, Any], value: str | None
+    ) -> None:
+        """The step `step`, done once at the save, compiling `inputs` with
+        the `build` form of `exec_`, for the value `value` when it is that
+        value's program's."""
+        stepped = exec_.for_step(tuple(inputs), EXEC_USE)
+        assert isinstance(stepped, PrimitiveDeclaration) and stepped.limits is not None
+        self.bound[(step, None)] = _Bound(inputs, [], None, stepped.item_limits({}))
+        self.raising[step] = []
+        self.once_ms[step] = stepped.limits.once_time_ms or 0
+        self.program_steps[step] = RunStep.model_validate(
+            {
+                "class": "save_once",
+                "primitive": EXEC_USE,
+                "image": stepped.image,
+                "network": stepped.network,
+                "cache": stepped.cache,
+                "boxes": 1,
+                "outputs": _declared(stepped),
+                "folders": (SOURCE,),
+                **({"value": {"name": value}} if value is not None else {}),
+                "inputs": inputs,
+            }
+        )
+
+    def programs(self, exec_: PrimitiveDeclaration) -> list[Problem]:
         """The two steps of each value's `exec` program: `build-<value>`,
-        compiling the folder at the save, and `exec-<value>`, running it on
-        the JSON file of its group's runs the forge builds (`RUNS_FILE`),
-        its manifest the folder's `program.yaml`, under its limits, with
-        room for what it copies into its box. A workflow step of either
-        name is refused.
+        compiling the folder at the save, and `exec-<value>`, compiling it
+        again, from the machine's cache when it can, and running it on the
+        JSON file of its group's runs the forge builds (`RUNS_FILE`), its
+        manifest the folder's `program.yaml`, under its limits, with room
+        for what it copies into its box. A workflow step of either name is
+        refused.
         """
         problems: list[Problem] = []
         for name, program in self.task.programs.items():
             ids = self.task.groups[program.group]
-            taken = [step for step in (f"build-{name}", f"exec-{name}") if step in self.classes]
+            taken = [
+                step
+                for step in (f"build-{name}", f"exec-{name}")
+                if step in self.classes or step in self.program_steps
+            ]
             if taken:
+                has = (
+                    f"The workflow has a step called {taken[0]}"
+                    if taken[0] in self.classes
+                    else f"The check that a workflow step's source compiles is called {taken[0]}"
+                )
                 problems.append(
                     Problem(
                         path=path_text(("scoring", "values", name)),
-                        message=f"The workflow has a step called {taken[0]}, the name {name}'s "
-                        "program step takes. Rename the value or the step.",
+                        message=f"{has}, the name {name}'s program step takes. Rename the value "
+                        "or the step.",
                     )
                 )
                 continue
-            compiles = {"source": {"task": program.folder}, "language": {"value": program.language}}
-            compiled = build.item_limits({})
-            self.bound[(f"build-{name}", None)] = _Bound(compiles, [], None, compiled)
+            source = {SOURCE: {"task": program.folder}, "language": {"value": program.language}}
+            self._build(f"build-{name}", exec_, source, name)
             inputs: dict[str, Any] = {
-                "program": {"step": f"build-{name}", "output": "program"},
+                **source,
                 "files": {"files": {RUNS_FILE: {"runs": list(ids)}}},
                 "manifest": {"task": program.manifest},
                 "time_limit": {"value": program.time_limit},
                 "memory_limit": {"value": program.memory_limit},
             }
-            resolved = run.for_step(tuple(inputs), EXEC_USE)
-            assert isinstance(resolved, PrimitiveDeclaration)
-            run = resolved
+            run = exec_.for_step(tuple(inputs), EXEC_USE)
+            assert isinstance(run, PrimitiveDeclaration) and run.limits is not None
             copies = [
-                _Copy(compiled["output_mb"] * 1024, f"the program of {name}", None),
+                _Copy(PROGRAM_MB * 1024, f"the program of {name}", None),
                 _Copy(_pages(self.task_files[program.manifest].size), program.manifest, None),
                 _Copy(RUN_ENTRY_KB * len(ids), f"the runs {name} reads", None),
             ]
@@ -496,20 +689,8 @@ class _Planner:
             )
             limits["memory_mb"] = max(limits["memory_mb"] + math.ceil(kb / 1024), least)
             self.bound[(f"exec-{name}", None)] = _Bound(inputs, [], None, limits, copies)
-            self.raising[f"build-{name}"] = self.raising[f"exec-{name}"] = []
-            self.program_steps[f"build-{name}"] = RunStep.model_validate(
-                {
-                    "class": "save_once",
-                    "primitive": COMPILE_USE,
-                    "image": build.image,
-                    "network": build.network,
-                    "cache": build.cache,
-                    "outputs": _declared(build),
-                    "folders": ("source",),
-                    "value": {"name": name},
-                    "inputs": compiles,
-                }
-            )
+            self.raising[f"exec-{name}"] = []
+            self.once_ms[f"exec-{name}"] = run.limits.once_time_ms or 0
             self.program_steps[f"exec-{name}"] = RunStep.model_validate(
                 {
                     "class": "grading_once",
@@ -519,6 +700,7 @@ class _Planner:
                     "cache": run.cache,
                     "boxes": 1,
                     "outputs": {**_declared(run), program.report: Type.NUMBER.value},
+                    "folders": (SOURCE,),
                     "value": {"name": name, "report": program.report},
                     "inputs": inputs,
                 }
@@ -528,28 +710,25 @@ class _Planner:
     def _program_pipelines(
         self, found: dict[PipelineKind, tuple[PipelineStep, ...]], *, released: bool
     ) -> dict[PipelineKind, tuple[PipelineStep, ...]]:
-        """`found` with each value's program steps after the rest: its
-        compile at the save, and its run in the early pipeline when its
-        value is early (`RunTask.early_programs`), else the late one, each
-        waiting for every step before it, so the runs it reads are done.
+        """`found` with the steps the planner adds after the rest: each
+        build at the save, and each value's program's run in the early
+        pipeline when its value is early (`RunTask.early_programs`), else
+        the late one, each waiting for every step before it, so the runs a
+        program reads are done.
         """
         early = self.task.early_programs(released=released)
         held = dict(found)
-        for name in self.task.programs:
-            placed: list[tuple[PipelineKind, str]] = [
-                ("save", f"build-{name}"),
-                ("early" if name in early else "late", f"exec-{name}"),
-            ]
-            for kind, step in placed:
-                if step not in self.program_steps:
-                    continue
-                before = held.get(kind, ())
-                waited = {waits for each in before for waits in each.depends_on}
-                last = tuple(each.name for each in before if each.name not in waited)
-                made = PipelineStep(
-                    name=step, step=step, depends_on=last, limits=self._limits(step, None)
-                )
-                held[kind] = (*before, made)
+        for step, made in self.program_steps.items():
+            kind: PipelineKind = "save"
+            if made.value is not None and made.value.report is not None:
+                kind = "early" if made.value.name in early else "late"
+            before = held.get(kind, ())
+            waited = {waits for each in before for waits in each.depends_on}
+            last = tuple(each.name for each in before if each.name not in waited)
+            placed = PipelineStep(
+                name=step, step=step, depends_on=last, limits=self._limits(step, None)
+            )
+            held[kind] = (*before, placed)
         return {kind: held[kind] for kind in PIPELINES if kind in held}
 
     # Pipelines
@@ -616,8 +795,9 @@ class _Planner:
         """The steps done once per grading in the early pipeline: every one
         when a run is early, since every run's verdict reads each; when none
         is but `compiled`, or a value reading it, is shown `now`, those
-        that can give a compile error, which `compiled` reads, and the steps
-        done once per grading they read, a tainted one among them refused
+        done once per grading that compile the entrant's code, which
+        `compiled` reads, and the steps done once per grading they read; a
+        step that compiles it only with the runs is refused then
         (`refusals`); otherwise none.
         """
         once = [step.id for step in self.workflow.steps if self.classes[step.id] == "grading_once"]
@@ -626,7 +806,7 @@ class _Planner:
         if not self.task.compile_early(released=released):
             return set()
         found: set[str] = set()
-        waiting = self._compilers()
+        waiting = [step for step in self._compilers() if self.classes[step] == "grading_once"]
         while waiting:
             step = waiting.pop()
             if step in found:
@@ -638,6 +818,12 @@ class _Planner:
     def _outcomes(self, step_id: str) -> set[str]:
         outcome = self.checked.steps[step_id].declaration.outputs.get("outcome")
         return set(outcome.outcomes or {}) if outcome is not None else set()
+
+    def _once_outcomes(self, step_id: str) -> tuple[str, ...]:
+        """The outcomes the step's declaration says it gives the same for
+        every item of a batch."""
+        outcome = self.checked.steps[step_id].declaration.outputs.get("outcome")
+        return outcome.once_outcomes if outcome is not None else ()
 
     def _pipeline(self, held: list[tuple[str, tuple[str, ...] | None]]) -> tuple[PipelineStep, ...]:
         """The Woodpecker steps of one pipeline from the workflow steps it
@@ -723,18 +909,19 @@ class _Planner:
         return tuple(made)
 
     def _limits(self, step_id: str, runs: tuple[str, ...] | None) -> StepLimits:
-        """A container's limits over the runs it holds: time summed, the rest
-        the most of any run.
+        """A container's limits over the runs it holds: time summed, with
+        what the step takes once before them added once, the rest the most
+        of any run.
         """
         items = [self.bound[(step_id, run)].limits for run in (runs or (None,))]
-        return StepLimits(
-            **{
-                name: sum(item[name] for item in items)
-                if name in BATCH_SCALED
-                else max(item[name] for item in items)
-                for name in LIMIT_NAMES
-            }
-        )
+        limits = {
+            name: sum(item[name] for item in items)
+            if name in BATCH_SCALED
+            else max(item[name] for item in items)
+            for name in LIMIT_NAMES
+        }
+        limits["time_ms"] += self.once_ms.get(step_id, 0)
+        return StepLimits(**limits)
 
     def fit(self, pipelines: Mapping[PipelineKind, Sequence[PipelineStep]]) -> list[Problem]:
         """Each pipeline within the run ceiling, refused at what raises its
@@ -821,7 +1008,7 @@ class _Planner:
                 why += f", which runs the entrant's code beside {_words(beside)}"
                 why += _UNSHOWN.format(entry=entry)
             elif self.task.reads_compiled(entry):
-                why = self._compiled_problem(entry)
+                why = self._compiled_problem(entry, released=time == "on_release")
             else:
                 continue
             if why:
@@ -834,11 +1021,14 @@ class _Planner:
                 )
         return problems
 
-    def _compiled_problem(self, entry: str) -> str:
+    def _compiled_problem(self, entry: str, *, released: bool = False) -> str:
         """Why `compiled`, which `entry` is or reads, cannot be shown during
-        the contest: the step that can give a compile error runs once per
-        run, or there is no such step done once per grading, so it would
-        wait for the hidden runs; or that step is tainted. None when it can.
+        the contest, `released` while the task's results are: a step that
+        can give a compile error for one run alone runs once per run, so
+        it would wait for the hidden runs; no step compiles the entrant's
+        code with a compile error the same for every item, so it would wait
+        for the whole grading; or every such step compiles it only with the
+        runs, and no run is early. None when it can.
         """
         but = "" if entry == COMPILED else f"it reads `{COMPILED}`, but "
         per_run = [
@@ -846,38 +1036,44 @@ class _Planner:
             for step in self.workflow.steps
             if self.classes[step.id] == "grading_per_run"
             and COMPILE_ERROR in self._outcomes(step.id)
+            and COMPILE_ERROR not in self._once_outcomes(step.id)
         ]
         if per_run:
             return (
                 f"{but}`{per_run[0]}`, which can give a compile error, runs once per run, so "
                 f"`{COMPILED}` is known only once every run has run, the hidden ones too"
             )
-        once = self._compilers()
-        if not once:
+        compilers = self._compilers()
+        if not compilers and self.leaking:
+            step, run = next(iter(self.leaking.items()))
+            chain, beside = self._chain(step, run)
             return (
-                f"{but}no step done once per grading can give a compile error, so `{COMPILED}` "
-                "is known only once the whole grading ends, its hidden runs too"
+                ("it comes from " if entry == COMPILED else f"it reads `{COMPILED}`, from ")
+                + ", which reads ".join(f"`{each}`" for each in chain)
+                + f", which runs the entrant's code beside {_words(beside)}"
+                + _UNSHOWN.format(entry=entry)
             )
-        tainted = next((step for step in once if self.bound[(step, None)].tainted), None)
-        if tainted is None:
+        if not compilers:
+            return (
+                f"{but}no step compiles the entrant's code, so `{COMPILED}` is known only once "
+                "the whole grading ends, its hidden runs too"
+            )
+        if self.task.early(released=released) or any(
+            self.classes[step] == "grading_once" for step in compilers
+        ):
             return ""
-        chain, beside = self._chain(tainted, None)
         return (
-            ("it comes from " if entry == COMPILED else f"it reads `{COMPILED}`, from ")
-            + ", which reads ".join(f"`{step}`" for step in chain)
-            + f", which runs the entrant's code beside {_words(beside)}"
-            + _UNSHOWN.format(entry=entry)
+            f"{but}`{compilers[0]}`, which compiles the entrant's code, does so with the runs, "
+            f"and no run is graded during the contest, so `{COMPILED}` is known only once the "
+            "hidden runs have run"
         )
 
     def _compilers(self) -> list[str]:
-        """The steps done once per grading that can give a compile error,
-        which `compiled` reads.
+        """The steps that compile the entrant's code and give a compile
+        error the same for every item, which `compiled` reads, in the
+        workflow's order.
         """
-        return [
-            step.id
-            for step in self.workflow.steps
-            if self.classes[step.id] == "grading_once" and COMPILE_ERROR in self._outcomes(step.id)
-        ]
+        return [step.id for step in self.workflow.steps if step.id in self.compiling]
 
     def notes(self) -> list[str]:
         """For each value or group shown during the contest reading runs
@@ -929,14 +1125,21 @@ class _Planner:
     def shown_reports(self) -> list[Problem]:
         """A report `show` lists by itself that a step gives for each run,
         which is shown with the runs of the groups `show` lists (stage 5
-        section 6 item 30). An entry naming a group or a value names that.
+        section 6 item 30); one a step done once gives, or an output its
+        declaration says is the same for every item, is shown by itself. An
+        entry naming a group or a value names that.
         """
         names = show_names(self.scoring)
         problems: list[Problem] = []
         for time, entries in self.scoring.show.lists().items():
             for index, entry in enumerate(entries):
                 report = self.checked.reports.get(entry)
-                if report is None or entry in names or self.classes[report.step] in ONCE:
+                if (
+                    report is None
+                    or entry in names
+                    or self.classes[report.step] in ONCE
+                    or (report.port is not None and report.port.once is True)
+                ):
                     continue
                 problems.append(
                     Problem(
@@ -994,6 +1197,7 @@ class _Planner:
                 )
                 or None,
                 "self_reported": True if self._self_reported(resolved) else None,
+                "compiled": True if step.id in self.compiling else None,
             }
             if kind in ONCE:
                 bound = self.bound[(step.id, None)]
@@ -1001,6 +1205,11 @@ class _Planner:
                     {**common, "inputs": bound.inputs, "tainted": bound.tainted}
                 )
             else:
+                common["once_outputs"] = (
+                    tuple(name for name, port in resolved.outputs.items() if port.once is True)
+                    or None
+                )
+                common["once_outcomes"] = self._once_outcomes(step.id) or None
                 items = {
                     run.id: Item.model_validate(
                         {

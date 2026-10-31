@@ -114,9 +114,12 @@ class RunStep(Model):
     cache, the boxes one item uses at once, its outputs, its folder ports,
     whether its manifest program's reports are the entrant's, and its
     inputs once or an item per run, by run id, each with why it is tainted.
-    A value's program is two steps of its own (`value`): compiled once at
-    the save, and run once per grading after the runs it reads. A check's
-    copy of a step graded per submission says which (`check`).
+    A step graded per run says what its primitive gives the same for every
+    item (`once_outputs`, `once_outcomes`), and a step that compiles the
+    entrant's code says `compiled` reads it. A value's program is two steps
+    of its own (`value`): compiled once at the save, and run once per
+    grading after the runs it reads. A check's copy of a step graded per
+    submission says which (`check`).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
@@ -130,6 +133,9 @@ class RunStep(Model):
     outputs: dict[str, str]
     folders: tuple[str, ...] | None = None
     self_reported: Literal[True] | None = None
+    once_outputs: tuple[str, ...] | None = None
+    once_outcomes: tuple[str, ...] | None = None
+    compiled: Literal[True] | None = None
     tainted: Taint | None = None
     value: ValueStep | None = None
     check: CheckStep | None = None

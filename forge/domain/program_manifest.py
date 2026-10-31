@@ -55,10 +55,11 @@ EXEC_OWN_NAMES = frozenset(
         "memory_kb",
         "outcome",
         "extras",
+        "log",
     }
 )
 """What no report of a program `exec` runs may be named: the report folder's
-own files and `exec`'s own outputs."""
+own files and `exec`'s own outputs, the compile log among them."""
 PROGRAMS_OWN_NAMES = EXEC_OWN_NAMES | {
     "ended",
     "signal",

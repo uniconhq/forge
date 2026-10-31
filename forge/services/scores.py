@@ -267,5 +267,7 @@ async def _planned(
             if value is not None and value.report is not None:
                 programs[value.name] = kind == "early"
             if each.step in held.compiling:
-                compiles[each.step] = kind == "early"
+                # A step done per run is in both pipelines: the early one
+                # gives its compile first.
+                compiles.setdefault(each.step, kind == "early")
     return {run.id: run.early for run in plan.runs}, programs, compiles

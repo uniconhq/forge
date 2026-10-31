@@ -23,8 +23,9 @@ runs as, since it makes isolate boxes of its own (phase
 (`Settings.withdrawn_images`) ends the row's start in `system_error` saying
 so, and `lookup` answers no pipeline that holds one. A pipeline left with
 nothing is not started: its row is concluded at once from what the store
-holds, and a late row whose early compile was not accepted so takes that
-step's verdict for every run with no pipeline run.
+holds, and a late row whose step's early batch gave a compile error, the
+same for every item, so takes that verdict for every run with no pipeline
+run.
 
 `lookup` answers the CI that asks what a pipeline is as it starts one, from
 the row and its minted steps alone, writing nothing: each step's image by

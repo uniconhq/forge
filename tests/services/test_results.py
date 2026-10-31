@@ -496,14 +496,7 @@ async def test_while_released_a_late_row_tells_its_entrant_only_for_a_grading_ma
     late: dict[int, Grading] = {}
     for user in (8, 9):
         early = {row.submitted_by: row for row in await _rows(setup, "early")}[user]
-        if user == 8:
-            await _early(setup, acme, early.id)
-        else:
-            # The same code compiled once already, for 8.
-            await _step(setup, acme, early.id, "early", "solution", _batch())
-            await _step(setup, acme, early.id, "early", "compare", _batch(score=True))
-            await _report(setup, early.id, "early")
-            await setup.settle()
+        await _early(setup, acme, early.id)
         late[user] = {row.submitted_by: row for row in await _rows(setup, "late")}[user]
         if late[user].status != GradingStatus.DONE:
             await _step(setup, acme, late[user].id, "late", "solution", _batch())

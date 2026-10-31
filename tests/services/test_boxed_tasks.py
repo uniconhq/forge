@@ -31,7 +31,7 @@ from tests.services.test_run_task_saves import DRAFT, ISLANDS_DATA
 from tests.services.test_steps import (
     Islands,
     _batch,
-    _compiled,
+    _built,
     _download,
     _grading,
     _job,
@@ -40,21 +40,23 @@ from tests.services.test_steps import (
     _row,
     _step,
 )
-from tests.services.test_workflow_boxes import BUILD, JUDGE, OUTER
+from tests.services.test_workflow_boxes import JUDGE, OUTER, SOLVE
 from tests.test_run_task import ISLANDS
 
-DIFF = sibling("deploy", "workflows/classic/v3")
-TASK = ISLANDS.replace("unicon/classic@v3", "bob/outer@v1")
+TASK = ISLANDS.replace("unicon/classic@v4", "bob/outer@v1")
 BANNER = OUTER.replace(
-    "steps:\n  - id: build\n",
+    "steps:\n  - id: solve\n",
     "steps:\n"
     "  - id: banner\n"
-    "    use: unicon/compile@v3\n"
+    "    use: unicon/exec@v2\n"
     "    with:\n"
     "      source: ${{ inputs.code }}\n"
     "      language: ${{ inputs.language }}\n"
-    "  - id: build\n",
-).replace("program: ${{ steps.build.program }}", "program: ${{ steps.banner.program }}")
+    "      stdin: ${{ inputs.input }}\n"
+    "      time_limit: ${{ inputs.time_limit }}\n"
+    "      memory_limit: ${{ inputs.memory_limit }}\n"
+    "  - id: solve\n",
+).replace("output: ${{ steps.solve.output }}", "output: ${{ steps.banner.output }}")
 LINK = (
     f"image: ghcr.io/uniconhq/primitive-link@{PLACEHOLDER_DIGEST}\n"
     "schema_version: 6\n"
@@ -63,7 +65,7 @@ LINK = (
     "  source: {type: folder, runs: true}\n"
     "  grader: {type: folder, runs: false}\n"
     "outputs:\n"
-    "  program: file\n"
+    "  program: folder\n"
     "  outcome: outcome\n"
 ).encode()
 JUDGE_LINK = """\
@@ -91,9 +93,10 @@ steps:
       code: ${{ inputs.code }}
       grader: ${{ inputs.grader }}
   - id: run
-    use: unicon/exec@v1
+    use: unicon/exec@v2
     with:
-      program: ${{ steps.judge.program }}
+      source: ${{ steps.judge.program }}
+      language: python
       stdin: ${{ inputs.input }}
       time_limit: 1
       memory_limit: 64
@@ -120,14 +123,15 @@ scoring:
 """
 SLOW = """\
 inputs:
-  program: {type: file}
+  code: {type: folder}
   input: {type: file}
   time_limit: {type: number}
 steps:
   - id: solution
-    use: unicon/exec@v1
+    use: unicon/exec@v2
     with:
-      program: ${{ inputs.program }}
+      source: ${{ inputs.code }}
+      language: python
       stdin: ${{ inputs.input }}
       time_limit: ${{ inputs.time_limit }}
       memory_limit: 64
@@ -140,15 +144,10 @@ inputs:
   input: {type: file, title: Input}
   time_limit: {type: number, title: Time limit, unit: seconds}
 steps:
-  - id: compile
-    use: unicon/compile@v3
-    with:
-      source: ${{ inputs.code }}
-      language: python
   - id: run
     use: bob/slow@v1
     with:
-      program: ${{ steps.compile.program }}
+      code: ${{ inputs.code }}
       input: ${{ inputs.input }}
       time_limit: ${{ inputs.time_limit }}
 outputs:
@@ -170,9 +169,10 @@ scoring:
 
 
 def _diff() -> dict[str, bytes]:
+    top = sibling("deploy", "workflows/classic/v4")
     return {
-        "diff/diff.py": (DIFF / "diff/diff.py").read_bytes(),
-        "diff/program.yaml": (DIFF / "diff/program.yaml").read_bytes(),
+        "diff/diff.py": (top / "diff/diff.py").read_bytes(),
+        "diff/program.yaml": (top / "diff/program.yaml").read_bytes(),
     }
 
 
@@ -230,7 +230,7 @@ async def _publish(
 
 
 async def _classic(setup: Setup, acme: Acme, name: str = "boxed") -> tuple[TaskId, Published]:
-    await _public(acme, "build", BUILD)
+    await _public(acme, "solve", SOLVE)
     await _public(acme, "judge", JUDGE, _diff())
     await _public(acme, "outer", OUTER)
     return await _publish(setup, acme, name, TASK, ISLANDS_DATA)
@@ -244,43 +244,36 @@ async def test_a_boxed_classic_task_saves_and_plans_as_the_flat_one(
     plan = _plan(acme, task)
     assert [
         plan.steps[name].woodpecker
-        for name in (
-            "build/compile",
-            "solution",
-            "judge/diff",
-            "judge/compare",
-        )
-    ] == ["s1", "s2", "s3", "s4"]
+        for name in ("solve/solution", "judge/compare", "build-judge/compare")
+    ] == ["s1", "s2", "s3"]
     assert _woodpecker(plan) == {
         "save": [("s3", ())],
-        "early": [("s1", ()), ("s2", ("s1",)), ("s4", ("s2",))],
-        "late": [("s2", ()), ("s4", ("s2",))],
+        "early": [("s1", ()), ("s2", ("s1",))],
+        "late": [("s1", ()), ("s2", ("s1",))],
     }
-    # The checker's compile is the save, and its compare the grading, so one
-    # box's steps are split across the three pipelines.
-    assert [step.step for step in plan.pipeline("save")] == ["judge/diff"]
-    assert [step.step for step in plan.pipeline("early")] == [
-        "build/compile",
-        "solution",
-        "judge/compare",
-    ]
-    assert [step.step for step in plan.pipeline("late")] == ["solution", "judge/compare"]
-    assert [pin.ref for pin in plan.inner_workflows] == ["bob/build@v1", "bob/judge@v1"]
+    # The checker's build is the save, and its compare the grading, so one
+    # box's checker is checked at the save and run in both gradings.
+    assert [step.step for step in plan.pipeline("save")] == ["build-judge/compare"]
+    assert [step.step for step in plan.pipeline("early")] == ["solve/solution", "judge/compare"]
+    assert [step.step for step in plan.pipeline("late")] == ["solve/solution", "judge/compare"]
+    assert [pin.ref for pin in plan.inner_workflows] == ["bob/solve@v1", "bob/judge@v1"]
     assert plan.workflow.files == {}
     assert set(plan.inner_workflows[1].files) == {"diff/diff.py", "diff/program.yaml"}
     compare = (plan.steps["judge/compare"].items or {})["r1"].inputs
     assert compare["manifest"] == {"workflow": "diff/program.yaml", "pin": 2}
-    diff = plan.steps["judge/diff"].inputs
-    compile_step = plan.steps["build/compile"].inputs
-    assert diff is not None and compile_step is not None
-    assert diff["source"] == {"workflow": "diff/", "pin": 2}
-    assert compile_step == {
-        "source": {"entrant": "code"},
-        "language": {"entrant": "language"},
+    assert compare["source"] == {"workflow": "diff/", "pin": 2}
+    assert plan.steps["build-judge/compare"].inputs == {
+        "source": {"workflow": "diff/", "pin": 2},
+        "language": {"value": "python"},
     }
+    solution = (plan.steps["solve/solution"].items or {})["r1"].inputs
+    assert (solution["source"], solution["language"]) == (
+        {"entrant": "code"},
+        {"entrant": "language"},
+    )
     assert plan.reports["score"].step == "judge/compare"
     (publication,) = await acme.fake.workspaces.list_publications(task)
-    assert set(publication.workflows) == {"bob/outer", "bob/build", "bob/judge"}
+    assert set(publication.workflows) == {"bob/outer", "bob/solve", "bob/judge"}
 
 
 async def test_taint_through_a_box_names_the_flat_step(
@@ -323,16 +316,17 @@ async def test_a_step_added_at_the_top_regrades_only_what_reads_it(
         Snapshot(plans={PLAN_PATH: first}, data={}),
         Snapshot(plans={PLAN_PATH: plan.to_bytes()}, data={}),
     )
-    assert again == ("banner", "solution", "judge/compare")
+    assert again == ("banner", "judge/compare")
     before = RunPlan.from_bytes(first)
-    assert before.steps["build/compile"].inputs == plan.steps["build/compile"].inputs
-    assert before.steps["judge/diff"].inputs == plan.steps["judge/diff"].inputs
-    assert item_key(
-        before.steps["build/compile"].image, before.steps["build/compile"].inputs or {}
-    ) == item_key(plan.steps["build/compile"].image, plan.steps["build/compile"].inputs or {})
-    assert before.steps["build/compile"].woodpecker == "s1"
-    assert plan.steps["build/compile"].woodpecker == "s2"
-    assert plan.steps["solution"].woodpecker == "s3"
+    assert before.steps["solve/solution"].items == plan.steps["solve/solution"].items
+    built = "build-judge/compare"
+    assert before.steps[built].inputs == plan.steps[built].inputs
+    assert item_key(before.steps[built].image, before.steps[built].inputs or {}) == item_key(
+        plan.steps[built].image, plan.steps[built].inputs or {}
+    )
+    assert before.steps["solve/solution"].woodpecker == "s1"
+    assert plan.steps["solve/solution"].woodpecker == "s2"
+    assert plan.steps["banner"].woodpecker == "s1"
     assert set(plan.steps) == set(before.steps) | {"banner"}
 
 
@@ -378,12 +372,11 @@ async def test_the_door_serves_an_inner_workflows_file_from_its_pin(
     plan = _plan(acme, task)
     judge = plan.inner_workflows[1]
     saved = await _grading(setup, acme, held)
-    await _step(setup, acme, saved, "save", "judge/diff", _compiled())
+    await _step(setup, acme, saved, "save", "build-judge/compare", _built())
     status = await _report(setup, saved, "save")
     assert status is GradingStatus.DONE, (await _row(setup, saved)).error
     row = await _grading(setup, acme, held)
-    await _step(setup, acme, row, "early", "build/compile", _compiled())
-    await _step(setup, acme, row, "early", "solution", _batch())
+    await _step(setup, acme, row, "early", "solve/solution", _batch())
     acme.fake.reset_calls()
     access = await _mint(setup, row, "early", "judge/compare")
     job = await _job(setup, row, "judge/compare", access)

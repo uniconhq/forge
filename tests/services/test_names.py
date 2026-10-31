@@ -150,7 +150,7 @@ async def _bob_workflow(fake: FakeForge) -> None:
 async def _save_with(setup: Setup, acme: Acme, task: TaskId, workflow: bytes) -> object:
     current = await acme.fake.content.read_file(PLATFORM, task, "task.yaml")
     head = await acme.fake.content.list_files(PLATFORM, task)
-    content = current.content.replace(b"workflow: unicon/classic@v3", b"workflow: " + workflow)
+    content = current.content.replace(b"workflow: unicon/classic@v4", b"workflow: " + workflow)
     if content == current.content:
         content += b"\n"
     saved = await task_save.save(
@@ -203,7 +203,7 @@ async def test_a_workflow_named_by_its_org_is_read_from_the_org_key(
 
     async with setup.unit_of_work() as ctx:
         found = await names.workflow_id(ctx, parse_workflow_ref("acme/sorting@v1"))
-        platform = await names.workflow_id(ctx, parse_workflow_ref("unicon/classic@v3"))
+        platform = await names.workflow_id(ctx, parse_workflow_ref("unicon/classic@v4"))
         person = await names.workflow_id(ctx, parse_workflow_ref("bob/mine@v1"))
 
     assert (found, platform, person) == (made, "unicon/classic", "bob/mine")

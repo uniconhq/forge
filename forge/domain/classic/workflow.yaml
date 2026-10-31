@@ -1,4 +1,4 @@
-# unicon/classic@v3, workflow.yaml: one run of an entrant's program on one
+# unicon/classic@v4, workflow.yaml: one run of an entrant's program on one
 # input, its output compared word by word with the answer by the diff
 # script beside this file. The format is SIMPLER-CORE.md 7.
 inputs:
@@ -10,27 +10,19 @@ inputs:
   memory_limit: {type: number, title: Memory limit, unit: MB}
 
 steps:
-  - id: compile
-    use: unicon/compile@v3
+  - id: solution
+    use: unicon/exec@v2
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
-  - id: solution
-    use: unicon/exec@v1
-    with:
-      program: ${{ steps.compile.program }}
       stdin: ${{ inputs.input }}
       time_limit: ${{ inputs.time_limit }}
       memory_limit: ${{ inputs.memory_limit }}
-  - id: diff
-    use: unicon/compile@v3
+  - id: compare
+    use: unicon/exec@v2
     with:
       source: ${{ workflow.diff/ }}
       language: python
-  - id: compare
-    use: unicon/exec@v1
-    with:
-      program: ${{ steps.diff.program }}
       manifest: ${{ workflow.diff/program.yaml }}
       time_limit: 3
       memory_limit: 256
@@ -42,4 +34,4 @@ outputs:
   score: ${{ steps.compare.score }}
   time_ms: {from: "${{ steps.solution.time_ms }}", title: Run time, unit: ms}
   memory_kb: {from: "${{ steps.solution.memory_kb }}", title: Memory used, unit: KB}
-  log: {from: "${{ steps.compile.log }}", title: Compile log}
+  log: {from: "${{ steps.solution.log }}", title: Compile log}

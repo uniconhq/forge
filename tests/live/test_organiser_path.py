@@ -195,7 +195,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
         organiser,
         task,
         "task.yaml",
-        current.content.replace(b"unicon/classic@v3", b"unicon/classic@v9"),
+        current.content.replace(b"unicon/classic@v4", b"unicon/classic@v9"),
         current.token,
     )
 

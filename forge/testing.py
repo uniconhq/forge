@@ -26,9 +26,9 @@ rows that put people in an entrant of a contest, for a test of what
 registration decides; `name_places` gives the org,
 contest and task ids a test made straight at the fake the names a route
 finds them by, each its own last part; and `seed_classic` puts the
-built-in workflow `unicon/classic@v3` and the primitives it uses at the fake
+built-in workflow `unicon/classic@v4` and the primitive it uses at the fake
 the way deploy's bootstrap puts them at a real forge, from `CLASSIC`, a copy
-of `deploy/workflows/classic/v3`, and `PRIMITIVES`, copies of each
+of `deploy/workflows/classic/v4`, and `PRIMITIVES`, a copy of the
 primitive's `primitive.yaml`. The package's own tests check the copies
 agree with their repos when those are checked out beside this one.
 `RUN_WORKFLOWS` names the folder in deploy's checkout of each built-in
@@ -95,12 +95,12 @@ CALLBACK = f"{APP_URL}{CALLBACK_PATH}"
 _FORMATTER = JsonFormatter()
 
 CLASSIC = classic_files()
-"""`unicon/classic@v3`'s files, by their paths in the workflow, as deploy's
-bootstrap seeds them from `deploy/workflows/classic/v3`."""
+"""`unicon/classic@v4`'s files, by their paths in the workflow, as deploy's
+bootstrap seeds them from `deploy/workflows/classic/v4`."""
 
 RUN_WORKFLOWS = {
-    "unicon/classic@v3": "workflows/classic/v3",
-    "unicon/interactive@v1": "workflows/interactive/v1",
+    "unicon/classic@v4": "workflows/classic/v4",
+    "unicon/interactive@v2": "workflows/interactive/v2",
 }
 """Where deploy keeps each built-in workflow, by the reference it has at the
 forge: a folder holding its `workflow.yaml` and the files it reads, under
@@ -122,20 +122,19 @@ def _declared(name: str) -> bytes:
 
 
 PRIMITIVES: dict[str, bytes] = {
-    "unicon/compile@v3": _declared("compile"),
-    "unicon/exec@v1": _declared("exec"),
+    "unicon/exec@v2": _declared("exec"),
 }
-"""The declarations of the two primitives the built-in workflow uses, by
-their references: each primitive repo's own `primitive.yaml`, copied under
+"""The declaration of the primitive the built-in workflow uses, by its
+reference: the primitive repo's own `primitive.yaml`, copied under
 `forge/seeds/`, with the `image` line deploy's bootstrap writes at its top,
 carrying a placeholder digest in place of the image's own. The package's own
-tests check each copy against its repo when that is checked out beside this
+tests check the copy against its repo when that is checked out beside this
 one."""
 
 
 async def seed_primitives(fake: FakeForge) -> None:
-    """`unicon/compile@v3` and `unicon/exec@v1` at the fake, from
-    `PRIMITIVES`, as bootstrap mirrors them into a real forge.
+    """`unicon/exec@v2` at the fake, from `PRIMITIVES`, as bootstrap mirrors
+    it into a real forge.
     """
     for reference, declaration in PRIMITIVES.items():
         name, version = reference.removeprefix("unicon/").split("@")
@@ -143,15 +142,15 @@ async def seed_primitives(fake: FakeForge) -> None:
 
 
 async def seed_classic(fake: FakeForge) -> None:
-    """`unicon/classic@v3` public at the fake, and the two primitives it
-    uses, as bootstrap makes them at a real forge, so a task's first save
-    finds a workflow its organiser can read and every step's image.
+    """`unicon/classic@v4` public at the fake, and the primitive it uses,
+    as bootstrap makes them at a real forge, so a task's first save finds a
+    workflow its organiser can read and every step's image.
     """
     await seed_primitives(fake)
     workflow = await fake.workflows.create_workflow(
         PLATFORM, "unicon", "classic", CLASSIC, Visibility.PUBLIC
     )
-    await fake.workflows.create_workflow_version(PLATFORM, workflow, "v3")
+    await fake.workflows.create_workflow_version(PLATFORM, workflow, "v4")
 
 
 def logged(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]:

@@ -3,6 +3,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, PlainValidator
 
 from forge.domain.plan_basics import FLAT_STEP_ID
+from forge.domain.roles import PRIMITIVE_OWNER
 from forge.domain.run_task import RUN_ID
 from forge.domain.yaml_models import is_number
 
@@ -18,11 +19,16 @@ RELEASE_MOVED = (
 )
 """The words a save says when it moves only the released split, which
 grades nothing again while the task's results are not released."""
-COMPILE_USE = "unicon/compile@v3"
-EXEC_USE = "unicon/exec@v1"
-PROGRAM_USES = (COMPILE_USE, EXEC_USE)
-"""The primitives a value's `exec` program is compiled and run with, which
-a save reads when a value has one."""
+EXEC_USE = "unicon/exec@v2"
+PROGRAM_USES = (EXEC_USE,)
+"""The primitive a value's `exec` program is compiled and run with, and a
+source of the task's own is checked with at the save, by its `build` form,
+which a save reads when a value has one or the workflow uses it."""
+RETIRED = f"{PRIMITIVE_OWNER}/compile and {PRIMITIVE_OWNER}/exec@v1 are retired; use {EXEC_USE}."
+"""What a step naming a retired primitive is refused with."""
+BUILT = ("source", "language", "entry")
+"""The inputs a program is compiled from, which the `build` form of
+`EXEC_USE` takes as the step it checks was given them."""
 RUNS_FILE = "runs.json"
 """The name a value's program reads its group's runs under."""
 RUN_ENTRY_KB = 16
@@ -47,12 +53,17 @@ SHOWN_DURING = ("now", "on_release")
 """The times of `show` that count as during the contest: a release has no
 time, so it is refused as if shown `now`, though it makes no run early."""
 BOXED: dict[str, tuple[str, ...]] = {
-    "unicon/exec": ("program", "files", "loads"),
+    "unicon/exec": ("source", "files", "loads"),
 }
 """The primitives that run programs in isolate boxes, by name, with the
 ports whose files each copies into a box's tmpfs, which is charged to the
-container and not the box: `exec`'s own ports, and each program's `program`
-and `files` of its programs form (`loads` is only the one form's)."""
+container and not the box: `exec`'s own ports, and each program's `source`
+and `files` of its programs form (`loads` is only the one form's). A
+`source` is compiled in a box of its own, and what is copied into each run
+box is the program, at most `PROGRAM_MB`."""
+PROGRAM_MB = 32
+"""The most a compiled program may hold, exec's cap, which bounds the copy
+of it each run box takes."""
 PAGE_KB = 4
 PRIMITIVE_ROOM_MB = 112
 """What a boxed primitive's container keeps for the step wrapper, the
@@ -180,3 +191,8 @@ Inputs = dict[str, Value]
 Taint = Annotated[dict[str, Any], PlainValidator(_taint)]
 RunId = Annotated[str, Field(pattern=RUN_ID.pattern)]
 StepId = Annotated[str, Field(pattern=FLAT_STEP_ID)]
+
+
+def retired(owner: str, name: str, version: str) -> bool:
+    """Whether a primitive version is one `RETIRED` names."""
+    return owner == PRIMITIVE_OWNER and (name == "compile" or (name == "exec" and version == "v1"))

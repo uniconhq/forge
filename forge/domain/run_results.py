@@ -19,13 +19,14 @@ the steps done once early. A run a row holds that the live publication
 dropped is kept apart (`dropped`), for organisers.
 
 The facts (`facts_of`): `seconds_late` and `seconds`
-(`forge.domain.release`), and `compiled`, 0 when a step done once that is
-not tainted returned `compile_error`, which the plan's steps and each
-row's `once` outcomes say, else 1. As a run does, `compiled` **waits**
-while such a step has no outcome in either row and its row's own plan put
-it in a pipeline still to give it (`compiling_waiting`), so nothing reads
-it as 1 before its compile has run. Nothing here is stored: a value is
-worked out on every read.
+(`forge.domain.release`), and `compiled`, 0 when a step that compiles the
+entrant's code (`compilers`) returned `compile_error`, which each row's
+`once` outcomes say, a step done per run's read from the first item of its
+batch, else 1. As a run does, `compiled` **waits** while such a step has
+no outcome in either row and its row's own plan put it in a pipeline still
+to give it (`compiling_waiting`), so nothing reads it as 1 before its
+compile has run. Nothing here is stored: a value is worked out on every
+read.
 
 A check's runs are worked out the same way, from what its copies of the
 steps got at the save, with `seconds_late` and `seconds` 0, and read
@@ -53,8 +54,9 @@ from forge.domain.blocks.numbers import exact, written
 from forge.domain.checks import MOST_FAILING, VERDICT, failing_words
 from forge.domain.definitions import Scoring
 from forge.domain.release import seconds, seconds_late
-from forge.domain.run_plan import COMPILE_ERROR, RunPlan
+from forge.domain.run_plan import COMPILE_ERROR, RunPlan, retired
 from forge.domain.run_task import Run, holds
+from forge.domain.workflow_definition import parse_workflow_ref
 
 NOT_RUN = "not_run"
 """The verdict a run reads with when the grading never ran it."""
@@ -94,13 +96,20 @@ class Worked:
 
 
 def compilers(plan: RunPlan) -> frozenset[str]:
-    """The steps done once that are not tainted, whose `compile_error` makes
-    `compiled` 0 (stage 4 open 79): a workflow's, never a value's
-    program's nor a check's copy."""
+    """The steps whose `compile_error` makes `compiled` 0 (stage 4 open
+    79): those the plan says compile the entrant's code, a workflow's,
+    never a value's program's nor a check's copy. A compile error is the
+    same for every item of such a step. A plan saved before steps said so,
+    one with a retired primitive, reads it as it did then: the steps done
+    once that are not tainted."""
+    uses = (parse_workflow_ref(step.primitive) for step in plan.steps.values())
+    before = any(retired(use.owner, use.name, use.version) for use in uses)
     return frozenset(
         name
         for name, step in plan.steps.items()
-        if step.once and step.tainted is None and step.value is None and step.check is None
+        if (step.once and step.tainted is None if before else step.compiled)
+        and step.value is None
+        and step.check is None
     )
 
 

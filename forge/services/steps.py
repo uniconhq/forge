@@ -32,7 +32,9 @@ it is placed by a link into the forge's large-file store instead, and only
 for an upload the submission took (`uploads`). A run is left
 out when its part was not given, when an earlier step it reads stopped it,
 with an outcome not accepted or no such output, and when the store holds
-its item, unless the grading reuses nothing; an earlier step that has
+its item, unless the grading reuses nothing; a late run, too, when the
+step's batch in the early pipeline gave an outcome the step gives the same
+for every item, such as `compile_error`, which stands for its item; an earlier step that has
 given nothing at all is a fault of the grading, `Misconfigured`, never
 nothing to do. A step left with no run is answered that it has nothing to
 do (`step_job` gives none), which its wrapper ends on with success, so the
@@ -116,6 +118,7 @@ from forge.domain.program_manifest import parse_program
 from forge.domain.publication_record import Publication
 from forge.domain.run_plan import (
     BOXED,
+    PIPELINES,
     RUN_ENTRY_KB,
     PinnedWorkflow,
     PipelineKind,
@@ -918,7 +921,10 @@ class _Reader:
         return (step, None if self.plan.steps[step].once else run) in self._stopped
 
     async def output_of(self, step: str, run: str | None) -> StepOutput | None:
-        """`step`'s stored item for `run`, its own grading's first."""
+        """`step`'s stored item for `run`, its own grading's first; for a
+        step done per run whose batch in an earlier pipeline of the grading
+        gave one of its once outcomes, that batch's first item, which is
+        what this item would give."""
         item = (step, None if self.plan.steps[step].once else run)
         if item not in self._outputs:
             key = await self.key_of(*item)
@@ -926,8 +932,30 @@ class _Reader:
             mine = self.from_scratch and holds(self.plan, self.pipeline, *item)
             if found is None and key is not None and not mine:
                 found = await self._stored(key)
+            if found is None and item[1] is not None:
+                found = await self._given_once(step, item[1])
             self._outputs[item] = found
         return self._outputs[item]
+
+    async def _given_once(self, step: str, run: str) -> StepOutput | None:
+        """The first item of `step`'s batch in a pipeline before the one
+        that holds `run`, when it gave an outcome the step gives the same
+        for every item, such as `compile_error`, so the late pipeline does
+        not compile again what the early one could not."""
+        stopping = self.plan.steps[step].once_outcomes or ()
+        own = next((kind for kind in PIPELINES if holds(self.plan, kind, step, run)), None)
+        if not stopping or own is None:
+            return None
+        for kind in PIPELINES[: PIPELINES.index(own)]:
+            for held in self.plan.pipeline(kind):
+                if held.step != step:
+                    continue
+                for each in held.runs or ():
+                    found = await self.output_of(step, each)
+                    if found is not None:
+                        given = found.outputs.get("outcome")
+                        return found if given in stopping and given != "accepted" else None
+        return None
 
     async def _stored(self, key: str) -> StepOutput | None:
         """The store's item of `key` for this grading: the one its first
