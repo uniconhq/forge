@@ -77,7 +77,11 @@ class Repos:
         not fill, since only the platform makes repositories, so the files
         are written into it; one with commits is `Conflict`. The first commit
         is made only while there is none, so of two makers of one name at
-        once exactly one fills it and the other is `Conflict`.
+        once exactly one fills it and the other is `Conflict`. Two makers at
+        the same moment, as an entrant's first upload and the place made
+        ahead for them, can have the loser answered with a 500 rather than
+        the refusal; the repository is looked for again, and the failure
+        stands only when there is still none.
         """
         body = {
             "name": name,
@@ -95,6 +99,11 @@ class Repos:
         except Conflict:
             if not files or await self._existing(PLATFORM, owner, name) is not None:
                 raise
+        except Unavailable:
+            if not await self.exists(owner, name):
+                raise
+            if not files or await self._existing(PLATFORM, owner, name) is not None:
+                raise Conflict(f"{owner}/{name} is there already") from None
         if files:
             await self._write_first(as_, owner, name, files)
 
