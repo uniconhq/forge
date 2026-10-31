@@ -133,7 +133,7 @@ def test_an_anchor_or_an_alias_is_refused_at_its_line() -> None:
 
 def test_groups_named_no_and_on_are_groups_of_those_names() -> None:
     task = parse_task(
-        b"name: Sum\nworkflow: unicon/classic@v3\n"
+        b"name: Sum\nworkflow: unicon/classic@v4\n"
         b"scoring:\n  groups:\n    no: {input: [a]}\n    NO: {input: [b]}\n    on: {}\n"
         b"  values:\n    score: {block: count, over: {runs: all}}\n"
     )

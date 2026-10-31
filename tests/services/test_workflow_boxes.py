@@ -22,7 +22,7 @@ from forge.testing import PLACEHOLDER_DIGEST
 from tests.conftest import sibling
 from tests.services.conftest import Acme, signed_in
 
-CLASSIC = sibling("deploy", "workflows/classic/v3")
+CLASSIC = sibling("deploy", "workflows/classic/v4")
 
 BUILD = """\
 inputs:
@@ -30,13 +30,35 @@ inputs:
   language: {type: enum, options: [c, cpp, java, python]}
 steps:
   - id: compile
-    use: unicon/compile@v3
+    use: unicon/exec@v2
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
 outputs:
-  program: ${{ steps.compile.program }}
   log: ${{ steps.compile.log }}
+"""
+
+SOLVE = """\
+inputs:
+  code: {type: folder}
+  language: {type: enum, options: [c, cpp, java, python]}
+  input: {type: file}
+  time_limit: {type: number}
+  memory_limit: {type: number}
+steps:
+  - id: solution
+    use: unicon/exec@v2
+    with:
+      source: ${{ inputs.code }}
+      language: ${{ inputs.language }}
+      stdin: ${{ inputs.input }}
+      time_limit: ${{ inputs.time_limit }}
+      memory_limit: ${{ inputs.memory_limit }}
+outputs:
+  output: ${{ steps.solution.output }}
+  time_ms: ${{ steps.solution.time_ms }}
+  memory_kb: ${{ steps.solution.memory_kb }}
+  log: ${{ steps.solution.log }}
 """
 
 JUDGE = """\
@@ -44,15 +66,11 @@ inputs:
   output: {type: file}
   answer: {type: file}
 steps:
-  - id: diff
-    use: unicon/compile@v3
+  - id: compare
+    use: unicon/exec@v2
     with:
       source: ${{ workflow.diff/ }}
       language: python
-  - id: compare
-    use: unicon/exec@v1
-    with:
-      program: ${{ steps.diff.program }}
       manifest: ${{ workflow.diff/program.yaml }}
       time_limit: 3
       memory_limit: 256
@@ -72,28 +90,24 @@ inputs:
   time_limit: {type: number, title: Time limit, unit: seconds}
   memory_limit: {type: number, title: Memory limit, unit: MB}
 steps:
-  - id: build
-    use: bob/build@v1
+  - id: solve
+    use: bob/solve@v1
     with:
       code: ${{ inputs.code }}
       language: ${{ inputs.language }}
-  - id: solution
-    use: unicon/exec@v1
-    with:
-      program: ${{ steps.build.program }}
-      stdin: ${{ inputs.input }}
+      input: ${{ inputs.input }}
       time_limit: ${{ inputs.time_limit }}
       memory_limit: ${{ inputs.memory_limit }}
   - id: judge
     use: bob/judge@v1
     with:
-      output: ${{ steps.solution.output }}
+      output: ${{ steps.solve.output }}
       answer: ${{ inputs.answer }}
 outputs:
   score: ${{ steps.judge.score }}
-  time_ms: {from: "${{ steps.solution.time_ms }}", title: Run time, unit: ms}
-  memory_kb: {from: "${{ steps.solution.memory_kb }}", title: Memory used, unit: KB}
-  log: {from: "${{ steps.build.log }}", title: Compile log}
+  time_ms: {from: "${{ steps.solve.time_ms }}", title: Run time, unit: ms}
+  memory_kb: {from: "${{ steps.solve.memory_kb }}", title: Memory used, unit: KB}
+  log: {from: "${{ steps.solve.log }}", title: Compile log}
 """
 
 WRAP = """\
@@ -131,7 +145,7 @@ inputs:
   note: {type: text, optional: true}
 steps:
   - id: whole
-    use: unicon/compile@v3
+    use: unicon/exec@v2
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
@@ -145,7 +159,7 @@ inputs:
   note: {type: text}
 steps:
   - id: told
-    use: unicon/compile@v3
+    use: unicon/exec@v2
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
@@ -159,7 +173,7 @@ inputs:
   note: {type: text}
 steps:
   - id: compile
-    use: unicon/compile@v3
+    use: unicon/exec@v2
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
@@ -168,22 +182,24 @@ steps:
 
 PLAY = """\
 inputs:
-  program: {type: file}
-  judge: {type: file}
+  code: {type: folder}
+  judge: {type: folder}
   manifest: {type: file}
   time_limit: {type: number}
   judge_time_limit: {type: number}
 steps:
   - id: game
-    use: unicon/exec@v1
+    use: unicon/exec@v2
     with:
       programs:
         entrant:
-          program: ${{ inputs.program }}
+          source: ${{ inputs.code }}
+          language: python
           time_limit: ${{ inputs.time_limit }}
           memory_limit: 256
         judge:
-          program: ${{ inputs.judge }}
+          source: ${{ inputs.judge }}
+          language: python
           manifest: ${{ inputs.manifest }}
           time_limit: ${{ inputs.judge_time_limit }}
           memory_limit: 256
@@ -246,7 +262,7 @@ async def test_a_boxed_classic_matches_the_flat_one_but_for_paths_and_the_pin(
     setup: Setup, acme: Acme
 ) -> None:
     bob = await _own(setup, acme)
-    await _version(setup, acme, bob, "build", BUILD)
+    await _version(setup, acme, bob, "solve", SOLVE)
     judge_files = {
         path: content for path, content in _held(CLASSIC).items() if path != "workflow.yaml"
     }
@@ -257,17 +273,13 @@ async def test_a_boxed_classic_matches_the_flat_one_but_for_paths_and_the_pin(
     assert expanded.problems == []
     assert expanded.flat is not None
     flat = expanded.flat
-    assert [step.id for step in flat.workflow.steps] == [
-        "build/compile",
-        "solution",
-        "judge/diff",
-        "judge/compare",
-    ]
-    assert flat.pins == ("bob/build@v1", "bob/judge@v1")
-    diff = flat.workflow.steps[2].with_
-    assert diff["source"] == "${{ workflow@2.diff/ }}"
-    assert flat.workflow.steps[3].with_["manifest"] == "${{ workflow@2.diff/program.yaml }}"
-    assert flat.workflow.steps[1].with_["program"] == "${{ steps.build/compile.program }}"
+    assert [step.id for step in flat.workflow.steps] == ["solve/solution", "judge/compare"]
+    assert flat.pins == ("bob/solve@v1", "bob/judge@v1")
+    compare = flat.workflow.steps[1].with_
+    assert compare["source"] == "${{ workflow@2.diff/ }}"
+    assert compare["manifest"] == "${{ workflow@2.diff/program.yaml }}"
+    assert compare["files"]["output"] == "${{ steps.solve/solution.output }}"
+    assert flat.workflow.steps[0].with_["source"] == "${{ inputs.code }}"
     assert flat.workflow.outputs["score"] == "${{ steps.judge/compare.score }}"
 
     classic = _held(CLASSIC)
@@ -291,7 +303,7 @@ async def test_a_boxed_classic_matches_the_flat_one_but_for_paths_and_the_pin(
     )
     assert classic_check.problems == []
     assert boxed.problems == []
-    renamed = {"compile": "build/compile", "diff": "judge/diff", "compare": "judge/compare"}
+    renamed = {"solution": "solve/solution", "compare": "judge/compare"}
     for name, report in classic_check.reports.items():
         got = boxed.reports[name]
         assert got.step == renamed.get(report.step, report.step)
@@ -547,7 +559,7 @@ async def test_a_written_workflow_pin_is_refused(setup: Setup, acme: Acme) -> No
     text = """\
 steps:
   - id: compile
-    use: unicon/compile@v3
+    use: unicon/exec@v2
     with:
       source: ${{ workflow@1.src/ }}
       language: python
@@ -570,17 +582,11 @@ inputs:
   time_limit: {type: number}
   judge_time_limit: {type: number}
 steps:
-  - id: compile
-    use: unicon/compile@v3
-    with: {source: "${{ inputs.code }}", language: python}
-  - id: judged
-    use: unicon/compile@v3
-    with: {source: "${{ inputs.judge }}", language: python}
   - id: play
     use: bob/play@v1
     with:
-      program: ${{ steps.compile.program }}
-      judge: ${{ steps.judged.program }}
+      code: ${{ inputs.code }}
+      judge: ${{ inputs.judge }}
       manifest: ${{ inputs.manifest }}
       time_limit: ${{ inputs.time_limit }}
       judge_time_limit: ${{ inputs.judge_time_limit }}
@@ -588,11 +594,11 @@ steps:
     await _version(setup, acme, bob, "match", outer)
     expanded = await _expanded(setup, bob, outer)
     assert expanded.flat is not None and expanded.problems == []
-    game = expanded.flat.workflow.steps[2]
+    game = expanded.flat.workflow.steps[0]
     assert game.id == "play/game"
     assert set(game.with_["programs"]) == {"entrant", "judge"}
     assert game.with_["links"] == ["entrant -> judge", "judge -> entrant"]
-    assert game.with_["programs"]["entrant"]["program"] == "${{ steps.compile.program }}"
+    assert game.with_["programs"]["entrant"]["source"] == "${{ inputs.code }}"
 
 
 async def test_the_cap_counts_every_use_of_the_expansion(setup: Setup, acme: Acme) -> None:
@@ -624,20 +630,16 @@ inputs:
   language: {type: enum, options: [python], title: Language}
   note: {type: text, optional: true, title: Note}
 steps:
-  - id: compile
-    use: unicon/compile@v3
+  - id: run
+    use: unicon/exec@v2
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
       entry: ${{ inputs.note }}
-  - id: run
-    use: unicon/exec@v1
-    with:
-      program: ${{ steps.compile.program }}
       time_limit: 1
       memory_limit: 256
 outputs:
-  program: ${{ steps.compile.program }}
+  log: ${{ steps.run.log }}
   time_ms: ${{ steps.run.time_ms }}
 """
 
@@ -660,7 +662,7 @@ async def test_a_run_workflow_version_is_a_box_with_its_inputs_and_outputs(
             BoxInput("note", "text", None, True, "Note", None),
         ),
         (
-            BoxOutput("program", "file", None, None, None, None, None),
+            BoxOutput("log", "text", None, None, None, None, None),
             BoxOutput("time_ms", "number", None, None, "lower", 0, None),
         ),
         "v2",

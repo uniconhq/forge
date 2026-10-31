@@ -1,11 +1,12 @@
-# unicon/classic@v3
+# unicon/classic@v4
 
-One run of an entrant's program on one input. `workflow.yaml` compiles the
-entrant's code with `unicon/compile@v3`, runs the program with
-`unicon/exec@v1` on the run's `input` under the task's limits, and runs
-`diff/diff.py`, compiled once at the save, with exec, given
+One run of an entrant's program on one input. `workflow.yaml` compiles and
+runs the entrant's code with `unicon/exec@v2` on the run's `input` under
+the task's limits, and compiles and runs `diff/diff.py` with exec, given
 `diff/program.yaml` as its manifest and the program's output and the run's
 `answer` as named files. A task repeats it over its tests with `repeat`.
+Each step compiles its source once, before any run, from the machine's
+cache when it can; the save checks that `diff/` compiles.
 
 The entrant gives a folder of code and its language, one of `c`, `cpp`,
 `java` and `python`; the task may narrow the languages. The task gives
@@ -22,9 +23,10 @@ The diff script runs with a time limit of 3 s and 256 MB of memory, its
 own and not the task's, enough to read two files of output. The planner
 counts each step's worst case against a pipeline's 25 minutes, and
 exec's is twice its time limit and 3 s more, so each run's compare
-counts 9 s beside the solution's.
+counts 9 s beside the solution's, and each step 40 s more, once, for its
+compile.
 
 Each run reports `score`, 1 when accepted and 0 when not; `time_ms`, "Run
 time" in ms, the program's CPU time; and `memory_kb`, "Memory used" in KB,
-its peak memory. The compiler's output is `log`, "Compile log", so code
-that does not compile says why.
+its peak memory. The compiler's output is `log`, "Compile log", the same
+for every run, so code that does not compile says why.

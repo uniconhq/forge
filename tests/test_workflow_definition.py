@@ -1,4 +1,4 @@
-"""The workflow file: the package's copy of `unicon/classic@v3` is deploy's,
+"""The workflow file: the package's copy of `unicon/classic@v4` is deploy's,
 a new workflow starts empty, every workflow deploy seeds is a run workflow,
 a reference reads as owner/name@version and a value's references are found
 in it, the keys and types the format no longer has are refused at their
@@ -60,7 +60,7 @@ def held(folder: Path) -> dict[str, bytes]:
 
 
 def test_the_packages_classic_is_the_one_deploy_seeds() -> None:
-    seeded = sibling("deploy", RUN_WORKFLOWS["unicon/classic@v3"])
+    seeded = sibling("deploy", RUN_WORKFLOWS["unicon/classic@v4"])
 
     assert classic_files() == held(seeded) == CLASSIC
 

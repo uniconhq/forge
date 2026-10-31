@@ -64,10 +64,9 @@ GRADING = uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31")
 
 def _planned(task: str, paths: frozenset[str], **kw: Any) -> RunPlan:
     primitives = {
-        "unicon/exec@v1": mirrored("exec"),
-        "unicon/compile@v3": mirrored("compile"),
+        "unicon/exec@v2": mirrored("exec"),
     }
-    _, files = deployed("unicon/classic@v3")
+    _, files = deployed("unicon/classic@v4")
     found = planned(primitives, task, files["workflow.yaml"].decode(), files, paths, **kw)
     assert found.plan is not None, found.problems
     return found.plan
@@ -164,7 +163,10 @@ def test_a_batch_may_write_what_each_of_its_items_may() -> None:
 
 def _batch(*runs: str, **outputs: Any) -> bytes:
     entries = [
-        {"run": run, "outputs": {"outcome": "accepted", "memory_kb": 1, "time_ms": 1} | outputs}
+        {
+            "run": run,
+            "outputs": {"outcome": "accepted", "memory_kb": 1, "time_ms": 1, "log": ""} | outputs,
+        }
         for run in runs
     ]
     return json.dumps({"schema_version": 6, "batch": entries}).encode()
@@ -183,6 +185,7 @@ def test_a_batch_answers_its_runs_in_order(islands: RunPlan) -> None:
                         "output": {"file": f"out/{run}"},
                         "memory_kb": 1,
                         "time_ms": 1,
+                        "log": "",
                     },
                 }
                 for run in ("r1", "r2")
@@ -258,16 +261,16 @@ def test_an_items_key_is_its_image_and_inputs_and_nothing_else() -> None:
 def test_a_stored_step_is_left_out_and_what_waited_for_it_rewired(islands: RunPlan) -> None:
     early = islands.pipeline("early")
 
-    left = without(early, ["solution"])
-    assert [(held.name, held.depends_on) for held in left] == [
-        ("compile", ()),
-        ("compare", ("compile",)),
-    ]
-    assert [(held.name, held.depends_on) for held in without(early, ["compile"])] == [
+    assert [(held.name, held.depends_on) for held in early] == [
         ("solution", ()),
         ("compare", ("solution",)),
     ]
-    assert without(early, ["compile", "solution", "compare"]) == ()
+    left = without(early, ["solution"])
+    assert [(held.name, held.depends_on) for held in left] == [("compare", ())]
+    assert [(held.name, held.depends_on) for held in without(early, ["compare"])] == [
+        ("solution", ())
+    ]
+    assert without(early, ["solution", "compare"]) == ()
 
 
 # Result version 6
@@ -280,16 +283,15 @@ def _found(outcome: str = "accepted", **outputs: Any) -> Found:
 def _early(
     skip: tuple[str, ...] = (), **changes: Found | Faulted | None
 ) -> dict[Item, Found | Faulted]:
-    found: dict[Item, Found | Faulted | None] = {
-        ("diff", None): _found(program={"file": "out/program"}),
-        ("compile", None): _found(log="built", program={"file": "out/program"}),
-    }
+    found: dict[Item, Found | Faulted | None] = {("build-compare", None): _found(log="")}
     for run in ("r1", "r2"):
         if run in skip:
             continue
-        found[("solution", run)] = _found(memory_kb=1500, time_ms=12, output={"file": "out/o"})
+        found[("solution", run)] = _found(
+            memory_kb=1500, time_ms=12, output={"file": "out/o"}, log="built"
+        )
         found[("compare", run)] = _found(
-            memory_kb=1, time_ms=1, score=1, output={"file": "out/o"}, message="Right."
+            memory_kb=1, time_ms=1, score=1, output={"file": "out/o"}, message="Right.", log=""
         )
     for name, value in changes.items():
         step, _, run = name.partition("_")
@@ -309,9 +311,12 @@ def test_a_result_gives_each_run_its_verdict_and_reports(islands: RunPlan) -> No
     ]
     assert result["runs"][0]["reports"] == {"memory_kb": 1500, "score": 1, "time_ms": 12}
     assert result["runs"][1]["reports"] == {"memory_kb": 1500, "time_ms": 12}
-    log = found[("compile", None)]
+    log = found[("solution", "r1")]
     assert isinstance(log, Found)
     assert result["once"]["texts"] == {"log": {"output": log.id, "name": "log"}}
+    # Each batch step that compiles, the checker too, gives its outcome once.
+    assert result["once"]["outcomes"] == {"solution": "accepted", "compare": "accepted"}
+    assert all("log" not in run["texts"] for run in result["runs"])
     assert result["error"] is None and result["run_log"] is None
 
 
@@ -332,13 +337,17 @@ def test_a_step_that_gave_nothing_is_a_system_error_but_a_stop_before_it_is_not(
     islands: RunPlan,
 ) -> None:
     missing = result_of(islands, "early", frozenset(), _early(compare_r1=None))
-    stopped = _early(compile=_found("compile_error", log="error"), solution_r1=None)
+    stopped = _early(
+        solution_r1=_found("compile_error", log="error"),
+        solution_r2=_found("compile_error", log="error"),
+        compare_r1=None,
+        compare_r2=None,
+    )
 
     assert missing["error"] == "The step compare gave nothing for the run r1."
     result = result_of(islands, "early", frozenset(), stopped)
     assert [run["verdict"] for run in result["runs"]] == ["compile_error", "compile_error"]
-    # Which the compiled fact reads.
-    assert result["once"]["outcomes"] == {"compile": "compile_error"}
+    assert result["error"] is None
 
 
 def test_staff_texts_are_kept_once_per_item_this_pipeline_did(islands: RunPlan) -> None:
@@ -357,6 +366,46 @@ def test_staff_texts_are_kept_once_per_item_this_pipeline_did(islands: RunPlan) 
     assert late["once"] == {"reports": {}, "texts": {}, "outcomes": {}}
 
 
+def test_a_compile_error_from_a_batch_step_is_every_runs_verdict_and_told_once(
+    islands: RunPlan,
+) -> None:
+    """The entrant's code is compiled once by the batch step `solution`: on
+    `compile_error` every item ends so and nothing after it runs. The result
+    gives each run that verdict, the compile error once under `once`, which
+    the compiled fact reads, and the log once, from the batch's first item,
+    never in a run's own texts."""
+    first = _found("compile_error", log="error: expected ';'")
+    found = _early(
+        solution_r1=first,
+        solution_r2=_found("compile_error", log="error: expected ';'"),
+        compare_r1=None,
+        compare_r2=None,
+    )
+
+    result = result_of(islands, "early", frozenset(), found)
+
+    assert violation(result, "result", "result_v6") is None
+    assert [(run["id"], run["verdict"], run["passed"]) for run in result["runs"]] == [
+        ("r1", "compile_error", 0),
+        ("r2", "compile_error", 0),
+    ]
+    assert result["once"]["outcomes"] == {"solution": "compile_error"}
+    assert result["once"]["texts"] == {"log": {"output": first.id, "name": "log"}}
+    assert all(run["texts"] == {} for run in result["runs"])
+    assert result["error"] is None
+
+
+def test_an_outcome_a_batch_step_gives_per_item_is_not_told_once(islands: RunPlan) -> None:
+    """A runtime error of one item is that run's alone: the step's once
+    outcome stays accepted."""
+    found = _early(solution_r1=_found("runtime_error", log="built"), compare_r1=None)
+
+    result = result_of(islands, "early", frozenset(), found)
+
+    assert [run["verdict"] for run in result["runs"]] == ["runtime_error", "accepted"]
+    assert result["once"]["outcomes"] == {"solution": "accepted", "compare": "accepted"}
+
+
 def test_a_64_kb_text_on_a_thousand_runs_stays_under_the_cap(islands: RunPlan) -> None:
     runs = tuple(
         RunEntry(id=f"r{n}", key={"input": f"tests/{n}.in"}, early=True) for n in range(1000)
@@ -371,13 +420,10 @@ def test_a_64_kb_text_on_a_thousand_runs_stays_under_the_cap(islands: RunPlan) -
     }
     plan = islands.model_copy(update={"runs": runs, "steps": steps})
     text = "x" * 64 * 1024
-    found: dict[Item, Found | Faulted] = {
-        ("diff", None): _found(),
-        ("compile", None): _found(log=text, program={"file": "out/program"}),
-    }
+    found: dict[Item, Found | Faulted] = {("build-compare", None): _found(log="")}
     for run in runs:
-        found[("solution", run.id)] = _found(memory_kb=1, time_ms=1, label=text)
-        found[("compare", run.id)] = _found(score=1, memory_kb=1, time_ms=1, message=text)
+        found[("solution", run.id)] = _found(memory_kb=1, time_ms=1, label=text, log=text)
+        found[("compare", run.id)] = _found(score=1, memory_kb=1, time_ms=1, message=text, log="")
 
     result = result_of(plan, "early", frozenset(), found)
 
@@ -390,15 +436,15 @@ def test_a_64_kb_text_on_a_thousand_runs_stays_under_the_cap(islands: RunPlan) -
 
 def test_a_steps_token_names_its_grading_attempt_and_step() -> None:
     key = b"\x01" * 32
-    token = step_token(key, GRADING, 1, "compile")
+    token = step_token(key, GRADING, 1, "compare")
 
-    assert token == step_token(key, GRADING, 1, "compile")
+    assert token == step_token(key, GRADING, 1, "compare")
     assert "=" not in token and len(token) == 43
     others = {
-        step_token(key, uuid.uuid4(), 1, "compile"),
-        step_token(key, GRADING, 2, "compile"),
+        step_token(key, uuid.uuid4(), 1, "compare"),
+        step_token(key, GRADING, 2, "compare"),
         step_token(key, GRADING, 1, "solution"),
-        step_token(b"\x02" * 32, GRADING, 1, "compile"),
+        step_token(b"\x02" * 32, GRADING, 1, "compare"),
     }
     assert token not in others and len(others) == 4
 
@@ -459,10 +505,15 @@ def _late(changes: Mapping[Item, Found | Faulted | None] = {}) -> dict[Item, Fou
     the program reporting a mean of 0.5, but what `changes` gives."""
     found = _early()
     for run in ("r3", "r4"):
-        found[("solution", run)] = _found(memory_kb=1500, time_ms=20, output={"file": "out/o"})
-        found[("compare", run)] = _found(memory_kb=1, time_ms=1, score=0, output={"file": "out/o"})
+        found[("solution", run)] = _found(
+            memory_kb=1500, time_ms=20, output={"file": "out/o"}, log="built"
+        )
+        found[("compare", run)] = _found(
+            memory_kb=1, time_ms=1, score=0, output={"file": "out/o"}, log=""
+        )
+    found[("build-mean", None)] = _found(log="")
     found[("exec-mean", None)] = _found(
-        mean=Decimal("0.5"), memory_kb=1, time_ms=3, output={"file": "out/o"}
+        mean=Decimal("0.5"), memory_kb=1, time_ms=3, output={"file": "out/o"}, log=""
     )
     for item, value in changes.items():
         if value is None:
@@ -479,8 +530,7 @@ def test_a_values_program_is_no_step_of_a_runs_and_its_number_goes_in_values(
 
     assert "exec-mean" in order and "build-mean" in order
     assert chain_of(mean, order, "r3") == [
-        ("diff", None),
-        ("compile", None),
+        ("build-compare", None),
         ("solution", "r3"),
         ("compare", "r3"),
     ]
@@ -514,7 +564,7 @@ def test_a_program_that_faulted_or_gave_no_number_is_the_gradings_error_not_a_ve
 def test_the_runs_file_holds_each_runs_id_key_verdict_passed_and_numbers_alone(
     mean: RunPlan,
 ) -> None:
-    found = _late({("compare", "r2"): _found("wrong_answer", message="No.")})
+    found = _late({("compare", "r2"): _found("wrong_answer", message="No.", log="")})
     present = {item: got for item, got in found.items() if isinstance(got, Found)}
 
     written = runs_file(mean, "late", ["r1", "r2", "r3", "r4"], frozenset({"r4"}), present)
@@ -569,7 +619,7 @@ def test_a_number_too_long_for_the_runs_file_is_missing_to_the_program(
     mean: RunPlan, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     huge = Decimal("1" * 200)
-    found = _late({("compare", "r1"): _found(memory_kb=1, time_ms=1, score=huge)})
+    found = _late({("compare", "r1"): _found(memory_kb=1, time_ms=1, score=huge, log="")})
     present = {item: got for item, got in found.items() if isinstance(got, Found)}
 
     written = runs_file(mean, "late", ["r1", "r2"], frozenset(), present)

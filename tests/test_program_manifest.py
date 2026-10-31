@@ -40,15 +40,20 @@ reports:
 """
 
 
-def primitive(name: str) -> ModuleType:
-    """`primitive-<name>`'s program, from the checkout beside this one."""
-    path = sibling(f"primitive-{name}", "src", f"{name}.py")
-    spec = importlib.util.spec_from_file_location(f"unicon_primitive_{name}", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+def primitive(name: str, module: str) -> ModuleType:
+    """The module `module` of `primitive-<name>`'s program, the package
+    `src/<name>/`, from the checkout beside this one.
+    """
+    top = sibling(f"primitive-{name}", "src", name)
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, top / "__init__.py", submodule_search_locations=[str(top)]
+        )
+        assert spec is not None and spec.loader is not None
+        package = importlib.util.module_from_spec(spec)
+        sys.modules[name] = package
+        spec.loader.exec_module(package)
+    return importlib.import_module(f"{name}.{module}")
 
 
 @pytest.fixture(scope="module", params=["one", "programs"])
@@ -57,7 +62,7 @@ def checker(request: pytest.FixtureRequest) -> tuple[ModuleType, frozenset[str]]
     for each.
     """
     own = {"one": EXEC_OWN_NAMES, "programs": PROGRAMS_OWN_NAMES}[request.param]
-    return primitive("exec"), own
+    return primitive("exec", "inputs"), own
 
 
 def refused(text: str, own_names: Collection[str] = EXEC_OWN_NAMES) -> InvalidDefinition:

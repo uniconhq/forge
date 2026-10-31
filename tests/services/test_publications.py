@@ -81,7 +81,7 @@ inputs:
 
 steps:
   - id: compile
-    use: unicon/compile@v1
+    use: unicon/build@v1
     with:
       source: ${{ inputs.submission }}
       language: ${{ inputs.submission.language }}
@@ -105,7 +105,7 @@ outputs:
   compile_log: {type: text}
   outcome: {type: outcome}
 """
-"""`unicon/compile@v1`'s declaration as the format before this one wrote it."""
+"""The first `unicon/compile`'s declaration as the format before this one wrote it."""
 
 
 async def _edits(acme: Acme, task: TaskId, contents: Mapping[str, bytes | None]) -> dict[str, Edit]:
@@ -201,11 +201,11 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
     assert violation(document, "plan") is None
     plan = RunPlan.from_bytes(repo.files[PLAN_PATH])
     assert document["schema_version"] == 6
-    assert plan.workflow.ref == "unicon/classic@v3"
+    assert plan.workflow.ref == "unicon/classic@v4"
     assert [run.id for run in plan.runs] == ["r1"]
     assert sorted(plan.task_files) == ["tests/1.ans", "tests/1.in"]
     reads = acme.fake.calls_to("read_declaration")
-    assert {call.arguments["primitive"] for call in reads} == {"compile", "exec"}
+    assert {call.arguments["primitive"] for call in reads} == {"exec"}
     assert all(call.identity == acme.ada.identity for call in reads)
     (published,) = acme.fake.calls_to("publish")
     assert published.identity == PLATFORM
@@ -570,8 +570,8 @@ async def test_a_manager_removes_tests_and_public_files(
 @pytest.mark.parametrize(
     ("change", "named"),
     [
-        ((b"workflow: unicon/classic@v3", b"workflow: unicon/classic@v9"), "unicon/classic@v9"),
-        ((b"workflow: unicon/classic@v3", b"workflow: bob/mine@v1"), "bob/mine@v1"),
+        ((b"workflow: unicon/classic@v4", b"workflow: unicon/classic@v9"), "unicon/classic@v9"),
+        ((b"workflow: unicon/classic@v4", b"workflow: bob/mine@v1"), "bob/mine@v1"),
     ],
     ids=["no-such-version", "not-shared"],
 )
@@ -609,7 +609,7 @@ async def test_a_workflow_in_an_old_format_is_refused_at_its_line_for_its_owner_
         setup,
         acme,
         sum_task,
-        _with(acme, b"workflow: unicon/classic@v3", b"workflow: unicon/old@v1"),
+        _with(acme, b"workflow: unicon/classic@v4", b"workflow: unicon/old@v1"),
     )
 
     assert isinstance(draft, Draft)
@@ -626,14 +626,14 @@ async def test_a_workflow_that_does_not_check_as_a_version_is_refused_at_its_lin
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     await _workflow(
-        acme, "broken", WORKFLOW.replace(b"steps.compile.program", b"steps.compile.nothing")
+        acme, "broken", WORKFLOW.replace(b"steps.solution.output", b"steps.solution.nothing")
     )
 
     draft = await _save(
         setup,
         acme,
         sum_task,
-        _with(acme, b"workflow: unicon/classic@v3", b"workflow: unicon/broken@v1"),
+        _with(acme, b"workflow: unicon/classic@v4", b"workflow: unicon/broken@v1"),
     )
 
     assert isinstance(draft, Draft)
@@ -649,24 +649,34 @@ async def test_a_workflow_that_does_not_check_as_a_version_is_refused_at_its_lin
     ("use", "said"),
     [
         (
-            b"unicon/compile@v7",
-            "In the workflow unicon/custom@v1, the step compile cannot run: Unicon cannot open "
-            "unicon/compile@v7: there is no such primitive or workflow at that version, or it is "
+            b"unicon/exec@v7",
+            "In the workflow unicon/custom@v1, the step solution cannot run: Unicon cannot open "
+            "unicon/exec@v7: there is no such primitive or workflow at that version, or it is "
             "not shared with you.",
         ),
+        (
+            b"unicon/compile@v3",
+            "In the workflow unicon/custom@v1, the step solution cannot run: unicon/compile and "
+            "unicon/exec@v1 are retired; use unicon/exec@v2.",
+        ),
+        (
+            b"unicon/exec@v1",
+            "In the workflow unicon/custom@v1, the step solution cannot run: unicon/compile and "
+            "unicon/exec@v1 are retired; use unicon/exec@v2.",
+        ),
     ],
-    ids=["no-such-version"],
+    ids=["no-such-version", "retired-compile", "retired-exec-v1"],
 )
 async def test_a_step_whose_use_is_no_primitive_the_organiser_reads_is_an_error_naming_it(
     setup: Setup, acme: Acme, sum_task: TaskId, use: bytes, said: str
 ) -> None:
-    await _workflow(acme, "custom", WORKFLOW.replace(b"use: unicon/compile@v3", b"use: " + use, 1))
+    await _workflow(acme, "custom", WORKFLOW.replace(b"use: unicon/exec@v2", b"use: " + use, 1))
 
     draft = await _save(
         setup,
         acme,
         sum_task,
-        _with(acme, b"workflow: unicon/classic@v3", b"workflow: unicon/custom@v1"),
+        _with(acme, b"workflow: unicon/classic@v4", b"workflow: unicon/custom@v1"),
     )
 
     assert isinstance(draft, Draft)
@@ -679,23 +689,23 @@ async def test_a_step_whose_use_is_no_primitive_the_organiser_reads_is_an_error_
 async def test_a_primitive_in_an_old_format_is_refused_naming_it(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    acme.fake.primitives.add("odd", {"v1": OLD_COMPILE, "v2": PRIMITIVES["unicon/compile@v3"]})
+    acme.fake.primitives.add("odd", {"v1": OLD_COMPILE, "v2": PRIMITIVES["unicon/exec@v2"]})
     await _workflow(
-        acme, "custom", WORKFLOW.replace(b"use: unicon/compile@v3", b"use: unicon/odd@v1", 1)
+        acme, "custom", WORKFLOW.replace(b"use: unicon/exec@v2", b"use: unicon/odd@v1", 1)
     )
 
     draft = await _save(
         setup,
         acme,
         sum_task,
-        _with(acme, b"workflow: unicon/classic@v3", b"workflow: unicon/custom@v1"),
+        _with(acme, b"workflow: unicon/classic@v4", b"workflow: unicon/custom@v1"),
     )
 
     assert isinstance(draft, Draft)
     (error,) = draft.errors
     assert error["path"] == "workflow"
     assert error["message"].startswith(
-        "In the workflow unicon/custom@v1, the step compile cannot run: The primitive "
+        "In the workflow unicon/custom@v1, the step solution cannot run: The primitive "
         "unicon/odd@v1 is written in an older form that Unicon no longer reads. Use a later "
         "version of it. There are "
     )
@@ -1108,11 +1118,11 @@ async def test_a_save_that_picks_up_a_moved_image_names_it_beside_the_regrade_co
 ) -> None:
     await _graded(setup, acme, entered)
     repo = acme.fake.state.repos[("unicon", "exec.primitive")]
-    declaration = acme.fake.state.version_files(repo, "v1")["primitive.yaml"]
+    declaration = acme.fake.state.version_files(repo, "v2")["primitive.yaml"]
     moved = declaration.replace(PLACEHOLDER_DIGEST.encode(), b"sha256:" + b"7" * 64)
     assert moved != declaration
     acme.fake.state.commit(repo, {"primitive.yaml": moved}, "Release 2.0.1", None)
-    repo.versions["v1"] = repo.head
+    repo.versions["v2"] = repo.head
     statement = {"statement.md": b"Add two numbers, now said more plainly.\n"}
 
     with pytest.raises(ConfirmationRequired) as asked:
@@ -1120,13 +1130,13 @@ async def test_a_save_that_picks_up_a_moved_image_names_it_beside_the_regrade_co
 
     assert asked.value.extra == {
         "asked": ANY,
-        "changes": ["A release updated exec@v1 in place."],
+        "changes": ["A release updated exec@v2 in place."],
         "regrades": 1,
         "results_change": True,
         "summary": "Results change.",
         "runs_again": [
             "Once the save's check passes, 1 submission is graded again, running "
-            "solution and compare again: a release updated exec@v1 in place."
+            "solution and compare again: a release updated exec@v2 in place."
         ],
         "scores": ["No score changes."],
         "reading": ["The statement changes."],
@@ -1216,7 +1226,7 @@ async def test_the_task_form_reads_the_inputs_its_workflow_declares(
 ) -> None:
     form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
-    assert (form.workflow, form.problem, form.text_values) == ("unicon/classic@v3", None, ())
+    assert (form.workflow, form.problem, form.text_values) == ("unicon/classic@v4", None, ())
     assert [(field.id, field.type) for field in form.inputs] == [
         ("code", "folder"),
         ("language", "enum"),
@@ -1247,7 +1257,7 @@ async def test_a_task_on_a_version_made_with_a_unit_on_a_folder_saves_and_its_fo
     await _workflow(acme, "united", stray)
 
     saved = await _save(
-        setup, acme, sum_task, _with(acme, b"unicon/classic@v3", b"unicon/united@v1")
+        setup, acme, sum_task, _with(acme, b"unicon/classic@v4", b"unicon/united@v1")
     )
     form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
@@ -1260,11 +1270,11 @@ async def test_the_task_form_names_a_newer_version_and_the_task_keeps_its_own(
 ) -> None:
     assert (await task_save.workflow_form(setup, acme.ada, sum_task)).newer is None
     classic = acme.fake.state.repos[("unicon", "classic.workflow")]
-    acme.fake.state.create_version(PLATFORM, classic, "v4")
+    acme.fake.state.create_version(PLATFORM, classic, "v5")
 
     form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
-    assert (form.workflow, form.newer) == ("unicon/classic@v3", "v4")
+    assert (form.workflow, form.newer) == ("unicon/classic@v4", "v5")
     assert len(form.inputs) == 6
 
 
@@ -1305,7 +1315,7 @@ async def test_a_workflow_in_an_old_format_gives_the_form_its_reason(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     await _workflow(acme, "old", b"inputs: {}\nstages: []\n")
-    await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v3", b"unicon/old@v1"))
+    await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v4", b"unicon/old@v1"))
 
     form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
@@ -1330,9 +1340,9 @@ async def test_a_workflow_gives_the_form_its_inputs_with_their_titles_and_units(
         acme,
         "run",
         b"inputs:\n  code: {type: folder, title: Code}\n  seed: {type: number, unit: s}\n"
-        b"steps:\n  - {id: a, use: unicon/compile@v3}\n",
+        b"steps:\n  - {id: a, use: unicon/exec@v2}\n",
     )
-    await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v3", b"unicon/run@v1"))
+    await _save(setup, acme, sum_task, _with(acme, b"unicon/classic@v4", b"unicon/run@v1"))
 
     form = await task_save.workflow_form(setup, acme.ada, sum_task)
 
