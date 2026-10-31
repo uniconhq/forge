@@ -45,8 +45,7 @@ jobs:
       # with exec's own. They fail in CI when a checkout is missing, so the
       # repos sit beside each other the way they do on a laptop. Deploy is
       # main, which carries the workflows before this repo is tagged. The
-      # runner and exec are the branch those copies were taken from, until
-      # their releases are cut.
+      # runner and exec are the releases those copies were taken from.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: forge
@@ -54,7 +53,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: uniconhq/runner
-          ref: feat/exec-compiles
+          ref: v0.11.0
           path: runner
           fetch-depth: 0
           persist-credentials: false
@@ -67,7 +66,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: uniconhq/primitive-exec
-          ref: feat/exec-compiles
+          ref: v2.0.0
           path: primitive-exec
           fetch-depth: 0
           persist-credentials: false

@@ -2275,8 +2275,8 @@ workflow `deploy` seeds, `PRIMITIVES` with each `primitive-<name>`'s
 read with git at its tag whatever the checkout's branch, and `program_manifest.py`'s name rules
 and JSON with `exec`'s own. Without a repo or a tag they are
 skipped, unless `CI` is set, when they fail. CI checks the runner out at
-`feat/exec-compiles`, deploy at `main` and exec at `feat/exec-compiles`,
-until the runner and exec releases that carry exec 2 are cut.
+`v0.11.0`, deploy at `main` and exec at `v2.0.0`, the releases that carry
+exec 2.
 
 ## Releasing
 
