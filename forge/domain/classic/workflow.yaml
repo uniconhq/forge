@@ -1,4 +1,4 @@
-# unicon/classic@v4, workflow.yaml: one run of an entrant's program on one
+# unicon/classic@v5, workflow.yaml: one run of an entrant's program on one
 # input, its output compared word by word with the answer by the diff
 # script beside this file. The format is SIMPLER-CORE.md 7.
 inputs:
@@ -11,7 +11,7 @@ inputs:
 
 steps:
   - id: solution
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
@@ -19,7 +19,7 @@ steps:
       time_limit: ${{ inputs.time_limit }}
       memory_limit: ${{ inputs.memory_limit }}
   - id: compare
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ workflow.diff/ }}
       language: python

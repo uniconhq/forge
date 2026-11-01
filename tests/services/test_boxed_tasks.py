@@ -43,12 +43,12 @@ from tests.services.test_steps import (
 from tests.services.test_workflow_boxes import JUDGE, OUTER, SOLVE
 from tests.test_run_task import ISLANDS
 
-TASK = ISLANDS.replace("unicon/classic@v4", "bob/outer@v1")
+TASK = ISLANDS.replace("unicon/classic@v5", "bob/outer@v1")
 BANNER = OUTER.replace(
     "steps:\n  - id: solve\n",
     "steps:\n"
     "  - id: banner\n"
-    "    use: unicon/exec@v2\n"
+    "    use: unicon/exec@v3\n"
     "    with:\n"
     "      source: ${{ inputs.code }}\n"
     "      language: ${{ inputs.language }}\n"
@@ -93,7 +93,7 @@ steps:
       code: ${{ inputs.code }}
       grader: ${{ inputs.grader }}
   - id: run
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ steps.judge.program }}
       language: python
@@ -128,7 +128,7 @@ inputs:
   time_limit: {type: number}
 steps:
   - id: solution
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: python
@@ -169,7 +169,7 @@ scoring:
 
 
 def _diff() -> dict[str, bytes]:
-    top = sibling("deploy", "workflows/classic/v4")
+    top = sibling("deploy", "workflows/classic/v5")
     return {
         "diff/diff.py": (top / "diff/diff.py").read_bytes(),
         "diff/program.yaml": (top / "diff/program.yaml").read_bytes(),

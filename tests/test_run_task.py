@@ -59,7 +59,7 @@ def mirrored(name: str) -> PrimitiveDeclaration:
 @pytest.fixture(scope="module")
 def primitives() -> dict[str, PrimitiveDeclaration]:
     return {
-        "unicon/exec@v2": mirrored("exec"),
+        "unicon/exec@v3": mirrored("exec"),
     }
 
 
@@ -84,7 +84,7 @@ inputs:
   seed: number
 steps:
   - id: episode
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ workflow.runner/ }}
       language: python
@@ -112,7 +112,7 @@ inputs:
   best: number
 steps:
   - id: check
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ workflow.checker/ }}
       language: python
@@ -145,7 +145,7 @@ inputs:
   judge_time_limit: number
 steps:
   - id: game
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       programs:
         entrant:
@@ -168,7 +168,7 @@ reads its reports is checked at the task's save."""
 
 ISLANDS = """\
 name: Islands
-workflow: unicon/classic@v4
+workflow: unicon/classic@v5
 inputs:
   code: {entrant: {label: Your solution, max_size: 1MB}}
   language: {entrant: {options: [cpp, python], default: cpp}}
@@ -302,7 +302,7 @@ def check(
 def islands(
     primitives: Mapping[str, PrimitiveDeclaration], task: str = ISLANDS, **kw: Any
 ) -> RunTaskCheck:
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     return check(primitives, task, workflow, files, kw.pop("paths", ISLANDS_PATHS), **kw)
 
 
@@ -981,7 +981,7 @@ def test_an_entrant_judge_with_a_manifest_is_refused_where_it_cannot_be_marked(
 
     assert at(found, "inputs.judge") == [
         "judge is the entrant's, and reaches the program judge of the step game, which is given "
-        "a manifest. unicon/exec@v2 cannot mark what such a program reports as the "
+        "a manifest. unicon/exec@v3 cannot mark what such a program reports as the "
         "entrant's own, so the task must give judge itself."
     ]
 
@@ -1687,7 +1687,7 @@ def mean(
 def test_an_exec_value_names_its_program_and_runs_late_unless_shown_during_the_contest(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     checked = check_run_workflow(
         parse_run_workflow(workflow), primitives, WorkflowFiles(frozenset(files), files)
     )

@@ -10,6 +10,7 @@ there, and reads an earlier step's outputs and the task's large
 files from there; the platform only reads what arrived.
 """
 
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Protocol
@@ -22,6 +23,13 @@ class Stored:
 
     size: int
     sha256: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class Part:
+    number: int
+    etag: str
+    size: int
 
 
 class ObjectStore(Protocol):
@@ -61,3 +69,23 @@ class ObjectStore(Protocol):
         and one bytes are read.
         """
         ...
+
+    async def create_multipart(self, key: str) -> str:
+        """Start an organiser upload in the temporary uploads bucket."""
+        ...
+
+    def part_url(self, key: str, upload: str, number: int, *, expires_in: timedelta) -> str:
+        """Sign one UploadPart on the browser's public origin."""
+        ...
+
+    async def list_parts(self, key: str, upload: str) -> list[Part]: ...
+
+    async def complete_multipart(self, key: str, upload: str, parts: Sequence[Part]) -> None: ...
+
+    async def abort_multipart(self, key: str, upload: str) -> None: ...
+
+    def stream_upload(self, key: str) -> AsyncGenerator[bytes]:
+        """Stream the completed temporary object with bounded memory."""
+        ...
+
+    async def delete_upload(self, key: str) -> None: ...

@@ -26,6 +26,7 @@ from forge.runtime.context import Context
 from forge.services import gradings, names
 from forge.services.task_save import sources
 from forge.services.task_save.effect import _programs_again, _save_effect
+from forge.services.task_save.environments import matching
 from forge.services.task_save.guards import _leaderboard_reads, _present, _shown_before_runs
 from forge.services.task_save.records import PIN_MOVED, Checked
 from forge.services.task_save.sources import (
@@ -360,6 +361,7 @@ async def _check_runs(
         inner_workflows=tuple(inners),
         machine=run_machine(ctx.settings.slot_sizes),
         programs={use: primitives[use] for use in PROGRAM_USES if use in primitives},
+        environment=await matching(ctx, as_, task, head, written, definition.environment),
     )
     if planned.plan is None:
         return Checked(definition, tuple(planned.problems), pins)

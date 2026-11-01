@@ -19,12 +19,15 @@ RELEASE_MOVED = (
 )
 """The words a save says when it moves only the released split, which
 grades nothing again while the task's results are not released."""
-EXEC_USE = "unicon/exec@v2"
+EXEC_USE = "unicon/exec@v3"
 PROGRAM_USES = (EXEC_USE,)
 """The primitive a value's `exec` program is compiled and run with, and a
 source of the task's own is checked with at the save, by its `build` form,
 which a save reads when a value has one or the workflow uses it."""
-RETIRED = f"{PRIMITIVE_OWNER}/compile and {PRIMITIVE_OWNER}/exec@v1 are retired; use {EXEC_USE}."
+RETIRED = (
+    f"{PRIMITIVE_OWNER}/compile and {PRIMITIVE_OWNER}/exec@v1 and "
+    f"{PRIMITIVE_OWNER}/exec@v2 are retired; use {EXEC_USE}."
+)
 """What a step naming a retired primitive is refused with."""
 BUILT = ("source", "language", "entry")
 """The inputs a program is compiled from, which the `build` form of
@@ -142,6 +145,11 @@ def _run_value(value: object) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("a value is a mapping")
     keys = set(value)
+    if keys == {"environment"}:
+        from forge.domain.environment import EnvironmentLock
+
+        EnvironmentLock.model_validate(value["environment"])
+        return value
     if keys == {"value"} and (isinstance(value["value"], str | bool) or is_number(value["value"])):
         return value
     if _file_value(value) or _entrant_value(value) or _output_value(value):
@@ -195,4 +203,6 @@ StepId = Annotated[str, Field(pattern=FLAT_STEP_ID)]
 
 def retired(owner: str, name: str, version: str) -> bool:
     """Whether a primitive version is one `RETIRED` names."""
-    return owner == PRIMITIVE_OWNER and (name == "compile" or (name == "exec" and version == "v1"))
+    return owner == PRIMITIVE_OWNER and (
+        name == "compile" or (name == "exec" and version in ("v1", "v2"))
+    )

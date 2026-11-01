@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     HttpUrl,
     NonNegativeInt,
     PositiveInt,
@@ -85,6 +86,7 @@ S3_VARIABLES = {
     "access_key": "UNICON_S3_ACCESS_KEY",
     "secret_key": "UNICON_S3_SECRET_KEY",
     "results_bucket": "UNICON_S3_RESULTS_BUCKET",
+    "uploads_bucket": "UNICON_S3_UPLOADS_BUCKET",
     "lfs_access_key": "UNICON_S3_LFS_ACCESS_KEY",
     "lfs_secret_key": "UNICON_S3_LFS_SECRET_KEY",
     "lfs_bucket": "UNICON_S3_LFS_BUCKET",
@@ -169,6 +171,7 @@ class S3Settings(BaseModel):
     access_key: str
     secret_key: SecretStr
     results_bucket: str = "unicon-results"
+    uploads_bucket: str = "unicon-uploads"
     lfs_access_key: str
     lfs_secret_key: SecretStr
     lfs_bucket: str = "forgejo-lfs"
@@ -310,6 +313,10 @@ class Settings(BaseSettings):
     public_url: HttpUrl
     internal_url: HttpUrl
     machine_url: HttpUrl
+    environment_max: int = Field(default=2 * 1024**3, ge=1)
+    organiser_file_max: int = Field(default=20 * 1024**3, ge=1)
+    upload_part_size: int = Field(default=16 * 1024**2, ge=5 * 1024**2)
+    open_part_uploads: int = Field(default=4, ge=1)
     database_url: PostgresDsn
     database_pool_size: PositiveInt = 20
     database_pool_overflow: NonNegativeInt = 10

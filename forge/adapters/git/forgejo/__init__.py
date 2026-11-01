@@ -66,7 +66,7 @@ class ForgejoForge:
         self.content = ForgejoContent(repos, teams, users)
         self.workspaces = ForgejoWorkspaces(repos, users, teams)
         self.threads = ForgejoThreads(http)
-        self.uploads = ForgejoUploads(http)
+        self.uploads = ForgejoUploads(http, config.admin_token)
         self.workflows = ForgejoWorkflows(repos, users)
         self.primitives = ForgejoPrimitives(repos)
         # What a CI needs from Forgejo, handed to the CI it is paired with.

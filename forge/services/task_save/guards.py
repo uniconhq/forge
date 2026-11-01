@@ -191,7 +191,7 @@ async def _refuse_admin_only(
 def _refuse_reserved(written: Mapping[str, Edit]) -> None:
     for path in written:
         check_path(path)
-    reserved = sorted(path for path in written if is_reserved(path))
+    reserved = sorted(path for path in written if is_reserved(path) or path == "environment.lock")
     if reserved:
         raise ReservedPath(
             "Unicon writes the files in plans/ itself, so a save cannot change them. Save the "

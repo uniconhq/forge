@@ -21,12 +21,13 @@ so the tests that care about who may write what drive the real thing.
 
 import base64
 import hashlib
+from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
 
 from forge.domain.errors import Forbidden, Rejected
-from forge.domain.identity import AsUser, Identity
+from forge.domain.identity import AsUser, Identity, Platform
 from forge.domain.uploads import Door, read_pointer
-from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace, WorkflowPlace
+from forge.port.uploads import PackagePlace, SubmissionPlace, TaskPlace, UploadPlace, WorkflowPlace
 
 
 def repo_of(place: UploadPlace) -> str:
@@ -36,6 +37,8 @@ def repo_of(place: UploadPlace) -> str:
 
 def _repo_of(place: UploadPlace) -> str:
     match place:
+        case PackagePlace():
+            return "unicon/packages"
         case WorkflowPlace(workflow=workflow):
             owner, name = workflow.split("/")
             return f"{owner}/{name}.workflow"
@@ -67,9 +70,28 @@ class FakeUploads:
     def door(self, place: UploadPlace, *, as_: Identity, digest: str, size: int) -> Door:
         repo = _repo_of(place)
         path = f"/{repo}.git/info/lfs/objects/{digest}/{size}"
-        authorization = _basic(as_)
+        authorization = (
+            "Basic platform"
+            if isinstance(place, PackagePlace) and isinstance(as_, Platform)
+            else _basic(as_)
+        )
         self._addresses[path] = _Address(repo, digest, size, authorization)
         return Door(path=path, authorization=authorization)
+
+    async def store(
+        self,
+        place: UploadPlace,
+        *,
+        as_: Identity,
+        digest: str,
+        size: int,
+        content: AsyncIterable[bytes],
+    ) -> None:
+        door = self.door(place, as_=as_, digest=digest, size=size)
+        body = bytearray()
+        async for chunk in content:
+            body.extend(chunk)
+        self.send(door.path, door.authorization, bytes(body))
 
     async def holds(self, place: UploadPlace, *, as_: Identity, digest: str, size: int) -> bool:
         """Whether the place holds that object at that length, measured

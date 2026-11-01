@@ -62,6 +62,8 @@ TABLES = {
     "entries",
     "hold_ends",
     "workflow_yanks",
+    "part_uploads",
+    "environment_preparations",
 }
 
 

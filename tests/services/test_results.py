@@ -46,6 +46,7 @@ from forge.services import (
 )
 from forge.services.results import ResultsState
 from forge.services.task_save import Draft, Published
+from forge.services.task_save.records import Preparing
 from forge.testing import FakeClock
 from tests.services.conftest import SPRING, Acme
 from tests.services.test_pipelines import (
@@ -291,7 +292,9 @@ async def test_an_extension_warns_both_while_released_and_after_a_take_back(
     assert extended.time_extension == timedelta(minutes=30)
 
 
-async def _try_save(setup: Setup, acme: Acme, task: TaskId, text: str) -> Published | Draft:
+async def _try_save(
+    setup: Setup, acme: Acme, task: TaskId, text: str
+) -> Published | Draft | Preparing:
     head = await acme.fake.content.list_files(PLATFORM, task)
     edits = {"task.yaml": Edit(text.encode(), head.tokens.get("task.yaml"))}
     try:
@@ -302,7 +305,7 @@ async def _try_save(setup: Setup, acme: Acme, task: TaskId, text: str) -> Publis
         )
 
 
-def _errors(result: Published | Draft) -> list[tuple[str, str]]:
+def _errors(result: Published | Draft | Preparing) -> list[tuple[str, str]]:
     assert isinstance(result, Draft), result
     return [(error["path"], error["message"]) for error in result.errors]
 

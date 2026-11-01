@@ -12,6 +12,7 @@ from forge.adapters.fakes import FakeForge
 from forge.adapters.git.forgejo import ForgejoConfig, ForgejoForge
 from forge.adapters.mail.smtp import MailConfig, NoMail, SmtpMail
 from forge.adapters.objects.s3 import S3Objects, StorageConfig
+from forge.adapters.packages.pypi import PypiResolver
 from forge.domain.errors import Misconfigured
 from forge.port import Ci, Forge, GitHost, MailPort, ObjectStore
 from forge.settings import Settings
@@ -35,6 +36,7 @@ class JoinedForge:
         self.grading = ci.grading
         self.computes = ci.computes
         self.objects = objects
+        self.packages = PypiResolver()
         self.mail = mail
         self._git = git
         self._ci = ci
@@ -121,6 +123,8 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
                 access_key=s3.access_key,
                 secret_key=s3.secret_key.get_secret_value(),
                 results_bucket=s3.results_bucket,
+                uploads_bucket=s3.uploads_bucket,
+                public_url=str(settings.public_url),
                 machine_url=str(settings.machine_url),
                 lfs_access_key=s3.lfs_access_key,
                 lfs_secret_key=s3.lfs_secret_key.get_secret_value(),

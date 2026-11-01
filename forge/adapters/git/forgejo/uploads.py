@@ -14,8 +14,9 @@ holds for a person reaches them in the password half of a Basic header
 instead. Forgejo's basic verifier tries the password as an OAuth2 access
 token before anything else, and the user half is ignored once it does, so
 the header carries no name (measured 2026-10-03,
-`findings/upload-door-test.md`). An API token is refused on these routes
-either way.
+`findings/upload-door-test.md`). The platform uses its service account API token
+in the same Basic form
+for the shared package store (measured 2026-11-01).
 
 **`holds` asks the batch endpoint, not `verify`.** This is the one that
 matters. Once a caller can reach an object at all, `verify` answers 200 for
@@ -36,27 +37,54 @@ at it.
 """
 
 import base64
+from collections.abc import AsyncIterable
 from typing import Any
 
 from forge.adapters.git.forgejo.http import Http, json_of, segment
 from forge.adapters.ids import MalformedId, parse_task, parse_workflow, parse_workspace
 from forge.domain.errors import Forbidden, Unavailable
-from forge.domain.identity import AsUser, Identity
+from forge.domain.identity import AsUser, Identity, Platform
 from forge.domain.uploads import Door
-from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace, WorkflowPlace
+from forge.port.uploads import PackagePlace, SubmissionPlace, TaskPlace, UploadPlace, WorkflowPlace
 
 LFS_MEDIA_TYPE = "application/vnd.git-lfs+json"
 
 
 class ForgejoUploads:
-    def __init__(self, http: Http) -> None:
+    def __init__(self, http: Http, platform_token: str = "") -> None:
         self._http = http
+        self._platform_token = platform_token
 
     def door(self, place: UploadPlace, *, as_: Identity, digest: str, size: int) -> Door:
         owner, name = _repo_of(place)
         return Door(
             path=f"/{segment(owner)}/{segment(name)}.git/info/lfs/objects/{digest}/{size}",
-            authorization=_basic(as_),
+            authorization=self._authorization(as_),
+        )
+
+    def _authorization(self, as_: Identity) -> str:
+        if isinstance(as_, Platform) and self._platform_token:
+            return "Basic " + base64.b64encode(f":{self._platform_token}".encode()).decode()
+        return _basic(as_)
+
+    async def store(
+        self,
+        place: UploadPlace,
+        *,
+        as_: Identity,
+        digest: str,
+        size: int,
+        content: AsyncIterable[bytes],
+    ) -> None:
+        door = self.door(place, as_=as_, digest=digest, size=size)
+        await self._http.put_stream(
+            door.path,
+            content,
+            headers={
+                "Authorization": door.authorization,
+                "Content-Length": str(size),
+                "Content-Type": "application/octet-stream",
+            },
         )
 
     async def holds(self, place: UploadPlace, *, as_: Identity, digest: str, size: int) -> bool:
@@ -71,7 +99,7 @@ class ForgejoUploads:
                     "objects": [{"oid": digest, "size": size}],
                 },
                 headers={
-                    "Authorization": _basic(as_),
+                    "Authorization": self._authorization(as_),
                     "Accept": LFS_MEDIA_TYPE,
                     "Content-Type": LFS_MEDIA_TYPE,
                 },
@@ -100,6 +128,8 @@ def _holds(answered: dict[str, Any], digest: str) -> bool:
 def _repo_of(place: UploadPlace) -> tuple[str, str]:
     """The owner and name of the repository an upload's bytes belong to."""
     match place:
+        case PackagePlace():
+            return ("unicon", "packages")
         case WorkflowPlace(workflow=workflow):
             ref = parse_workflow(workflow)
             return ref.owner, ref.repo

@@ -35,7 +35,7 @@ import pytest
 from jsonschema import Draft202012Validator, FormatChecker
 from sqlalchemy import func, select, update
 
-from forge.db.tables import Grading, GradingStep, StepOutput
+from forge.db.tables import Grading, GradingStep, PublicationObjects, StepOutput
 from forge.domain import exact_json
 from forge.domain.content import Edit
 from forge.domain.contracts import violation
@@ -53,7 +53,7 @@ from forge.domain.errors import (
 )
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import PublicationId, TaskId, WorkflowId, WorkspaceId
+from forge.domain.ids import ContestId, PublicationId, TaskId, WorkflowId, WorkspaceId
 from forge.domain.names import EntrantOwner
 from forge.domain.run_plan import PipelineKind
 from forge.domain.step_data import BOX_BLOCK, LINK_LIFE, Fault
@@ -1085,7 +1085,7 @@ inputs:
   grid: file
 steps:
   - id: game
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       programs:
         first:
@@ -1372,3 +1372,59 @@ async def test_a_second_submission_of_identical_code_runs_its_steps_again(
     second = await _grading(setup, acme, islands)
     assert (await _row(setup, first)).submission_id != (await _row(setup, second)).submission_id
     assert [name for name, _ in await _to_run(setup, second, "early")] == ["solution", "compare"]
+
+
+@pytest.mark.parametrize("platform", ["linux-64", "linux-aarch64"])
+async def test_a_job_lists_only_its_platforms_environment_pieces(
+    setup: Setup, acme: Acme, spring: ContestId, platform: str
+) -> None:
+    from forge.domain.environment import EnvironmentLock, LanguageLock, Wheel
+
+    lock = EnvironmentLock(
+        platforms={
+            name: {
+                "python": LanguageLock(
+                    asked={"packages": ["numpy"]},
+                    picked="python 3.14",
+                    fingerprint=digest,
+                    pypi=[
+                        Wheel(
+                            name="numpy",
+                            version="2.3.0",
+                            file_name="numpy.whl",
+                            sha256=digest,
+                            size=10,
+                        )
+                    ],
+                )
+            }
+            for name, digest in [("linux-64", "a" * 64), ("linux-aarch64", "b" * 64)]
+        }
+    )
+
+    def locked(task: TaskId) -> None:
+        acme.fake.state.commit(
+            _repo(acme, task), {"environment.lock": lock.to_bytes()}, "Prepare packages", 7
+        )
+
+    task = await _islands(
+        setup,
+        acme,
+        text=TASKS["islands"][0] + "\nenvironment:\n  python:\n    packages: [numpy]\n",
+        before=locked,
+    )
+    row = await _grading(setup, acme, task)
+    access = await _mint(setup, row, "early", "solution")
+    body = await steps.step_job(setup, row, _named(access), _bearer(access), platform=platform)
+    assert body is not None
+    job = exact_json.loads(body)
+    assert list(JOB_CHECK.iter_errors(job)) == []
+    pieces = [file for file in job["files"] if file["path"].startswith("cache/pieces/")]
+    expected = "a" * 64 if platform == "linux-64" else "b" * 64
+    assert [(file["sha256"], file["cached"]) for file in pieces] == [(expected, True)]
+    async with setup.unit_of_work() as ctx:
+        held = await ctx.db.get(PublicationObjects, task.publication)
+        assert held is not None and set(held.objects) >= {"a" * 64, "b" * 64}
+    for invalid in (None, "win-64"):
+        with pytest.raises(InvalidCallback, match="locked platform"):
+            await steps.step_job(setup, row, _named(access), _bearer(access), platform=invalid)

@@ -50,6 +50,7 @@ from forge.services import (
     uploads,
 )
 from forge.services.task_save import Draft, Published
+from forge.services.task_save.records import Preparing
 from forge.testing import FakeClock, register_entrant
 from tests.services.conftest import (
     RUNNING,
@@ -88,8 +89,8 @@ TOUR_DATA = {"parts/1.in": b"5 cities\n", "parts/2.in": b"9 cities\n"}
 
 TASKS: dict[str, tuple[str, Mapping[str, bytes], Mapping[str, bytes]]] = {
     "islands": (
-        ISLANDS.replace("unicon/classic@v4", "unicon/islands@v1"),
-        deployed("unicon/classic@v4")[1],
+        ISLANDS.replace("unicon/classic@v5", "unicon/islands@v1"),
+        deployed("unicon/classic@v5")[1],
         ISLANDS_DATA,
     ),
     "cartpole": (
@@ -103,7 +104,7 @@ TASKS: dict[str, tuple[str, Mapping[str, bytes], Mapping[str, bytes]]] = {
 
 async def _save(
     setup: Setup, acme: Acme, task: TaskId, contents: Mapping[str, bytes | None], **options: Any
-) -> Published | Draft:
+) -> Published | Draft | Preparing:
     head = await acme.fake.content.list_files(PLATFORM, task)
     return await task_save.save(
         setup,
@@ -156,7 +157,7 @@ def _plan(acme: Acme) -> RunPlan:
     return RunPlan.from_bytes(acme.fake.state.repos[("acme", "spring.sum.task")].files[PLAN_PATH])
 
 
-def _errors(result: Published | Draft) -> list[tuple[str, str]]:
+def _errors(result: Published | Draft | Preparing) -> list[tuple[str, str]]:
     assert isinstance(result, Draft), result
     return [(error["path"], error["message"]) for error in result.errors]
 

@@ -22,6 +22,7 @@ from forge.domain.checks import CHECKS_ROOM, RUNS_KEPT, check_room, keep_runs
 from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, parse_task
+from forge.domain.environment import PLATFORMS, EnvironmentLock, LanguageLock
 from forge.domain.grading import PLATFORM_MACHINE, Machine, Slot, run_machine
 from forge.domain.plan_basics import PLAN_PATH, RESULT_MAX, Snapshot, StepLimits
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
@@ -120,7 +121,7 @@ compile error not declared the same for every item."""
 @pytest.fixture(scope="module")
 def primitives() -> dict[str, PrimitiveDeclaration]:
     return {
-        "unicon/exec@v2": mirrored("exec"),
+        "unicon/exec@v3": mirrored("exec"),
         "acme/link@v1": LINK,
         "acme/judge@v1": JUDGE,
         "acme/linkc@v1": LINKC,
@@ -139,6 +140,7 @@ def planned(
     manifests: Mapping[str, bytes] | None = None,
     machine: Machine = PLATFORM_MACHINE,
     programs: Mapping[str, PrimitiveDeclaration] | None = None,
+    environment: EnvironmentLock | None = None,
 ) -> RunPlanCheck:
     """The plan of `task` over `workflow` and its `files`, each task file
     in `paths` 3 bytes long but those `sizes` gives, and hashed as if it held
@@ -183,6 +185,7 @@ def planned(
         workflow_files=workflow_files,
         machine=machine,
         programs=programs or {use: primitives[use] for use in PROGRAM_USES},
+        environment=environment,
     )
 
 
@@ -207,7 +210,7 @@ def refused(found: RunPlanCheck) -> dict[str, list[str]]:
 def islands(
     primitives: Mapping[str, PrimitiveDeclaration], task: str = ISLANDS, **kw: Any
 ) -> RunPlanCheck:
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     return planned(primitives, task, workflow, files, ISLANDS_PATHS, **kw)
 
 
@@ -362,7 +365,7 @@ def test_islands_reads_as_written_step_by_step(primitives: dict[str, PrimitiveDe
 def test_a_classic_task_builds_its_checker_at_the_save_and_grades_with_two_steps(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    """unicon/classic@v4's diff script is the task's own, so the save builds
+    """unicon/classic@v5's diff script is the task's own, so the save builds
     it, and a source of it that does not compile refuses the publication;
     each grading pipeline holds the entrant's solution, compiled with its
     runs, and compare."""
@@ -376,7 +379,7 @@ def test_a_classic_task_builds_its_checker_at_the_save_and_grades_with_two_steps
 def test_a_workflow_step_named_as_a_build_the_planner_adds_is_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     workflow = workflow.replace("id: solution", "id: build-compare").replace(
         "steps.solution.", "steps.build-compare."
     )
@@ -413,7 +416,7 @@ def test_a_step_done_at_the_save_is_not_built_again(
 ) -> None:
     """compare reads only the task's own files here, so it runs at the
     save, where a source of it that does not compile refuses the save."""
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     workflow = workflow.replace(
         "        output: ${{ steps.solution.output }}\n", "        output: ${{ inputs.answer }}\n"
     )
@@ -456,7 +459,7 @@ def test_a_step_takes_the_time_it_compiles_in_once_whatever_runs_it_holds(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     plan = ok(islands(primitives))
-    once = primitives["unicon/exec@v2"].forms["one"].limits
+    once = primitives["unicon/exec@v3"].forms["one"].limits
     assert once is not None and once.once_time_ms == 40000
 
     # Two runs of 3 s each, 2 * (3 * 2000 + 3000) ms, and the compile once;
@@ -820,7 +823,7 @@ inputs:
   seed: number
 steps:
   - id: generate
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ workflow.gen/ }}
       language: python
@@ -828,7 +831,7 @@ steps:
       time_limit: 1
       memory_limit: 64
   - id: solution
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: python
@@ -891,10 +894,10 @@ inputs:
   input: file
 steps:
   - id: selftest
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with: {source: "${{ inputs.code }}", language: python, time_limit: 1, memory_limit: 64}
   - id: warmup
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: python
@@ -902,7 +905,7 @@ steps:
       time_limit: 1
       memory_limit: 64
   - id: solution
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: python
@@ -1271,7 +1274,7 @@ def test_compiled_from_a_step_done_once_saying_its_compile_error_is_once_is_earl
 def test_compiled_from_a_compile_beside_a_hidden_file_is_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    """Unlike exec@v2, whose compile box sees only the source, a primitive
+    """Unlike exec@v3, whose compile box sees only the source, a primitive
     may compile the entrant's code beside the hidden grader, so its compile
     error could tell of it: `compiled` reads it neither during the contest
     nor after."""
@@ -1421,14 +1424,14 @@ inputs:
   input: file
 steps:
   - id: warm
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: python
       time_limit: ${{ inputs.warm_limit }}
       memory_limit: 64
   - id: solution
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: python
@@ -1519,7 +1522,7 @@ steps:
     use: acme/build@v1
     with: {source: "${{ inputs.code }}", language: python}
   - id: first
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: python
@@ -1527,7 +1530,7 @@ steps:
       time_limit: 1
       memory_limit: ${{ inputs.memory }}
   - id: second
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: python
@@ -1535,7 +1538,7 @@ steps:
       time_limit: 1
       memory_limit: 3000
   - id: third
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: python
@@ -1747,7 +1750,7 @@ def test_a_save_says_what_its_plan_changed(primitives: dict[str, PrimitiveDeclar
         update={"workflow": before.workflow.model_copy(update={"commit": "d" * 40})}
     )
     assert run_plan_changes(_snapshot(before), _snapshot(moved)) == (
-        "The workflow unicon/classic@v4 moved to another commit.",
+        "The workflow unicon/classic@v5 moved to another commit.",
     )
     assert run_plan_changes(Snapshot(plans={}, data={}), _snapshot(before)) == (
         "The way the task grades changed.",
@@ -1850,7 +1853,7 @@ PROGRAM_YAML = "programs/mean/program.yaml"
 
 
 def mean(primitives: Mapping[str, PrimitiveDeclaration], task: str = MEAN) -> RunPlanCheck:
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     return planned(
         primitives, task, workflow, files, MEAN_PATHS, manifests={PROGRAM_YAML: MEAN_MANIFEST}
     )
@@ -1870,7 +1873,7 @@ def test_a_values_program_compiles_at_the_save_and_runs_late_after_its_groups_ru
     built, ran = plan.steps["build-mean"], plan.steps["exec-mean"]
     assert (built.class_, built.primitive, built.folders, built.boxes) == (
         "save_once",
-        "unicon/exec@v2",
+        "unicon/exec@v3",
         ("source",),
         1,
     )
@@ -1882,7 +1885,7 @@ def test_a_values_program_compiles_at_the_save_and_runs_late_after_its_groups_ru
     }
     assert (ran.class_, ran.primitive, ran.boxes, ran.folders) == (
         "grading_once",
-        "unicon/exec@v2",
+        "unicon/exec@v3",
         1,
         ("source",),
     )
@@ -1934,7 +1937,7 @@ def test_a_values_program_under_on_release_runs_early_only_once_released(
 def test_a_workflow_step_named_as_a_values_program_step_is_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     workflow = workflow.replace("id: compare", "id: build-mean").replace(
         "steps.compare.", "steps.build-mean."
     )
@@ -1979,7 +1982,7 @@ CHECKED_PATHS = ISLANDS_PATHS | {
 def checked(
     primitives: Mapping[str, PrimitiveDeclaration], task: str = CHECKED, **kw: Any
 ) -> RunPlanCheck:
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     return planned(primitives, task, workflow, files, CHECKED_PATHS, **kw)
 
 
@@ -2084,7 +2087,7 @@ def _long_keyed(stem: str) -> tuple[str, frozenset[str]]:
 def test_checks_that_could_keep_more_than_their_room_of_the_result_are_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     task, paths = _long_keyed("a" * 1000)
     within = planned(primitives, task, workflow, files, paths)
     task, paths = _long_keyed("/".join(["a" * 200] * 20))
@@ -2200,7 +2203,7 @@ def test_a_check_whose_copy_takes_a_step_s_name_is_refused(
     assert {name for name, step in plan.steps.items() if step.check is not None} == {
         "c1-" + "e" * 38
     }
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     renamed = workflow.replace("id: compare", "id: c1-solution").replace(
         "steps.compare.", "steps.c1-solution."
     )
@@ -2250,9 +2253,9 @@ def test_lifting_execs_one_form_plans_the_same_bytes(
     # The steps the planner adds are built with exec's forms, which lifting
     # one of them to the top leaves out, so they are planned with exec as
     # it is.
-    plain = {**primitives, "unicon/exec@v2": unwrapped("exec")}
+    plain = {**primitives, "unicon/exec@v3": unwrapped("exec")}
     programs = {use: primitives[use] for use in PROGRAM_USES}
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     for task, paths, manifests in (
         (ISLANDS, ISLANDS_PATHS, None),
         (MEAN, MEAN_PATHS, {PROGRAM_YAML: MEAN_MANIFEST}),
@@ -2262,3 +2265,34 @@ def test_lifting_execs_one_form_plans_the_same_bytes(
             plain, task, workflow, files, paths, manifests=manifests, programs=programs
         )
         assert ok(first).to_bytes() == ok(second).to_bytes()
+
+
+def test_each_exec_step_gets_only_its_languages_environment(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    lock = EnvironmentLock(
+        platforms={
+            platform: {
+                "python": LanguageLock(
+                    asked={"packages": ["numpy"]}, picked="python 3.14", fingerprint="a" * 64
+                )
+            }
+            for platform in PLATFORMS
+        }
+    )
+    cpp = ISLANDS.replace("options: [cpp, python]", "options: [cpp]")
+    before = ok(islands(primitives, cpp))
+    after = ok(islands(primitives, cpp, environment=lock))
+    assert after.steps["solution"].inputs == before.steps["solution"].inputs
+    assert after.steps["solution"].items == before.steps["solution"].items
+    compare = after.steps["compare"]
+    inputs = (
+        compare.inputs
+        if compare.inputs is not None
+        else next(iter((compare.items or {}).values())).inputs
+    )
+    assert set(inputs["environment"]["environment"]["platforms"]) == set(PLATFORMS)
+    assert all(
+        set(languages) == {"python"}
+        for languages in inputs["environment"]["environment"]["platforms"].values()
+    )

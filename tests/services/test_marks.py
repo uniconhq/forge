@@ -48,6 +48,7 @@ from forge.services import (
 )
 from forge.services.access import Organiser
 from forge.services.task_save import Draft, Published
+from forge.services.task_save.records import Preparing
 from forge.testing import FakeClock
 from tests.services.conftest import (
     RUNNING,
@@ -110,7 +111,7 @@ async def _task_yaml(acme: Acme, task: TaskId) -> bytes:
 
 async def _save(
     setup: Setup, acme: Acme, task: TaskId, files_: Mapping[str, bytes]
-) -> Published | Draft:
+) -> Published | Draft | Preparing:
     head = await acme.fake.content.list_files(PLATFORM, task)
     return await task_save.save(
         setup,

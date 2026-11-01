@@ -273,7 +273,12 @@ def access(ctx: Context, row: Grading, step: str, woodpecker: str) -> StepAccess
 
 @action
 async def step_job(
-    ctx: Context, grading: uuid.UUID, step: str, authorization: str | None
+    ctx: Context,
+    grading: uuid.UUID,
+    step: str,
+    authorization: str | None,
+    *,
+    platform: str | None = None,
 ) -> bytes | None:
     """The step's job, runner's `job.schema.json`, as JSON, or none when
     nothing is left for the step to do: every run of it left out, which
@@ -287,7 +292,7 @@ async def step_job(
     plan, publication = await plan_of(ctx, row)
     await _begin(ctx, row, plan, _kind(held))
     reader = await _Reader.load(ctx, row, held, plan)
-    built = await _Job(ctx, reader, held, publication).build()
+    built = await _Job(ctx, reader, held, publication, platform=platform).build()
     if built is None:
         log.info("steps.nothing_left", grading=str(row.id), step=held.step)
         return None
@@ -1030,6 +1035,9 @@ class _Reader:
             if any(found is MISSING for found in programs.values()):
                 return MISSING
             return {PROGRAMS: programs}
+        if "environment" in value:
+            content = exact_json.dumps(value["environment"], sort_keys=True).encode()
+            return {"file": hashlib.sha256(content).hexdigest()}
         if set(value) == {"value"} or "links" in value or "secret" in value:
             return value
         if set(value) == {"runs"}:
@@ -1209,9 +1217,16 @@ class _Job:
     """One step's job, built from the plan's items for its runs."""
 
     def __init__(
-        self, ctx: Context, reader: _Reader, held: GradingStep, publication: Publication
+        self,
+        ctx: Context,
+        reader: _Reader,
+        held: GradingStep,
+        publication: Publication,
+        *,
+        platform: str | None = None,
     ) -> None:
         self.ctx = ctx
+        self.platform = platform
         self.reader = reader
         self.held = held
         self.plan = reader.plan
@@ -1310,6 +1325,54 @@ class _Job:
         name: str | None = None,
         manifest: bool = False,
     ) -> Any:
+        if "environment" in value:
+            lock = value["environment"]
+            if (
+                self.platform not in ("linux-64", "linux-aarch64")
+                or self.platform not in lock["platforms"]
+            ):
+                raise InvalidCallback(
+                    "The job must name a locked platform: linux-64 or linux-aarch64."
+                )
+            languages = lock["platforms"][self.platform]
+            pieces = {}
+            for entry in languages.values():
+                for piece in entry.get("pypi", []):
+                    digest = piece["sha256"]
+                    path = f"cache/pieces/{digest}"
+                    pieces[digest] = path
+                    if not any(each["path"] == path for each in self.files):
+                        self.files.append(
+                            {
+                                "path": path,
+                                "url": self.ctx.forge.objects.lfs_get_url(
+                                    digest, expires_in=LINK_LIFE
+                                ),
+                                "sha256": digest,
+                                "size": piece["size"],
+                                "cached": True,
+                            }
+                        )
+            content = exact_json.dumps(
+                {
+                    "version": 2,
+                    "prefix": lock["prefix"],
+                    "platform": self.platform,
+                    "languages": languages,
+                    "pieces": pieces,
+                },
+                sort_keys=True,
+            ).encode()
+            digest = hashlib.sha256(content).hexdigest()
+            self.served[digest] = {"kind": RUNS, "content": content.decode(), "sha256": digest}
+            return {
+                "file": self._download(
+                    ("environment", digest),
+                    lambda: f"{self.door}/files/{digest}",
+                    digest,
+                    len(content),
+                )
+            }
         if set(value) == {"value"}:
             return value["value"]
         if "links" in value:
@@ -1594,6 +1657,19 @@ async def _objects(
     if kept is not None:
         return frozenset(kept.objects)
     found: dict[str, int] = {}
+    for step in plan.steps.values():
+        inputs = (
+            [step.inputs]
+            if step.inputs is not None
+            else [item.inputs for item in (step.items or {}).values()]
+        )
+        for ports in inputs:
+            for languages in (
+                ports.get("environment", {}).get("environment", {}).get("platforms", {}).values()
+            ):
+                for entry in languages.values():
+                    for piece in entry.get("pypi", []):
+                        found[piece["sha256"]] = piece["size"]
     task = TaskId(row.task_id)
     listing = await ctx.forge.content.list_files(PLATFORM, task, at=publication.version)
     small = [

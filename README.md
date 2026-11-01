@@ -740,7 +740,7 @@ which must be there; each checks the name and makes the thing before it
 answers. A contest or task asked for with no title, or a blank one, is
 titled by its name. A contest takes two steps, its place with a starter
 `contest.yaml` that is valid as written and its roles and protection. A task
-takes three: its place with `task.yaml` on `unicon/classic@v4`,
+takes three: its place with `task.yaml` on `unicon/classic@v5`,
 `statement.md` and one test, `tests/1.in` and `tests/1.ans`; its roles and
 protection, its publications reserved for the platform; and its entry at
 the end of the `tasks` list in `contest.yaml`. The CI is not told of the
@@ -791,7 +791,7 @@ a person's own workflows are named by their username in lower case, and a
 username that breaks the name rules then, one with a dot in it, is
 `InvalidName`. The name follows the name rules, at most 40 characters. The
 port makes the place as the platform and the person writes its first
-commit, the files of `unicon/classic@v4` but its README, its
+commit, the files of `unicon/classic@v5` but its README, its
 `workflow.yaml` headed with the new workflow's name, valid as written; the
 workflow is private. A
 workflow's name is not reserved in `names`: the forge holds one place per
@@ -842,9 +842,9 @@ workflow, as `files` lists it. `primitives.listing` is every
 primitive at every version with its declaration, for the editor's palette;
 a version in a format no longer read comes with the reason instead, and so
 does a retired one: `unicon/compile`, every version, and `unicon/exec@v1`,
-since `unicon/exec@v2` compiles what it runs. A step naming a retired
+since `unicon/exec@v3` compiles what it runs. A step naming a retired
 version is refused at its `use`: "unicon/compile and unicon/exec@v1 are
-retired; use unicon/exec@v2."
+retired; use unicon/exec@v3."
 
 Who may do what is decided once per request: `access.organiser` checks the
 session, reads the person's roles with their own credential, applies the
@@ -1005,7 +1005,7 @@ is removing each file under it, named one by one.
    the latest publication: its plan and the digests of the task's files the
    plan names. A changed plan in which a primitive version runs on another
    image than before, because a release moved that version's image in
-   place, also names it: "A release updated exec@v2 in place.", so a save
+   place, also names it: "A release updated exec@v3 in place.", so a save
    that changed only the statement says why it asks. `scoring` and
    `submissions` are read on every read and change nothing that grades. Once the contest has
    started, until it is archived (its `state` is `published` and its
@@ -1129,7 +1129,7 @@ and `save`) and the reports. `forge/domain/run_workflow.py` checks a
 workflow as a version (`check_run_workflow`), needing only the primitives
 its steps use. The plan is the same bytes every time for the same state.
 
-`unicon/exec@v2` compiles what it runs, once for a whole batch: its
+`unicon/exec@v3` compiles what it runs, once for a whole batch: its
 declaration marks the compile `log` `once: true` and lists `compile_error`
 under the outcome's `once`, and its `once_time_ms` is added once to a
 step's time, whatever runs it holds. The plan carries both on each step
@@ -2200,9 +2200,9 @@ deployment does, for the tests that tell a name from its key, and
 records a test caused as the JSON objects they are written as, and
 `register_contestant(setup, contest, user_id)` writes the row that makes
 someone a contestant, with a status and an extension. `seed_classic(fake)`
-puts the built-in workflow `unicon/classic@v4` at the fake from `CLASSIC`, a
+puts the built-in workflow `unicon/classic@v5` at the fake from `CLASSIC`, a
 copy of the files deploy's bootstrap seeds, and with `seed_primitives` the
-primitive it uses from `PRIMITIVES`, `unicon/exec@v2`, the primitive repo's
+primitive it uses from `PRIMITIVES`, `unicon/exec@v3`, the primitive repo's
 own `primitive.yaml` at the release deploy pins, with an image of
 `PLACEHOLDER_DIGEST`, so a task's first save finds a workflow and every
 step's image; the package's tests check the copies against deploy's file and

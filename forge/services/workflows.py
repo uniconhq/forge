@@ -108,7 +108,7 @@ from forge.log import get_logger
 from forge.port.uploads import WorkflowPlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import access, making, names, sessions, uploads, workflow_boxes
+from forge.services import access, making, names, part_uploads, sessions, uploads, workflow_boxes
 
 log = get_logger(__name__)
 
@@ -917,6 +917,25 @@ async def file_slot(
         sha256=sha256,
         content_type=content_type,
     )
+
+
+@action
+async def start_part_file(
+    ctx: Context, session: Session, owner: str, name: str, *, path: str, digest: str, size: int
+) -> part_uploads.Transfer:
+    writer = await _writer(ctx, session, owner)
+    workflow = await _place(ctx, owner, name)
+    _file_path(path)
+    return await part_uploads.start(
+        ctx, writer.identity, WorkflowPlace(workflow), path=path, digest=digest, size=size
+    )
+
+
+@action
+async def transfer_place(ctx: Context, session: Session, owner: str, name: str) -> WorkflowPlace:
+    """Resolve the place an owned transfer is constrained to by its route."""
+    await sessions.authenticate(ctx, session.id)
+    return WorkflowPlace(await _place(ctx, owner, name))
 
 
 @action

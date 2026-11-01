@@ -29,6 +29,7 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import files, leaderboards, task_save
 from forge.services.task_save import Draft, Published
+from forge.services.task_save.records import Preparing
 from tests.services.conftest import RUNNING, SPRING, Acme, checked, make_task, write_contest
 from tests.services.test_run_task_saves import TASKS
 
@@ -81,7 +82,7 @@ async def _made(acme: Acme, setup: Setup, contest: str = DRAFT) -> TaskId:
 
 async def _save(
     setup: Setup, acme: Acme, task: TaskId, text: str, data: Mapping[str, bytes] | None = None
-) -> Published | Draft:
+) -> Published | Draft | Preparing:
     """islands saved as `text`, each question the save asks answered."""
     head = await acme.fake.content.list_files(PLATFORM, task)
     contents = {"task.yaml": text.encode(), **(data or {})}
@@ -114,7 +115,7 @@ async def _refused(setup: Setup, acme: Acme, content: str) -> list[tuple[str, st
     return [(error["path"], error["message"]) for error in refused.value.errors]
 
 
-def _errors(result: Published | Draft) -> list[tuple[str, str]]:
+def _errors(result: Published | Draft | Preparing) -> list[tuple[str, str]]:
     assert isinstance(result, Draft), result
     return [(error["path"], error["message"]) for error in result.errors]
 

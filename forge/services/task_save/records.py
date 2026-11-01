@@ -54,6 +54,13 @@ class Published:
 
 
 @dataclass(frozen=True, slots=True)
+class Preparing:
+    preparation: uuid.UUID
+    version: VersionId
+    status: str = "preparing"
+
+
+@dataclass(frozen=True, slots=True)
 class Draft:
     """A save kept as a draft: the version its files were written as, and
     either the errors that kept it from being published, each at its YAML

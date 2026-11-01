@@ -10,17 +10,19 @@ there in `lfs`, by SHA-256.
 
 import hashlib
 import secrets
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
 
 from forge.domain.clock import Clock
 from forge.domain.errors import Forbidden, NotFound, Rejected
-from forge.port.objects import Stored
+from forge.port.objects import Part, Stored
 
 MACHINE_URL = "http://machines.test"
 RESULTS_BUCKET = "unicon-results"
 LFS_BUCKET = "forgejo-lfs"
+UPLOADS_BUCKET = "unicon-uploads"
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +35,8 @@ class _Signed:
     method: str = "PUT"
     bucket: str = RESULTS_BUCKET
     sha256: str | None = None
+    upload: str | None = None
+    number: int | None = None
 
 
 class FakeObjects:
@@ -40,6 +44,8 @@ class FakeObjects:
         self._clock = clock
         self.objects: dict[str, bytes] = {}
         self.lfs: dict[str, bytes] = {}
+        self.uploads: dict[str, bytes] = {}
+        self.multipart: dict[str, tuple[str, dict[int, bytes]]] = {}
         self._signed: dict[str, _Signed] = {}
         self._checksums: dict[str, str] = {}
 
@@ -80,6 +86,14 @@ class FakeObjects:
         signed = self._check(_signature(url))
         if signed.method != "PUT":
             raise Forbidden("the store's answer was signed for another method")
+        if signed.bucket == UPLOADS_BUCKET:
+            if signed.upload not in self.multipart or signed.number is None:
+                raise NotFound("no such multipart upload")
+            key, parts = self.multipart[signed.upload]
+            if key != signed.key:
+                raise Forbidden("the upload is for another object")
+            parts[signed.number] = content
+            return
         if signed.sha256 is not None:
             if hashlib.sha256(content).hexdigest() != signed.sha256:
                 raise Rejected("the content is not of the checksum the URL was signed for")
@@ -104,6 +118,60 @@ class FakeObjects:
         if found is None:
             raise NotFound(f"no object at {signed.key}")
         return found
+
+    async def create_multipart(self, key: str) -> str:
+        upload = secrets.token_urlsafe(12)
+        self.multipart[upload] = key, {}
+        return upload
+
+    def part_url(self, key: str, upload: str, number: int, *, expires_in: timedelta) -> str:
+        token = self._sign(
+            _Signed(
+                key,
+                self._clock.now() + expires_in,
+                bucket=UPLOADS_BUCKET,
+                upload=upload,
+                number=number,
+            )
+        )
+        return (
+            f"{MACHINE_URL}/{UPLOADS_BUCKET}/{key}?signature={token}"
+            f"&uploadId={upload}&partNumber={number}"
+        )
+
+    def _parts(self, key: str, upload: str) -> dict[int, bytes]:
+        found = self.multipart.get(upload)
+        if found is None or found[0] != key:
+            raise NotFound("no such multipart upload")
+        return found[1]
+
+    async def list_parts(self, key: str, upload: str) -> list[Part]:
+        return [
+            Part(number, hashlib.sha256(body).hexdigest(), len(body))
+            for number, body in sorted(self._parts(key, upload).items())
+        ]
+
+    async def complete_multipart(self, key: str, upload: str, parts: Sequence[Part]) -> None:
+        stored = await self.list_parts(key, upload)
+        if stored != list(parts):
+            raise Rejected("the upload's parts do not match")
+        self.uploads[key] = b"".join(self._parts(key, upload)[part.number] for part in parts)
+        del self.multipart[upload]
+
+    async def abort_multipart(self, key: str, upload: str) -> None:
+        if upload in self.multipart:
+            self._parts(key, upload)
+            del self.multipart[upload]
+
+    async def stream_upload(self, key: str) -> AsyncGenerator[bytes]:
+        if key not in self.uploads:
+            raise NotFound("no such upload object")
+        content = self.uploads[key]
+        for offset in range(0, len(content), 1024 * 1024):
+            yield content[offset : offset + 1024 * 1024]
+
+    async def delete_upload(self, key: str) -> None:
+        self.uploads.pop(key, None)
 
     def _sign(self, signed: _Signed) -> str:
         token = secrets.token_urlsafe(12)
