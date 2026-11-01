@@ -1003,7 +1003,7 @@ def test_submission_reuse_migration_copies_another_submissions_pinned_measuremen
     migrated_database_url: str,
 ) -> None:
     config = alembic_config(migrated_database_url)
-    command.downgrade(config, "0031a")
+    command.downgrade(config, "0032")
     engine = create_engine(migrated_database_url)
     first = "00000000-0000-0000-0000-000000000001"
     second = "00000000-0000-0000-0000-000000000002"
