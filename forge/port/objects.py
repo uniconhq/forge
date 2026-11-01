@@ -84,6 +84,12 @@ class ObjectStore(Protocol):
 
     async def abort_multipart(self, key: str, upload: str) -> None: ...
 
+    async def head_upload(self, key: str) -> int:
+        """The length of the completed temporary object at `key`. `NotFound`
+        when there is none.
+        """
+        ...
+
     def stream_upload(self, key: str) -> AsyncGenerator[bytes]:
         """Stream the completed temporary object with bounded memory."""
         ...

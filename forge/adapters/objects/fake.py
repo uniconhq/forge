@@ -163,6 +163,11 @@ class FakeObjects:
             self._parts(key, upload)
             del self.multipart[upload]
 
+    async def head_upload(self, key: str) -> int:
+        if key not in self.uploads:
+            raise NotFound("no such upload object")
+        return len(self.uploads[key])
+
     async def stream_upload(self, key: str) -> AsyncGenerator[bytes]:
         if key not in self.uploads:
             raise NotFound("no such upload object")

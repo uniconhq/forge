@@ -55,6 +55,15 @@ async def test_the_upload_bucket_paging_etags_and_public_signer() -> None:
         signed = urlsplit(objects.part_url("one", "upload", 2, expires_in=timedelta(hours=1)))
         assert signed.netloc == "browser.test" and signed.path == "/unicon-uploads/one"
         assert parse_qs(signed.query)["partNumber"] == ["2"]
+        stub.add_response("head_object", {"ContentLength": 8}, params)
+        assert await objects.head_upload("one") == 8
+        stub.add_response("abort_multipart_upload", {}, {**params, "UploadId": "upload"})
+        await objects.abort_multipart("one", "upload")
+        stub.add_response("delete_object", {}, params)
+        await objects.delete_upload("one")
+        stub.assert_no_pending_responses()
+    # Joining waits as long as the normal client does.
+    with Stubber(objects._internal) as stub:
         stub.add_response(
             "complete_multipart_upload",
             {},
@@ -70,10 +79,6 @@ async def test_the_upload_bucket_paging_etags_and_public_signer() -> None:
             },
         )
         await objects.complete_multipart("one", "upload", parts)
-        stub.add_response("abort_multipart_upload", {}, {**params, "UploadId": "upload"})
-        await objects.abort_multipart("one", "upload")
-        stub.add_response("delete_object", {}, params)
-        await objects.delete_upload("one")
         stub.assert_no_pending_responses()
 
 

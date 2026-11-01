@@ -233,8 +233,10 @@ class S3Objects:
             marker = next_marker
 
     async def complete_multipart(self, key: str, upload: str, parts: Sequence[Part]) -> None:
+        # Joining a large upload takes the store a while: the normal client's
+        # wait, not the short one's.
         await self._call(
-            self._upload_internal.complete_multipart_upload,
+            self._internal.complete_multipart_upload,
             Bucket=self._uploads_bucket,
             Key=key,
             UploadId=upload,
@@ -251,6 +253,12 @@ class S3Objects:
                 Key=key,
                 UploadId=upload,
             )
+
+    async def head_upload(self, key: str) -> int:
+        got = await self._call(
+            self._upload_internal.head_object, Bucket=self._uploads_bucket, Key=key
+        )
+        return int(got["ContentLength"])
 
     async def stream_upload(self, key: str) -> AsyncGenerator[bytes]:
         got = await self._call(
@@ -307,6 +315,9 @@ class NoStore:
         raise Misconfigured(NO_STORE)
 
     async def abort_multipart(self, key: str, upload: str) -> None:
+        raise Misconfigured(NO_STORE)
+
+    async def head_upload(self, key: str) -> int:
         raise Misconfigured(NO_STORE)
 
     def stream_upload(self, key: str) -> AsyncGenerator[bytes]:

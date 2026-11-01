@@ -1,13 +1,22 @@
 """Organiser multipart transfers through the object store and verified LFS boundary."""
 
 import hashlib
+from collections.abc import Sequence
 from datetime import timedelta
 
 import pytest
 
 from forge.db.tables import PartUpload
-from forge.domain.errors import InvalidInputs, NotFound, Rejected, TooLarge, UploadLimit
+from forge.domain.errors import (
+    Conflict,
+    InvalidInputs,
+    NotFound,
+    TooLarge,
+    Unavailable,
+    UploadLimit,
+)
 from forge.domain.ids import TaskId
+from forge.port.objects import Part
 from forge.port.uploads import TaskPlace
 from forge.runtime.setup import Setup
 from forge.services import part_uploads, uploads
@@ -105,7 +114,7 @@ async def test_a_digest_refused_by_forgejo_is_deleted_and_reported(
         assert await uploads.for_save(ctx, 7, sum_task, [made.id]) == {}
 
 
-async def test_a_failed_temporary_delete_is_reported_without_waiting_for_the_deadline(
+async def test_a_failed_temporary_delete_still_stores_what_forgejo_holds(
     setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     body = b"stored but cleanup failed"
@@ -113,15 +122,9 @@ async def test_a_failed_temporary_delete_is_reported_without_waiting_for_the_dea
     owner = await signed_in(setup, acme.fake, 7)
     await _send(setup, acme, made, body)
     found = await part_uploads.read(setup, owner, made.id)
-    original = acme.fake.objects.delete_upload
-    calls = 0
 
     async def failing(key: str) -> None:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise Rejected("Temporary storage was unavailable; send again.")
-        await original(key)
+        raise Unavailable("Temporary storage was unavailable.")
 
     monkeypatch.setattr(acme.fake.objects, "delete_upload", failing)
     await part_uploads.finish(
@@ -129,8 +132,36 @@ async def test_a_failed_temporary_delete_is_reported_without_waiting_for_the_dea
     )
     await setup.settle()
     state = await part_uploads.read(setup, owner, made.id)
-    assert state.status == "refused" and "unavailable" in (state.reason or "")
-    assert not acme.fake.objects.uploads
+    assert state.status == "stored", state.reason
+    async with setup.unit_of_work() as ctx:
+        assert made.id in await uploads.for_save(ctx, 7, sum_task, [made.id])
+
+
+async def test_the_check_after_storing_is_the_platforms_and_outlives_the_persons_credential(
+    setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from forge.domain.errors import Forbidden
+    from forge.domain.identity import PLATFORM, Identity
+    from forge.port.uploads import UploadPlace
+
+    body = b"a long stream"
+    made = await _start(setup, acme, sum_task, body)
+    owner = await signed_in(setup, acme.fake, 7)
+    await _send(setup, acme, made, body)
+    found = await part_uploads.read(setup, owner, made.id)
+    holds = acme.fake.uploads.holds
+
+    async def expired(place: UploadPlace, *, as_: Identity, digest: str, size: int) -> bool:
+        if as_ != PLATFORM:
+            raise Forbidden("The person's credential expired.")
+        return await holds(place, as_=as_, digest=digest, size=size)
+
+    monkeypatch.setattr(acme.fake.uploads, "holds", expired)
+    await part_uploads.finish(
+        setup, owner, made.id, [(part.number, part.etag) for part in found.parts]
+    )
+    await setup.settle()
+    assert (await part_uploads.read(setup, owner, made.id)).status == "stored"
 
 
 async def test_an_object_already_held_is_stored_without_parts(
@@ -232,3 +263,99 @@ async def test_current_forge_permissions_are_checked_before_start_and_storage(
     await setup.settle()
     assert (await part_uploads.read(setup, owner, made.id)).status == "refused"
     assert acme.fake.objects.uploads == {}
+
+
+@pytest.mark.parametrize("recovery", ["read", "finish", "start"])
+async def test_a_lost_completion_response_is_stored_from_the_joined_object(
+    setup: Setup,
+    acme: Acme,
+    sum_task: TaskId,
+    monkeypatch: pytest.MonkeyPatch,
+    recovery: str,
+) -> None:
+    body = b"completed before the response was lost"
+    made = await _start(setup, acme, sum_task, body)
+    owner = await signed_in(setup, acme.fake, 7)
+    await _send(setup, acme, made, body)
+    parts = (await part_uploads.read(setup, owner, made.id)).parts
+    complete = acme.fake.objects.complete_multipart
+
+    async def lost(key: str, upload: str, parts: Sequence[Part]) -> None:
+        await complete(key, upload, parts)
+        raise Unavailable("The completion response was lost.")
+
+    monkeypatch.setattr(acme.fake.objects, "complete_multipart", lost)
+    with pytest.raises(Unavailable):
+        await part_uploads.finish(setup, owner, made.id, [(p.number, p.etag) for p in parts])
+    if recovery == "read":
+        resumed = await part_uploads.read(setup, owner, made.id)
+    elif recovery == "finish":
+        resumed = await part_uploads.finish(
+            setup, owner, made.id, [(p.number, p.etag) for p in parts]
+        )
+    else:
+        resumed = await _start(setup, acme, sum_task, body)
+    assert resumed.id == made.id and resumed.status == "finishing"
+    await setup.settle()
+    assert (await part_uploads.read(setup, owner, made.id)).status == "stored"
+    assert await acme.fake.uploads.holds(
+        TaskPlace(sum_task), as_=acme.ada.identity, digest=made.sha256, size=len(body)
+    )
+    assert acme.fake.objects.uploads == {} and acme.fake.objects.multipart == {}
+
+
+async def test_a_retried_completion_that_finds_its_upload_joined_goes_on_to_store_it(
+    setup: Setup, acme: Acme, sum_task: TaskId, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = b"joined by the first attempt"
+    made = await _start(setup, acme, sum_task, body)
+    owner = await signed_in(setup, acme.fake, 7)
+    await _send(setup, acme, made, body)
+    parts = (await part_uploads.read(setup, owner, made.id)).parts
+    complete = acme.fake.objects.complete_multipart
+
+    async def retried(key: str, upload: str, parts: Sequence[Part]) -> None:
+        await complete(key, upload, parts)
+        raise NotFound("the store has no such object (NoSuchUpload)")
+
+    monkeypatch.setattr(acme.fake.objects, "complete_multipart", retried)
+    finishing = await part_uploads.finish(
+        setup, owner, made.id, [(p.number, p.etag) for p in parts]
+    )
+    assert finishing.status == "finishing"
+    await setup.settle()
+    assert (await part_uploads.read(setup, owner, made.id)).status == "stored"
+
+
+async def test_an_upload_gone_without_its_joined_object_is_refused_to_send_again(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    body = b"lost from the store"
+    made = await _start(setup, acme, sum_task, body)
+    owner = await signed_in(setup, acme.fake, 7)
+    await _send(setup, acme, made, body)
+    acme.fake.objects.multipart.clear()
+    gone = await part_uploads.read(setup, owner, made.id)
+    assert gone.status == "refused" and "send it again" in (gone.reason or "")
+    restarted = await _start(setup, acme, sum_task, body)
+    assert restarted.id != made.id and restarted.status == "open"
+
+
+async def test_a_part_list_behind_the_stores_is_a_conflict_and_the_upload_stays_open(
+    setup: Setup, acme: Acme, sum_task: TaskId
+) -> None:
+    body = b"sent twice"
+    made = await _start(setup, acme, sum_task, body)
+    owner = await signed_in(setup, acme.fake, 7)
+    await _send(setup, acme, made, body)
+    stale = [(p.number, p.etag) for p in (await part_uploads.read(setup, owner, made.id)).parts]
+    url = (await part_uploads.sign(setup, owner, made.id, [1]))[1]
+    acme.fake.objects.put(url, b"sent anew!")
+    with pytest.raises(Conflict):
+        await part_uploads.finish(setup, owner, made.id, stale)
+    again = await part_uploads.read(setup, owner, made.id)
+    assert again.status == "open" and [p.size for p in again.parts] == [len(body)]
+    finishing = await part_uploads.finish(
+        setup, owner, made.id, [(p.number, p.etag) for p in again.parts]
+    )
+    assert finishing.status == "finishing"

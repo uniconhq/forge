@@ -23,7 +23,7 @@ from forge.domain.errors import (
     TooLarge,
     UploadLimit,
 )
-from forge.domain.identity import AsUser
+from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import TaskId, WorkflowId, new_id
 from forge.domain.roles import Role, task_scope
 from forge.domain.sessions import Session
@@ -145,12 +145,7 @@ async def start(
             and row.digest == digest
             and row.size == size
         ):
-            return _view(
-                row,
-                await ctx.forge.objects.list_parts(str(row.id), row.upload_id)
-                if row.status == "open" and row.upload_id
-                else (),
-            )
+            return _view(row, await _parts(ctx, row, as_))
     if sum(row.status in ACTIVE for row in rows) >= ctx.settings.open_part_uploads:
         raise UploadLimit(
             "Finish or cancel an open upload first; at most "
@@ -216,6 +211,48 @@ async def _discard(ctx: Context, row: PartUpload) -> None:
         await ctx.forge.objects.delete_upload(str(row.id))
 
 
+async def _parts(ctx: Context, row: PartUpload, who: AsUser | Session) -> list[Part]:
+    if row.status != "open" or row.upload_id is None:
+        return []
+    try:
+        return await ctx.forge.objects.list_parts(str(row.id), row.upload_id)
+    except NotFound:
+        await _gone(ctx, row, who)
+        return []
+
+
+async def _gone(ctx: Context, row: PartUpload, who: AsUser | Session) -> None:
+    """The multipart upload is no longer there: joined by a completion whose
+    answer was lost when the temporary object is there at the declared
+    size, so it is stored as any completed one is, and lost otherwise.
+    """
+    try:
+        joined = await ctx.forge.objects.head_upload(str(row.id)) == row.size
+    except NotFound:
+        joined = False
+    if joined:
+        as_ = (
+            who
+            if isinstance(who, AsUser)
+            else AsUser(row.owner_user_id, await sessions.credential_for(ctx, who.id))
+        )
+        _finishing(ctx, row, as_)
+        return
+    row.status = "refused"
+    row.reason = "The temporary upload is no longer available; send it again."
+    await _discard(ctx, row)
+
+
+def _finishing(ctx: Context, row: PartUpload, as_: AsUser) -> None:
+    row.status, row.deadline_at = "finishing", ctx.now + FINISH_LIMIT
+    upload = row.id
+
+    async def store(later: Context) -> None:
+        await _finish(later, upload, as_)
+
+    ctx.in_background(store)
+
+
 @action
 async def read(
     ctx: Context,
@@ -225,11 +262,7 @@ async def read(
     place: TaskPlace | WorkflowPlace | None = None,
 ) -> Transfer:
     row = await _mine(ctx, session, upload, place)
-    parts = (
-        await ctx.forge.objects.list_parts(str(row.id), row.upload_id)
-        if row.status == "open" and row.upload_id
-        else ()
-    )
+    parts = await _parts(ctx, row, session)
     return _view(row, parts)
 
 
@@ -296,10 +329,11 @@ async def finish(
     if row.status != "open":
         return _view(row)
     assert row.upload_id is not None
-    actual = await ctx.forge.objects.list_parts(str(row.id), row.upload_id)
+    actual = await _parts(ctx, row, session)
+    if row.status != "open":
+        return _view(row)
     count = (row.size + row.part_size - 1) // row.part_size
     valid = [part.number for part in actual] == list(range(1, count + 1))
-    valid = valid and [(part.number, part.etag) for part in actual] == sorted(parts)
     valid = valid and sum(part.size for part in actual) == row.size
     valid = valid and all(
         part.size == min(row.part_size, row.size - (part.number - 1) * row.part_size)
@@ -312,14 +346,17 @@ async def finish(
         )
         await _discard(ctx, row)
         return _view(row)
-    await ctx.forge.objects.complete_multipart(str(row.id), row.upload_id, actual)
-    row.status, row.deadline_at = "finishing", ctx.now + FINISH_LIMIT
+    if [(part.number, part.etag) for part in actual] != sorted(parts):
+        # The store's parts are whole; the browser's list is behind them.
+        raise Conflict("The parts sent are not the parts the store holds. Read the upload again.")
     as_ = AsUser(row.owner_user_id, await sessions.credential_for(ctx, session.id))
-
-    async def store(later: Context) -> None:
-        await _finish(later, upload, as_)
-
-    ctx.in_background(store)
+    try:
+        await ctx.forge.objects.complete_multipart(str(row.id), row.upload_id, actual)
+    except NotFound:
+        # A retried completion finds the upload its first attempt joined.
+        await _gone(ctx, row, as_)
+        return _view(row)
+    _finishing(ctx, row, as_)
     return _view(row)
 
 
@@ -337,7 +374,11 @@ async def _finish(ctx: Context, upload: uuid.UUID, as_: AsUser) -> None:
                 await ctx.forge.uploads.store(
                     place, as_=as_, digest=row.digest, size=row.size, content=content
                 )
-            if not await ctx.forge.uploads.holds(place, as_=as_, digest=row.digest, size=row.size):
+            # Asked as the platform: the person's credential may have expired
+            # while a large file streamed.
+            if not await ctx.forge.uploads.holds(
+                place, as_=PLATFORM, digest=row.digest, size=row.size
+            ):
                 raise Rejected("Forgejo did not store the declared file.")
         row = await ctx.db.scalar(
             select(PartUpload)
@@ -348,8 +389,11 @@ async def _finish(ctx: Context, upload: uuid.UUID, as_: AsUser) -> None:
         if row is not None and row.status == "finishing":
             await _expire(ctx, row)
             if row.status == "finishing":
-                await ctx.forge.objects.delete_upload(str(upload))
                 await _stored(ctx, row)
+                # Forgejo holds the file; the bucket's lifecycle rule clears a
+                # temporary object left behind.
+                with suppress(PortError):
+                    await ctx.forge.objects.delete_upload(str(upload))
     except (PortError, TimeoutError) as error:
         row = await ctx.db.scalar(
             select(PartUpload)
