@@ -2,6 +2,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
+from typing import Literal
 
 from forge.domain.definitions import TaskDefinition
 from forge.domain.ids import PublicationId, VersionId
@@ -57,7 +58,7 @@ class Published:
 class Preparing:
     preparation: uuid.UUID
     version: VersionId
-    status: str = "preparing"
+    status: Literal["preparing"] = "preparing"
 
 
 @dataclass(frozen=True, slots=True)

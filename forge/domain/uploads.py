@@ -36,6 +36,7 @@ import re
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
+from typing import Literal
 
 from forge.domain.content import UNSAFE_CHARACTERS, UploadInfo
 from forge.domain.errors import InvalidInputs
@@ -73,6 +74,11 @@ class UploadStatus(StrEnum):
     VERIFIED = "verified"
     CONSUMED = "consumed"
 
+
+PartUploadStatus = Literal["open", "finishing", "stored", "refused", "aborted"]
+"""Where an organiser's transfer in parts stands: `open` while parts arrive,
+`finishing` while Forgejo is handed the joined file, `stored` once it holds
+it, and `refused` or `aborted` when it ended without."""
 
 OPEN = (UploadStatus.WAITING, UploadStatus.VERIFIED)
 """The statuses of an upload that counts against its owner's allowance: its

@@ -3,11 +3,12 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, Index
+from sqlalchemy import BigInteger, CheckConstraint, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.db.base import Base, Timestamped
 from forge.domain.ids import new_id
+from forge.domain.uploads import PartUploadStatus
 
 
 class PartUpload(Base, Timestamped):
@@ -22,7 +23,7 @@ class PartUpload(Base, Timestamped):
     size: Mapped[int] = mapped_column(BigInteger)
     part_size: Mapped[int] = mapped_column(BigInteger)
     upload_id: Mapped[str | None]
-    status: Mapped[str]
+    status: Mapped[PartUploadStatus] = mapped_column(Text)
     reason: Mapped[str | None]
     deadline_at: Mapped[datetime]
 

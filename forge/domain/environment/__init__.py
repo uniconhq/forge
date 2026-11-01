@@ -12,6 +12,8 @@ from forge.domain.yaml_models import Model
 
 LOCK_PATH = "environment.lock"
 PLATFORMS = ("linux-64", "linux-aarch64")
+PreparationStatus = Literal["preparing", "ready", "refused", "replaced"]
+"""Where a task's background package preparation stands."""
 
 
 def _requirement(value: object) -> str:

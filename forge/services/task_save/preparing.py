@@ -11,7 +11,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from forge.db.tables import EnvironmentPreparation
-from forge.domain.environment import LOCK_PATH, Environment, EnvironmentLock
+from forge.domain.environment import LOCK_PATH, Environment, EnvironmentLock, PreparationStatus
 from forge.domain.errors import NotFound, PortError, Rejected, TooLarge
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId, VersionId
@@ -41,7 +41,7 @@ class _Replaced(Exception):
 @dataclass(frozen=True, slots=True)
 class Preparation:
     id: uuid.UUID
-    status: str
+    status: PreparationStatus
     reason: str | None
     deadline_at: datetime
     result: dict[str, object] | None

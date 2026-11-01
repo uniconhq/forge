@@ -27,7 +27,7 @@ from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import TaskId, WorkflowId, new_id
 from forge.domain.roles import Role, task_scope
 from forge.domain.sessions import Session
-from forge.domain.uploads import UploadPurpose, UploadStatus
+from forge.domain.uploads import PartUploadStatus, UploadPurpose, UploadStatus
 from forge.port.objects import Part
 from forge.port.uploads import TaskPlace, WorkflowPlace
 from forge.runtime.actions import action
@@ -47,7 +47,7 @@ class Transfer:
     sha256: str
     size: int
     part_size: int
-    status: str
+    status: PartUploadStatus
     reason: str | None
     deadline_at: datetime
     parts: tuple[Part, ...] = ()
