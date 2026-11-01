@@ -41,6 +41,7 @@ class Repo:
     name: str
     id: int = 0
     private: bool = True
+    description: str = ""
     files: dict[str, bytes] = field(default_factory=dict)
     tokens: dict[str, ConflictToken] = field(default_factory=dict)
     history: list[Change] = field(default_factory=list)

@@ -2277,3 +2277,37 @@ async def test_removing_a_file_with_no_token_is_a_conflict_while_it_is_there(
             PLATFORM, contest, {"gone.md": None}, expected={}, message="Remove"
         )
     assert recorder.sent("POST", f"{contents}") == []
+
+
+@pytest.mark.parametrize("query", ["", "needle"])
+async def test_workflow_search_filters_one_page_and_keeps_its_next_page(
+    forgejo: ForgejoForge, recorder: Recorder, query: str
+) -> None:
+    ada = AsUser(7, _credential())
+    workflow = {
+        "id": 91,
+        "owner": {"login": "bob"},
+        "name": "special.workflow",
+        "topics": ["unicon-workflow"],
+        "private": False,
+        "description": "Find a needle",
+    }
+    records = [workflow] if not query else [workflow, {"id": 92, "name": "ordinary", "topics": []}]
+    recorder.on(
+        "GET",
+        "/api/v1/repos/search",
+        httpx.Response(200, json={"data": records}, headers={"X-Total-Count": "41"}),
+    )
+    recorder.on("GET", "/api/v1/repos/bob/special.workflow/tags", ok([{"name": "v1"}]))
+    found, following = await forgejo.workflows.search_workflows(
+        ada, q=query, scope="public", page=1, limit=20
+    )
+    assert [(each.owner, each.name, each.description, each.key) for each in found] == [
+        ("bob", "special", "Find a needle", "91")
+    ]
+    assert following == 2
+    request = next(each for each in recorder.seen if each.url.path == "/api/v1/repos/search")
+    assert request.url.params["includeDesc"] == "true"
+    assert request.url.params["is_private"] == "false"
+    assert request.url.params["q"] == (query or "unicon-workflow")
+    assert request.url.params.get("topic") == ("true" if not query else None)

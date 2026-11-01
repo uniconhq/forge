@@ -54,3 +54,24 @@ def test_reconcile_runs_the_pass_once_and_logs_what_it_did(
         if '"reconcile.done"' in line
     ]
     assert (done["contests"], done["submissions"], done["inserted"]) == (0, 0, 0)
+
+
+def test_describe_workflows_runs_against_the_configured_forge(
+    migrated_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name, value in {
+        "UNICON_PUBLIC_URL": "http://app.test",
+        "UNICON_DATABASE_URL": migrated_database_url,
+        "UNICON_TOKEN_ENCRYPTION_KEY": TEST_KEY,
+        "UNICON_SESSION_SIGNING_KEY": TEST_KEY,
+        "UNICON_FORGE": "fake",
+        "UNICON_FORGE_PUBLIC_URL": "http://forge.test",
+    }.items():
+        monkeypatch.setenv(name, value)
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    try:
+        assert main(["describe-workflows"]) == 0
+    finally:
+        root.handlers[:] = handlers
+        root.setLevel(level)

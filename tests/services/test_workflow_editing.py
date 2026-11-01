@@ -43,6 +43,26 @@ async def _own(setup: Setup, acme: Acme) -> Session:
     return bob
 
 
+async def test_draft_checks_saved_and_staged_paths_without_reading_their_contents(
+    setup: Setup, acme: Acme
+) -> None:
+    bob = await _own(setup, acme)
+    text = WORKFLOW.decode()
+    unchanged = await workflows.check(setup, bob, text)
+    assert not unchanged
+    missing = await workflows.check(setup, bob, text, paths=[])
+    assert any("diff/" in problem["message"] for problem in missing)
+    staged = await workflows.check(setup, bob, text, paths=list(CLASSIC))
+    assert not staged
+    repo = acme.fake.state.repos[("bob", "tuned.workflow")]
+    acme.fake.state.commit(
+        repo, {path: None for path in CLASSIC if path != WORKFLOW_FILE}, "Remove files", 8
+    )
+    with pytest.raises(InvalidDefinition) as refused:
+        await workflows.create_version(setup, bob, "bob", "tuned", "v1")
+    assert all(problem in refused.value.errors for problem in missing)
+
+
 async def test_the_owner_reads_the_draft_saves_it_and_versions_it(setup: Setup, acme: Acme) -> None:
     bob = await _own(setup, acme)
 

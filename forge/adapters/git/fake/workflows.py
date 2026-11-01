@@ -30,6 +30,86 @@ class FakeWorkflows:
         self._uploads = uploads
         self._doors: dict[str, tuple[Identity, WorkflowId, VersionId, str]] = {}
 
+    async def require_workflow_write(self, as_: Identity, workflow: WorkflowId) -> None:
+        self._state.record("require_workflow_write", as_, workflow=workflow)
+        self._state.check_up()
+        self._state.require_write(as_, self._repo(workflow))
+
+    async def all_workflows(self) -> tuple[Workflow, ...]:
+        self._state.record("all_workflows", PLATFORM)
+        self._state.check_up()
+        return tuple(
+            _workflow(repo) for repo in self._state.repos.values() if repo.marked == WORKFLOW
+        )
+
+    async def search_workflows(
+        self,
+        as_: Identity,
+        *,
+        q: str,
+        scope: str | None,
+        page: int,
+        limit: int,
+        org: str | None = None,
+    ) -> tuple[tuple[Workflow, ...], int | None]:
+        self._state.record(
+            "search_workflows", as_, q=q, scope=scope, page=page, limit=limit, org=org
+        )
+        self._state.check_up()
+        user_id = self._state.author(as_)
+        username = self._state.username(user_id) if user_id is not None else None
+        orgs = {
+            name
+            for name in self._state.orgs
+            if user_id is None
+            or any(user_id in members for members in self._state.orgs[name].roles.values())
+        }
+        if org is not None:
+            orgs &= {org}
+        candidates = [
+            repo
+            for repo in self._state.repos.values()
+            if (user_id is None or self._state.may_read(user_id, repo))
+            and (scope != "mine" or repo.owner == username)
+            and (scope != "orgs" or repo.owner in orgs)
+            and (scope != "public" or not repo.private)
+        ]
+        if q:
+            candidates = [
+                repo
+                for repo in candidates
+                if q.lower() in f"{repo.name} {repo.description}".lower()
+            ]
+        else:
+            candidates = [repo for repo in candidates if repo.marked == WORKFLOW]
+        candidates.sort(
+            key=lambda repo: (
+                repo.history[-1].at if repo.history else self._state.clock.now(),
+                repo.id,
+            ),
+            reverse=True,
+        )
+        groups = (
+            [
+                [repo for repo in candidates if repo.owner == owner]
+                for owner in self._state.orgs
+                if owner in orgs
+            ]
+            if scope == "orgs"
+            else [candidates]
+        )
+        per_owner = max(1, limit // len(groups)) if groups else limit
+        offset = (page - 1) * per_owner
+        batch = [repo for group in groups for repo in group[offset : offset + per_owner]]
+        return tuple(_workflow(repo) for repo in batch if repo.marked == WORKFLOW), (
+            page + 1 if any(offset + per_owner < len(group) for group in groups) else None
+        )
+
+    async def set_workflow_description(self, workflow: WorkflowId, description: str) -> None:
+        self._state.record("set_workflow_description", PLATFORM, workflow=workflow)
+        self._state.check_up()
+        self._repo(workflow).description = description
+
     async def create_workflow(
         self, as_: Identity, owner: str, name: str, files: Files, visibility: Visibility
     ) -> WorkflowId:
@@ -187,6 +267,9 @@ class FakeWorkflows:
     async def read_workflow_media(
         self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str, *, max_size: int
     ) -> bytes:
+        self._state.record(
+            "read_workflow_media", as_, workflow=workflow, at=at, path=path, max_size=max_size
+        )
         file = await self.read_workflow_at(as_, workflow, at, path)
         ref = parse_workflow(workflow)
         content = self._uploads.resolve(f"{ref.owner}/{ref.repo}", file.content)
@@ -368,9 +451,11 @@ def _workflow(repo: Repo) -> Workflow:
     name = repo.name.removesuffix(f".{WORKFLOW}")
     return Workflow(
         id=WorkflowRef(repo.owner, name).id,
+        key=str(repo.id),
         owner=repo.owner,
         name=name,
         visibility=visibility,
         stars=len(repo.stars),
         versions=tuple(repo.versions),
+        description=repo.description,
     )

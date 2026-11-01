@@ -799,10 +799,14 @@ class _Binder:
                     continue
                 name = program.manifest.input
                 types: dict[str, dict[str, str]] = {}
+                bounds: dict[str, dict[tuple[str | None, object, object], str]] = {}
                 for path in self._filled_with(name):
                     read = _read_manifest(path, manifests, program)
                     for report, each in (read.reports if read is not None else {}).items():
                         types.setdefault(report, {}).setdefault(each.type, path)
+                        if each.type == "number":
+                            bound = (each.better, each.at_least, each.at_most)
+                            bounds.setdefault(report, {}).setdefault(bound, path)
                 for report, seen in sorted(types.items()):
                     if len(seen) < 2:
                         continue
@@ -812,6 +816,30 @@ class _Binder:
                         f"{first} reports {report} as {type_in_words(Type(one))} and {second} as "
                         f"{type_in_words(Type(other))}, but step {step.id} writes {report} as one "
                         "output of every run. Give it one type in every file.",
+                    )
+                for report, seen_bounds in sorted(bounds.items()):
+                    if len(seen_bounds) < 2:
+                        continue
+                    (one_bound, first), (other_bound, second) = sorted(
+                        seen_bounds.items(), key=lambda entry: entry[1]
+                    )[:2]
+
+                    def words(bound: tuple[str | None, object, object]) -> str:
+                        labels = ("better", "at least", "at most")
+                        return (
+                            ", ".join(
+                                f"{label} {value}"
+                                for label, value in zip(labels, bound, strict=True)
+                                if value is not None
+                            )
+                            or "no bounds"
+                        )
+
+                    self.refuse(
+                        self.where.get(name, ("inputs", name)),
+                        f"{first} gives {report} the bounds {words(one_bound)}, and {second} "
+                        f"gives it {words(other_bound)}, but step {step.id} writes {report} as "
+                        "one output of every run. Give it the same bounds in every file.",
                     )
 
     def manifest_outputs(self, manifests: Mapping[str, bytes]) -> dict[str, dict[str, Port]]:

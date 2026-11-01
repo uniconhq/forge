@@ -256,6 +256,16 @@ async def _check_runs(
     flat = expanded.flat
     for pin in expanded.pins:
         pins[pin.use.rsplit("@", 1)[0]] = pin.key
+    withdrawn = await sources._yanked_workflows(
+        ctx,
+        task,
+        {
+            str(definition.workflow): pins[str(definition.workflow).rsplit("@", 1)[0]],
+            **{pin.use: pin.key for pin in expanded.pins},
+        },
+    )
+    if withdrawn:
+        return Checked(definition, tuple(withdrawn), pins)
     moved = await sources._moved_workflows(ctx, task, definition, pins)
     if moved:
         return Checked(definition, tuple(moved), pins)

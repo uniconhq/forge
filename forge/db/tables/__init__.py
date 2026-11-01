@@ -17,6 +17,7 @@ from forge.db.tables.releases import Release
 from forge.db.tables.sessions import Session
 from forge.db.tables.steps import GradingReuse, GradingStep, PublicationObjects, StepOutput
 from forge.db.tables.uploads import Upload
+from forge.db.tables.workflow_yanks import WorkflowYank
 
 __all__ = [
     "Entrant",
@@ -36,6 +37,7 @@ __all__ = [
     "Session",
     "StepOutput",
     "Upload",
+    "WorkflowYank",
     "metadata",
 ]
 

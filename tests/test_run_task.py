@@ -903,6 +903,42 @@ def test_manifests_that_disagree_on_a_columns_type_are_refused(
     assert found.task is None
 
 
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("better: lower", "better: higher"),
+        ("at_least: 0", "at_least: 1"),
+        ("at_most: 2000", "at_most: 1000"),
+    ],
+)
+def test_manifest_bounds_agree_for_every_file(
+    primitives: dict[str, PrimitiveDeclaration], first: str, second: str
+) -> None:
+    task = JUDGED_TASK.replace("  judge_manifest: judge/program.yaml\n", "").replace(
+        "scoring:",
+        "repeat:\n  - inputs: [judge_manifest]\n    tuples:\n"
+        "      - [judge/program.yaml]\n      - [judge/other.yaml]\nscoring:",
+    )
+    found = check(
+        primitives,
+        task,
+        JUDGED,
+        {"workflow.yaml": JUDGED.encode()},
+        JUDGED_PATHS | {"judge/other.yaml"},
+        manifests={
+            "judge/program.yaml": f"reports:\n  moves: {{{first}}}\n".encode(),
+            "judge/other.yaml": f"reports:\n  moves: {{{second}}}\n".encode(),
+        },
+    )
+    assert found.task is None
+    assert any(
+        "judge/program.yaml" in problem["message"]
+        and "judge/other.yaml" in problem["message"]
+        and "Give it the same bounds in every file." in problem["message"]
+        for problem in found.problems
+    )
+
+
 def test_manifests_that_disagree_on_a_report_the_workflow_does_not_read_are_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:

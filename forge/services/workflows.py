@@ -41,10 +41,15 @@ version must (TASK-FORMAT.md section 1.3), and a version never changes.
 """
 
 import uuid
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
+from typing import Literal
 
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert
+
+from forge.db.tables import WorkflowYank
 from forge.domain.content import (
     ConflictToken,
     Edit,
@@ -65,7 +70,7 @@ from forge.domain.errors import (
     Rejected,
     UploadNotReady,
 )
-from forge.domain.identity import AsUser, Identity, User
+from forge.domain.identity import PLATFORM, AsUser, Identity, User
 from forge.domain.ids import OrgId, VersionId, WorkflowId
 from forge.domain.names import validate_name
 from forge.domain.port_values import natural, stray_units
@@ -96,7 +101,8 @@ from forge.domain.workflow_definition import (
     validate_version,
     version_number,
 )
-from forge.domain.workflows import Visibility
+from forge.domain.workflow_description import description_of
+from forge.domain.workflows import Visibility, Workflow, Yanked
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.port.uploads import WorkflowPlace
@@ -137,6 +143,14 @@ class WorkflowSummary:
     visibility: Visibility
     versions: tuple[str, ...]
     editable: bool
+    description: str = ""
+    yanked: Mapping[str, Yanked] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchPage:
+    items: tuple[WorkflowSummary, ...]
+    next: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,9 +258,29 @@ async def listing(ctx: Context, session: Session) -> tuple[WorkflowSummary, ...]
     """
     as_ = await _as_user(ctx, session)
     found = await ctx.forge.workflows.workflows_readable_by(as_)
+    return tuple(
+        sorted(await _summaries(ctx, session, as_, found), key=lambda item: (item.owner, item.name))
+    )
+
+
+async def yanks_of(ctx: Context, keys: Sequence[str]) -> dict[str, dict[str, Yanked]]:
+    found: dict[str, dict[str, Yanked]] = {}
+    if not keys:
+        return found
+    for row in await ctx.db.scalars(
+        select(WorkflowYank).where(WorkflowYank.workflow_key.in_(keys))
+    ):
+        found.setdefault(row.workflow_key, {})[row.version] = Yanked(row.reason, row.at, row.by)
+    return found
+
+
+async def _summaries(
+    ctx: Context, session: Session, as_: AsUser, found: Sequence[Workflow]
+) -> tuple[WorkflowSummary, ...]:
     labels = await names.names_of(ctx, {workflow.owner for workflow in found})
     grants = await ctx.forge.orgs.roles_of(as_)
     username = (await _username_now(ctx, session)).lower()
+    yanked = await yanks_of(ctx, [workflow.key for workflow in found])
     summaries = [
         WorkflowSummary(
             owner=labels.get(workflow.owner, workflow.owner.lower()),
@@ -258,10 +292,38 @@ async def listing(ctx: Context, session: Session) -> tuple[WorkflowSummary, ...]
                 if workflow.owner in labels
                 else workflow.owner.lower() == username
             ),
+            description=workflow.description,
+            yanked=yanked.get(workflow.key, {}),
         )
         for workflow in found
     ]
-    return tuple(sorted(summaries, key=lambda summary: (summary.owner, summary.name)))
+    return tuple(summaries)
+
+
+@action
+async def search(
+    ctx: Context,
+    session: Session,
+    q: str = "",
+    scope: Literal["mine", "orgs", "public"] | None = None,
+    page: int = 1,
+    org: str | None = None,
+) -> SearchPage:
+    if page < 1 or len(q) > 256 or scope not in {None, "mine", "orgs", "public"}:
+        raise Rejected("Give a search of at most 256 characters and a page from 1.")
+    as_ = await _as_user(ctx, session)
+    org_key = await names.org_id(ctx, org) if org is not None else None
+    if org is not None and org_key is None:
+        return SearchPage((), None)
+    found, following = await ctx.forge.workflows.search_workflows(
+        as_,
+        q=q.strip(),
+        scope=scope,
+        page=page,
+        limit=20,
+        org=org_key,
+    )
+    return SearchPage(await _summaries(ctx, session, as_, found), following)
 
 
 @action
@@ -282,6 +344,8 @@ async def view(ctx: Context, session: Session, owner: str, name: str) -> Workflo
         visibility=described.visibility,
         versions=tuple(sorted(described.versions, key=natural)),
         editable=writer is not None,
+        description=described.description,
+        yanked=(await yanks_of(ctx, [described.key])).get(described.key, {}),
     )
     if writer is None:
         return WorkflowView(summary)
@@ -391,8 +455,81 @@ async def create_version(
         raise Conflict(
             f"{writer.label}/{name} already has a version {version}. Choose another version."
         ) from None
+    await _describe_at(ctx, writer.identity, workflow, head)
     log.info("workflows.versioned", workflow=workflow, version=version, user_id=session.user_id)
     return version
+
+
+async def _describe_at(ctx: Context, as_: Identity, workflow: WorkflowId, at: VersionId) -> bool:
+    try:
+        content = await ctx.forge.workflows.read_workflow_media(
+            as_, workflow, at, "README.md", max_size=MAX_DEFINITION
+        )
+    except NotFound, Rejected:
+        return False
+    await ctx.forge.workflows.set_workflow_description(
+        workflow, description_of(content.decode("utf-8", errors="replace"))
+    )
+    return True
+
+
+@action
+async def describe_workflows(ctx: Context) -> int:
+    """Backfill each workflow's description from its newest version's README."""
+    changed = 0
+    for workflow in await ctx.forge.workflows.all_workflows():
+        if not workflow.versions:
+            continue
+        newest = max(workflow.versions, key=natural)
+        at = await ctx.forge.workflows.workflow_version(PLATFORM, workflow.id, newest)
+        changed += await _describe_at(ctx, PLATFORM, workflow.id, at)
+    return changed
+
+
+async def _editable_workflow(
+    ctx: Context, session: Session, owner: str, name: str, version: str
+) -> Workflow:
+    writer = await _writer(ctx, session, owner)
+    workflow = await _place(ctx, owner, name)
+    await ctx.forge.workflows.require_workflow_write(writer.identity, workflow)
+    await ctx.forge.workflows.workflow_version(writer.identity, workflow, version)
+    return await ctx.forge.workflows.describe_workflow(writer.identity, workflow)
+
+
+@action
+async def yank(
+    ctx: Context, session: Session, owner: str, name: str, version: str, reason: str
+) -> None:
+    reason = reason.strip()
+    if not reason or len(reason) > 2048:
+        raise Rejected("Give a reason of 1 to 2048 characters for stopping new use.")
+    described = await _editable_workflow(ctx, session, owner, name, version)
+    values = {
+        "workflow_key": described.key,
+        "version": version,
+        "reason": reason,
+        "by": session.user_id,
+        "at": ctx.now,
+    }
+    await ctx.db.execute(
+        insert(WorkflowYank)
+        .values(**values)
+        .on_conflict_do_update(
+            index_elements=[WorkflowYank.workflow_key, WorkflowYank.version],
+            set_=values,
+        )
+    )
+
+
+@action
+async def unyank(ctx: Context, session: Session, owner: str, name: str, version: str) -> None:
+    described = await _editable_workflow(ctx, session, owner, name, version)
+    await ctx.db.execute(
+        delete(WorkflowYank).where(
+            WorkflowYank.workflow_key == described.key,
+            WorkflowYank.version == version,
+        )
+    )
 
 
 @action
@@ -404,13 +541,15 @@ async def check(
     workflow: str | None = None,
     owner: str | None = None,
     name: str | None = None,
+    paths: Sequence[str] | None = None,
 ) -> tuple[Problem, ...]:
     """Every problem a version of `text` would be refused for, each at its
     YAML path, checked against the primitives its steps use as the person
     reads them. Nothing is written, no version is made and no plan is
     produced; none means it would make a version. A workflow's own files
     are the version's, so here a `${{ workflow.<path> }}` is checked
-    only for its form, and the reports of a `program.yaml` among them only
+    against `paths` when given, or only for its form otherwise; reports
+    of a `program.yaml` among them are checked only
     when a version is made. `workflow`, the id of the workflow this text
     is a draft of, is put first on the path a box is refused for holding.
     `owner` and `name` name that workflow when the id is not given.
@@ -423,7 +562,8 @@ async def check(
     own = WorkflowId(workflow) if workflow is not None else None
     if own is None and owner is not None and name is not None:
         own = await names.workflow_place(ctx, owner, name)
-    return tuple(await _problems(ctx, await _as_user(ctx, session), definition, own=own))
+    files = WorkflowFiles(frozenset(paths)) if paths is not None else None
+    return tuple(await _problems(ctx, await _as_user(ctx, session), definition, files, own=own))
 
 
 @action
@@ -522,9 +662,11 @@ async def newer_version(ctx: Context, as_: Identity, ref: WorkflowRef) -> str | 
         )
     except NotFound, Forbidden:
         return None
+    yanked = (await yanks_of(ctx, [described.key])).get(described.key, {})
     numbered = {
         number: version
         for version in described.versions
+        if version not in yanked
         if (number := version_number(version)) is not None
     }
     if not numbered or max(numbered) <= pinned:

@@ -61,6 +61,7 @@ TABLES = {
     "releases",
     "entries",
     "hold_ends",
+    "workflow_yanks",
 }
 
 

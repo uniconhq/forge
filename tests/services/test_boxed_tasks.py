@@ -461,3 +461,36 @@ async def _publish_over(setup: Setup, acme: Acme, task: TaskId, text: str) -> Pu
         )
     assert isinstance(found, Published), found
     return found
+
+
+async def test_a_withdrawn_inner_pin_survives_updating_its_workflows_name(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    from forge.services import workflows
+    from tests.services.conftest import signed_in
+
+    task, _ = await _classic(setup, acme, "withdrawn-renamed")
+    bob = await signed_in(setup, acme.fake, 8)
+    await workflows.yank(setup, bob, "bob", "judge", "v1", "Use the next checker")
+    repo = acme.fake.state.repos.pop(("bob", "judge.workflow"))
+    repo.name = "renamed.workflow"
+    acme.fake.state.repos[("bob", "renamed.workflow")] = repo
+    outer = acme.fake.state.repo("bob", "outer.workflow")
+    acme.fake.state.commit(
+        outer,
+        {"workflow.yaml": OUTER.replace("bob/judge@v1", "bob/renamed@v1").encode()},
+        "Use the current workflow name",
+        8,
+    )
+    await workflows.create_version(setup, bob, "bob", "outer", "v2")
+    current = await acme.fake.content.read_file(PLATFORM, task, "task.yaml")
+    edits = {
+        "task.yaml": Edit(current.content.replace(b"bob/outer@v1", b"bob/outer@v2"), current.token)
+    }
+    try:
+        saved = await task_save.save(setup, acme.ada, task, edits, confirm=True)
+    except ConfirmationRequired as asked:
+        saved = await task_save.save(
+            setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
+        )
+    assert isinstance(saved, Published), saved

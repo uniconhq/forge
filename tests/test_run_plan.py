@@ -691,9 +691,7 @@ def test_tour_gives_each_run_its_own_part(primitives: dict[str, PrimitiveDeclara
     assert plan.files_read(held(plan, "check", "early")).entrant == {("route", 1), ("route", 2)}
 
 
-def task_manifest_tour(
-    primitives: dict[str, PrimitiveDeclaration], *, second_length: int = 0
-) -> RunPlan:
+def task_manifest_tour(primitives: dict[str, PrimitiveDeclaration]) -> RunPlan:
     workflow = TOUR.replace("  best: number\n", "  best: number\n  manifest: file\n").replace(
         "${{ workflow.checker/program.yaml }}", "${{ inputs.manifest }}"
     )
@@ -714,10 +712,7 @@ def task_manifest_tour(
             TOUR_PATHS | {"check/one.yaml", "check/two.yaml"},
             manifests={
                 "check/one.yaml": reports + b"  moves: {type: text, optional: true}\n",
-                "check/two.yaml": reports.replace(
-                    b"length: {at_least: 0}", f"length: {{at_least: {second_length}}}".encode()
-                )
-                + b"  turns: {at_least: 0}\n",
+                "check/two.yaml": reports + b"  turns: {at_least: 0}\n",
             },
         )
     )
@@ -763,11 +758,39 @@ def test_a_task_manifest_missing_score_counts_as_zero_in_a_fold(
     assert not outcomes["total"].waiting
 
 
-def test_the_first_task_manifest_supplies_disagreeing_bounds(
+def test_task_manifests_with_disagreeing_bounds_are_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    plan = task_manifest_tour(primitives, second_length=2)
-    assert plan.reports["length"].at_least == 0
+    workflow = TOUR.replace("  best: number\n", "  best: number\n  manifest: file\n").replace(
+        "${{ workflow.checker/program.yaml }}", "${{ inputs.manifest }}"
+    )
+    task = (
+        TOUR_TASK.replace("inputs: [input, route]", "inputs: [input, route, manifest]")
+        .replace("entrant]", "entrant, check/one.yaml]", 1)
+        .replace("[parts/2.in, entrant]", "[parts/2.in, entrant, check/two.yaml]")
+    )
+    parsed = parse_run_workflow(workflow)
+    found = check_run_task(
+        parse_task(task),
+        parsed,
+        check_run_workflow(parsed, primitives, WorkflowFiles(frozenset(TOUR_FILES), TOUR_FILES)),
+        TOUR_PATHS | {"check/one.yaml", "check/two.yaml"},
+        {
+            "check/one.yaml": b"reports:\n  length: {at_least: 0}\n  score: {}\n",
+            "check/two.yaml": b"reports:\n  length: {at_least: 2}\n  score: {}\n",
+        },
+        previous=None,
+        submitted=False,
+        secrets=frozenset(),
+        machine=PLATFORM_MACHINE,
+    )
+    assert found.task is None
+    assert any(
+        "check/one.yaml" in problem["message"]
+        and "check/two.yaml" in problem["message"]
+        and "Give it the same bounds in every file." in problem["message"]
+        for problem in found.problems
+    )
 
 
 def test_a_tour_with_checks_plans_part_keys(primitives: dict[str, PrimitiveDeclaration]) -> None:
