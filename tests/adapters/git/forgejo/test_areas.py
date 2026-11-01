@@ -1191,6 +1191,7 @@ async def test_a_save_the_platform_writes_for_someone_names_them_by_their_privat
     they signed up with."""
     repo = "/api/v1/repos/acme/spring.sum.task"
     recorder.on("POST", f"{repo}/contents", ok({"commit": {"sha": "c-3"}}))
+    recorder.on("GET", f"{repo}/collaborators/Ada/permission", ok({"permission": "write"}))
     recorder.on(
         "GET",
         "/api/v1/users/search",
@@ -1210,6 +1211,84 @@ async def test_a_save_the_platform_writes_for_someone_names_them_by_their_privat
     person = {"name": "Ada L", "email": "ada@noreply.forge.test"}
     assert (sent["author"], sent["committer"]) == (person, person)
     assert recorder.headers("POST", f"{repo}/contents") == ["token admin"]
+
+
+@pytest.mark.parametrize("permission", ["write", "admin", "owner", "read", "none", None])
+@pytest.mark.parametrize("many", [False, True])
+async def test_a_persons_write_checks_current_permission_before_writing(
+    forgejo: ForgejoForge, recorder: Recorder, permission: str | None, many: bool
+) -> None:
+    repo = "/api/v1/repos/acme/spring.sum.task"
+    recorder.on("GET", f"{repo}/contents/task.yaml", ok({}, 404))
+    recorder.on("GET", "/api/v1/users/search", ok({"data": [USER]}))
+    recorder.on(
+        "GET",
+        f"{repo}/collaborators/ada/permission",
+        ok({"permission": permission}) if permission is not None else ok({}, 404),
+    )
+    recorder.on("POST", f"{repo}/contents", ok({"commit": {"sha": "c-3"}}))
+    recorder.on("POST", f"{repo}/contents/task.yaml", ok({"commit": {"sha": "c-3"}}))
+
+    async def write() -> VersionId:
+        if many:
+            return await forgejo.content.save_files(
+                PLATFORM,
+                TaskId("acme/spring/sum"),
+                {"task.yaml": b"a"},
+                expected={},
+                message="Save",
+                author=7,
+            )
+        return await forgejo.content.write_file(
+            PLATFORM,
+            TaskId("acme/spring/sum"),
+            "task.yaml",
+            b"a",
+            expected=None,
+            message="Save",
+            author=7,
+        )
+
+    if permission in {"write", "admin", "owner"}:
+        assert await write() == VersionId("c-3")
+    else:
+        with pytest.raises(Forbidden, match="no longer have write access"):
+            await write()
+        assert not [request for request in recorder.seen if request.method != "GET"]
+    assert recorder.calls().count("GET /api/v1/users/search") == 1
+    assert recorder.calls().count(f"GET {repo}/collaborators/ada/permission") == 1
+
+
+@pytest.mark.parametrize("many", [False, True])
+async def test_a_platform_write_without_a_person_does_not_check_permissions(
+    forgejo: ForgejoForge, recorder: Recorder, many: bool
+) -> None:
+    repo = "/api/v1/repos/acme/spring.sum.task"
+    recorder.on("GET", f"{repo}/contents/task.yaml", ok({}, 404))
+    recorder.on("POST", f"{repo}/contents", ok({"commit": {"sha": "c-3"}}))
+    recorder.on("POST", f"{repo}/contents/task.yaml", ok({"commit": {"sha": "c-3"}}))
+    if many:
+        await forgejo.content.save_files(
+            PLATFORM,
+            TaskId("acme/spring/sum"),
+            {"task.yaml": b"a"},
+            expected={},
+            message="Save",
+        )
+    else:
+        await forgejo.content.write_file(
+            PLATFORM,
+            TaskId("acme/spring/sum"),
+            "task.yaml",
+            b"a",
+            expected=None,
+            message="Save",
+        )
+    assert not [
+        request
+        for request in recorder.seen
+        if request.url.path.endswith("/permission") or request.url.path == "/api/v1/users/search"
+    ]
 
 
 async def test_a_save_is_one_commit_carrying_each_files_blob(

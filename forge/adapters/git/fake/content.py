@@ -115,6 +115,11 @@ class FakeContent:
             return False
         return True
 
+    async def may_write(self, place: ContentPlace, user_id: int) -> bool:
+        self._state.record("may_write", PLATFORM, place=place, user_id=user_id)
+        self._state.check_up()
+        return self._state.may_write(user_id, self._state.repo(*location(place)))
+
     async def list_contests(self, as_: Identity, org: OrgId) -> tuple[ContestId, ...]:
         self._state.record("list_contests", as_, org=org)
         self._state.check_up()
@@ -209,6 +214,8 @@ class FakeContent:
         self._state.check_up()
         repo = self._state.repo(*location(place))
         self._state.require_write(as_, repo)
+        if author is not None and not self._state.may_write(author, repo):
+            raise Forbidden("You no longer have write access to this task at the forge.")
         _check(repo, {path: expected})
         return VersionId(
             self._state.commit(repo, {path: content}, message, self._author(as_, author))
@@ -235,6 +242,8 @@ class FakeContent:
         self._state.check_up()
         repo = self._state.repo(*location(place))
         self._state.require_write(as_, repo)
+        if author is not None and not self._state.may_write(author, repo):
+            raise Forbidden("You no longer have write access to this task at the forge.")
         _check(repo, {path: expected.get(path) for path in files})
         for path, content in files.items():
             if content is None and path not in repo.files:

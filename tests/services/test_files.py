@@ -31,7 +31,7 @@ from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import files, submissions, taking_out, task_save, timelines, uploads
+from forge.services import files, submissions, taking_out, task_save, tasks, timelines, uploads
 from forge.services.access import Organiser
 from forge.services.task_save import Published
 from tests.services.conftest import (
@@ -55,6 +55,29 @@ async def manager(setup: Setup, acme: Acme, spring: ContestId) -> Organiser:
     found = await organiser(setup, acme.fake, 8, Scope("acme", "spring"), Role.MANAGER)
     acme.fake.reset_calls()
     return found
+
+
+@pytest.mark.parametrize("caller", ["files", "tasks", "taking_out", "task_save"])
+async def test_a_persons_write_is_refused_after_the_forge_revokes_their_role(
+    setup: Setup, acme: Acme, sum_task: TaskId, caller: str
+) -> None:
+    before = await acme.fake.content.list_files(PLATFORM, SPRING)
+    task_before = await acme.fake.content.list_files(PLATFORM, sum_task)
+    await acme.fake.orgs.revoke_role(7, Scope("acme"), Role.ADMIN)
+
+    with pytest.raises(Forbidden):
+        if caller == "files":
+            await files.write(setup, acme.ada, SPRING, "notes.txt", b"new", None)
+        elif caller == "tasks":
+            await tasks.create(setup, acme.ada, SPRING, "another")
+        elif caller == "taking_out":
+            await taking_out.take_out(setup, acme.ada, sum_task, taking_out.TakeOut.REMOVE)
+        else:
+            await publish(setup, acme, sum_task, statement=b"A changed statement.\n")
+
+    assert await acme.fake.content.list_files(PLATFORM, SPRING) == before
+    assert await acme.fake.content.list_files(PLATFORM, sum_task) == task_before
+    assert not await acme.fake.content.exists(TaskId("acme/spring/another"))
 
 
 async def test_the_history_names_an_author_who_no_longer_holds_a_role(
