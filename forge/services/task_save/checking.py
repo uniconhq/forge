@@ -141,6 +141,8 @@ async def _ask(
         asks.append(PIN_MOVED)
     if question is not None:
         asks.append(question)
+    if checked.hiding:
+        asks.append("This save hides things entrants may have seen or kept.")
     if not asks:
         return
     effect = await _save_effect(
@@ -158,6 +160,7 @@ async def _ask(
     marks = checked.run_task.self_reported if question and checked.run_task else {}
     raise ConfirmationRequired(
         " ".join([*asks, "Publish it, or keep it as a draft."]),
+        hiding=checked.hiding,
         changes=[*changed],
         regrades=regrades,
         **as_extra(effect),
@@ -319,7 +322,6 @@ async def _check_runs(
     problems = [
         *found.problems,
         *await _statement_ready(ctx, as_, task, head, written),
-        *await _shown_before_runs(ctx, task, definition, present, found.task),
         *await _leaderboard_reads(ctx, task, definition),
     ]
     if problems:
@@ -361,4 +363,5 @@ async def _check_runs(
     )
     if planned.plan is None:
         return Checked(definition, tuple(planned.problems), pins)
-    return Checked(definition, (), pins, found.task, planned.plan)
+    hiding = await _shown_before_runs(ctx, task, definition, present, found.task)
+    return Checked(definition, (), pins, found.task, planned.plan, tuple(hiding))

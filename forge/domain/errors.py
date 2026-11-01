@@ -193,6 +193,10 @@ class ConfirmationRequired(ServiceError):
 
     code = "confirmation_required"
 
+    def __init__(self, detail: str, *, hiding: tuple[str, ...] = (), **extra: Any) -> None:
+        self.hiding = hiding
+        super().__init__(detail, **({"hiding": hiding} if hiding else {}), **extra)
+
 
 class RegistrationRefused(ServiceError):
     """A registration the contest's rules turn away. Each rule has an error of

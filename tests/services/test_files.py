@@ -400,22 +400,38 @@ async def test_a_timeline_that_moves_behind_no_row_is_saved(
     )
 
 
-async def test_a_release_that_has_passed_is_not_moved_later(
+async def _warn_contest(setup: Setup, acme: Acme, content: bytes) -> tuple[str, ...]:
+    current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
+    with pytest.raises(ConfirmationRequired) as asked:
+        await files.write(setup, acme.ada, SPRING, "contest.yaml", content, current.token)
+    assert asked.value.hiding
+    assert (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content == current.content
+    await files.write(
+        setup,
+        acme.ada,
+        SPRING,
+        "contest.yaml",
+        content,
+        current.token,
+        confirm=True,
+        asked=asked.value.extra["asked"],
+    )
+    return asked.value.hiding
+
+
+async def test_a_release_moved_later_warns_and_saves(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    refused = await _refused(
-        setup, acme, _running(SUM_ENTRY + "    release_at: 2026-09-26T11:00:00Z\n")
-    )
-    started_later = await _refused(
-        setup, acme, _running(SUM_ENTRY).replace(b"T10:00:00Z", b"T11:00:00Z")
-    )
-
-    said = (
-        "sum was released on 26 September 2026 at 10:00 UTC, so entrants have seen it, and a later "
-        "release time would hide it again."
-    )
-    assert refused == [("tasks[0].release_at", said)]
-    assert started_later == [("start", said)]
+    for content in (
+        _running(SUM_ENTRY + "    release_at: 2026-09-26T11:00:00Z\n"),
+        _running(SUM_ENTRY).replace(b"T10:00:00Z", b"T11:00:00Z"),
+    ):
+        await _write_contest(setup, acme, _running(SUM_ENTRY))
+        lines = await _warn_contest(setup, acme, content)
+        assert lines == (
+            "sum was shown to entrants since 26 September 2026 at 10:00 UTC. "
+            "They may have seen or kept it; a later release time would hide it again.",
+        )
 
 
 async def test_a_due_is_not_moved_earlier_past_a_submission_it_would_make_late(
@@ -464,17 +480,14 @@ async def test_a_close_is_not_moved_later_once_the_task_has_revealed(
     await _write_contest(setup, acme, _running(SUM_ENTRY + "    closes: 2026-09-26T12:05:00Z\n"))
     clock.advance(timedelta(minutes=10))
 
-    refused = await _refused(
+    hiding = await _warn_contest(
         setup, acme, _running(SUM_ENTRY + "    closes: 2026-09-26T13:00:00Z\n")
     )
-
-    assert refused == [
-        (
-            "tasks[0].closes",
-            "sum's hidden results were shown on 26 September 2026 at 12:05 UTC, so a later closing "
-            "time would let entrants submit knowing them.",
-        )
-    ]
+    assert hiding == (
+        "sum's hidden results were shown to entrants since 26 September 2026 at 12:05 UTC. "
+        "They may have seen or kept them; a later closing time would let "
+        "entrants submit knowing them.",
+    )
 
 
 async def test_an_end_moved_before_a_submission_or_later_after_the_reveal_is_refused_at_end(
@@ -486,7 +499,7 @@ async def test_an_end_moved_before_a_submission_or_later_after_the_reveal_is_ref
     before = await _refused(setup, acme, contest.replace(b"T15:00:00Z", b"T11:59:00Z"))
     await _write_contest(setup, acme, contest.replace(b"T15:00:00Z", b"T12:05:00Z"))
     clock.advance(timedelta(minutes=10))
-    after = await _refused(setup, acme, contest)
+    after = await _warn_contest(setup, acme, contest)
 
     assert before == [
         (
@@ -495,13 +508,11 @@ async def test_an_end_moved_before_a_submission_or_later_after_the_reveal_is_ref
             "task closed. Close it later.",
         )
     ]
-    assert after == [
-        (
-            "end",
-            "sum's hidden results were shown on 26 September 2026 at 12:05 UTC, so a later closing "
-            "time would let entrants submit knowing them.",
-        )
-    ]
+    assert after == (
+        "sum's hidden results were shown to entrants since 26 September 2026 at 12:05 UTC. "
+        "They may have seen or kept them; a later closing time would let "
+        "entrants submit knowing them.",
+    )
 
 
 async def test_a_task_the_contest_did_not_list_never_opened_so_its_entry_may_open_it_later(
@@ -1017,3 +1028,32 @@ async def test_a_contest_change_before_its_start_does_not_ask(
     )
     written = await files.write(setup, acme.ada, SPRING, "contest.yaml", changed, before.token)
     assert isinstance(written, files.Written)
+
+
+async def test_recreating_contest_settings_can_confirm_a_hiding_warning(
+    setup: Setup, acme: Acme, spring: ContestId
+) -> None:
+    repo = acme.fake.state.repos[("acme", "spring.contest")]
+    acme.fake.state.commit(repo, {"contest.yaml": None}, "Remove settings", 7)
+    content = (
+        _running("")
+        .replace(b"state: published", b"state: draft")
+        .replace(b"tasks:\n", b"tasks: []\n")
+    )
+    content += b"hold: {from: 2026-09-26T11:00:00Z, until: staff}\n"
+    before = repo.head
+    with pytest.raises(ConfirmationRequired) as asked:
+        await files.write(setup, acme.ada, SPRING, "contest.yaml", content, None)
+    assert asked.value.hiding and repo.head == before
+    assert asked.value.extra["asked"] == before
+    await files.write(
+        setup,
+        acme.ada,
+        SPRING,
+        "contest.yaml",
+        content,
+        None,
+        confirm=True,
+        asked=asked.value.extra["asked"],
+    )
+    assert (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content == content

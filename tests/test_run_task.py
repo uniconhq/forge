@@ -1315,8 +1315,9 @@ def test_every_result_a_leaderboard_reads_of_a_task_is_listed_in_show_by_its_nam
     assert hidden_again(before, _scoring(text.replace("[compiled]", "[]")), ISLANDS_PATHS) == [
         {
             "path": "scoring.show",
-            "message": "Entrants have been shown compiled as soon as a grading ends, and what "
-            "they have been shown cannot be hidden again. List it as soon as before.",
+            "message": "Entrants have been shown compiled as soon as a grading ends, and what they "
+            "have been shown may have been seen or kept; it would now be hidden or shown "
+            "later.",
         }
     ]
 
@@ -1406,8 +1407,8 @@ def test_show_lists_a_report_by_its_name_but_not_one_also_a_file_of_the_task(
     assert hidden_again(before, _scoring(ISLANDS), ISLANDS_PATHS) == [
         {
             "path": "scoring.show",
-            "message": "Entrants have been shown log as soon as a grading ends, and what they "
-            "have been shown cannot be hidden again. List it as soon as before.",
+            "message": "Entrants have been shown log as soon as a grading ends, and what they have "
+            "been shown may have been seen or kept; it would now be hidden or shown later.",
         }
     ]
 
@@ -1434,18 +1435,23 @@ def test_what_was_shown_cannot_be_hidden_or_shown_later() -> None:
     assert problems == [
         {
             "path": "scoring.show.after_close",
-            "message": "Entrants have been shown sample_time as soon as a grading ends, and what "
-            "they have been shown cannot be hidden again. List it as soon as before.",
+            "message": "Entrants have been shown sample_time as soon as a "
+            "grading ends, and what they "
+            "have been shown may have been seen or kept; it would now be hidden or shown "
+            "later.",
         },
         {
             "path": "scoring.show",
-            "message": "Entrants have been shown st9 at the reveal, and what they have been "
-            "shown cannot be hidden again. List it as soon as before.",
+            "message": "Entrants have been shown st9 at the reveal, and what "
+            "they have been shown may "
+            "have been seen or kept; it would now be hidden or shown later.",
         },
         {
             "path": "scoring.show",
-            "message": "Entrants have been shown tests/3.in as soon as a grading ends, and what "
-            "they have been shown cannot be hidden again. List it as soon as before.",
+            "message": "Entrants have been shown tests/3.in as soon as a "
+            "grading ends, and what they "
+            "have been shown may have been seen or kept; it would now be hidden or shown "
+            "later.",
         },
     ]
     assert hidden_again(before, scoring, ISLANDS_PATHS - {"tests/3.in"})[2:] == []
@@ -1464,8 +1470,9 @@ def test_a_shown_file_is_compared_by_path_whichever_entry_lists_it() -> None:
     ) == [
         {
             "path": "scoring.show",
-            "message": "Entrants have been shown samples/ as soon as a grading ends, and what "
-            "they have been shown cannot be hidden again. List it as soon as before.",
+            "message": "Entrants have been shown samples/ as soon as a grading ends, and what they "
+            "have been shown may have been seen or kept; it would now be hidden or shown "
+            "later.",
         }
     ]
 
@@ -1643,9 +1650,10 @@ def test_a_name_shown_during_the_contest_may_not_read_fewer_of_the_runs_left(
     assert fewer_runs([(shown, reads)], fewer) == [
         {
             "path": "scoring.groups.sample_tests",
-            "message": "Entrants have been shown sample_tests during the contest over 2 runs "
-            "the task still has, and it would now read 1 fewer. What they have been shown "
-            "cannot be hidden again, so keep those runs in it.",
+            "message": "Entrants have been shown sample_tests during the "
+            "contest over 2 runs the task "
+            "still has, and it would now read 1 fewer. What they have been shown may have "
+            "been seen or kept; those runs would now be hidden.",
         }
     ]
     # A run the task no longer has is not counted, nor what was shown at

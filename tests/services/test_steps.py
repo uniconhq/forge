@@ -33,7 +33,7 @@ from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from forge.db.tables import Grading, GradingStep, StepOutput
 from forge.domain import exact_json
@@ -181,6 +181,33 @@ async def _grading(setup: Setup, acme: Acme, islands: Islands, **submitted: Any)
             submitted_at=made.at,
             publication_id=islands.publication,
             attempt=1,
+            status=GradingStatus.DISPATCHED,
+            queued_at=ctx.now,
+        )
+        ctx.db.add(row)
+        await ctx.db.flush()
+        return row.id
+
+
+async def _regrading(setup: Setup, acme: Acme, islands: Islands, previous: uuid.UUID) -> uuid.UUID:
+    """Another attempt of the same submission, against this publication."""
+    async with setup.unit_of_work() as ctx:
+        old = await ctx.db.get(Grading, previous)
+        assert old is not None
+        highest = await ctx.db.scalar(
+            select(func.max(Grading.attempt)).where(
+                Grading.submission_id == old.submission_id, Grading.pipeline == old.pipeline
+            )
+        )
+        row = Grading(
+            task_id=islands.task,
+            workspace_id=old.workspace_id,
+            submission_id=old.submission_id,
+            submission_number=old.submission_number,
+            submission_version=old.submission_version,
+            submitted_at=old.submitted_at,
+            publication_id=islands.publication,
+            attempt=(highest or 0) + 1,
             status=GradingStatus.DISPATCHED,
             queued_at=ctx.now,
         )
@@ -489,7 +516,7 @@ async def test_a_stored_compile_error_leaves_no_step_to_run(
     first = await _grading(setup, acme, islands)
     await _step(setup, acme, first, "early", "solution", _batch(NOT_COMPILED))
     await _report(setup, first, "early")
-    again = await _grading(setup, acme, islands)
+    again = await _regrading(setup, acme, islands, first)
 
     assert await _to_run(setup, again, "early") == []
     async with setup.unit_of_work() as ctx:
@@ -505,7 +532,8 @@ async def test_a_step_another_grading_did_first_has_nothing_to_do_and_the_rest_r
     setup: Setup, acme: Acme, islands: Islands
 ) -> None:
     await _saved(setup, acme, islands)
-    late, early = await _grading(setup, acme, islands), await _grading(setup, acme, islands)
+    early = await _grading(setup, acme, islands)
+    late = await _regrading(setup, acme, islands, early)
     assert [name for name, _ in await _to_run(setup, late, "early")] == ["solution", "compare"]
     await _step(setup, acme, early, "early", "solution", _batch())
 
@@ -560,7 +588,7 @@ async def test_the_store_reuses_every_step_and_from_scratch_reuses_none_and_repl
     await _saved(setup, acme, islands)
     first = await _grading(setup, acme, islands)
     await _early(setup, acme, first)
-    again = await _grading(setup, acme, islands)
+    again = await _regrading(setup, acme, islands, first)
 
     assert await _to_run(setup, again, "early") == []
     async with setup.unit_of_work() as ctx:
@@ -571,7 +599,7 @@ async def test_the_store_reuses_every_step_and_from_scratch_reuses_none_and_repl
     assert reused.status == GradingStatus.DONE and reused.result is not None
     assert reused.result["runs"] == (await _row(setup, first)).result["runs"]  # type: ignore[index]
 
-    scratch = await _grading(setup, acme, islands)
+    scratch = await _regrading(setup, acme, islands, first)
     assert [name for name, _ in await _to_run(setup, scratch, "early", True)] == [
         "solution",
         "compare",
@@ -584,7 +612,7 @@ async def test_the_store_reuses_every_step_and_from_scratch_reuses_none_and_repl
     assert [each.reusable for each in mine] == [True, True]
     assert [each.reusable for each in before] == [False, False]
 
-    later = await _grading(setup, acme, islands)
+    later = await _regrading(setup, acme, islands, first)
     assert await _to_run(setup, later, "early") == [("compare", [])]
     compare = await _job(setup, later, "compare", await _mint(setup, later, "early", "compare"))
     output = compare["inputs"]["batch"][0]["inputs"]["files"]["files"]["output"]["file"]
@@ -595,7 +623,8 @@ async def test_a_checker_change_builds_it_again_and_runs_only_the_compare_steps(
     setup: Setup, acme: Acme, islands: Islands
 ) -> None:
     await _saved(setup, acme, islands)
-    await _early(setup, acme, await _grading(setup, acme, islands))
+    first = await _grading(setup, acme, islands)
+    await _early(setup, acme, first)
     _, draft = await acme.fake.workflows.read_workflow_draft(
         PLATFORM, islands.workflow, "diff/diff.py"
     )
@@ -616,7 +645,7 @@ async def test_a_checker_change_builds_it_again_and_runs_only_the_compare_steps(
     assert await _to_run(setup, save, "save") == [("build-compare", [])]
     await _step(setup, acme, save, "save", "build-compare", _built())
     assert await _report(setup, save, "save") is GradingStatus.DONE
-    regrade = await _grading(setup, acme, changed)
+    regrade = await _regrading(setup, acme, changed, first)
 
     assert await _to_run(setup, regrade, "early") == [("compare", [])]
     compare = await _step(setup, acme, regrade, "early", "compare", _batch(score=True))
@@ -647,7 +676,8 @@ async def test_two_gradings_making_one_key_at_once_keep_one(
     setup: Setup, acme: Acme, islands: Islands
 ) -> None:
     await _saved(setup, acme, islands)
-    rows = [await _grading(setup, acme, islands) for _ in range(2)]
+    first = await _grading(setup, acme, islands)
+    rows = [first, await _regrading(setup, acme, islands, first)]
     access = [await _mint(setup, row, "early", "solution") for row in rows]
     jobs = [
         await _job(setup, row, "solution", each) for row, each in zip(rows, access, strict=True)
@@ -1174,12 +1204,13 @@ async def test_a_grading_under_way_keeps_what_it_reused_when_from_scratch_replac
     later_runs: list[str],
 ) -> None:
     await _saved(setup, acme, islands)
-    await _step(setup, acme, await _grading(setup, acme, islands), "early", "solution", _batch())
-    under_way = await _grading(setup, acme, islands)
+    first = await _grading(setup, acme, islands)
+    await _step(setup, acme, first, "early", "solution", _batch())
+    under_way = await _regrading(setup, acme, islands, first)
     access = await _mint(setup, under_way, "early", "solution")
     assert await steps.step_job(setup, under_way, _named(access), _bearer(access)) is None
 
-    scratch = await _grading(setup, acme, islands)
+    scratch = await _regrading(setup, acme, islands, first)
     await _step(setup, acme, scratch, "early", "solution", replaced, True)
     compare = await _step(setup, acme, under_way, "early", "compare", _batch(score=True))
 
@@ -1188,7 +1219,7 @@ async def test_a_grading_under_way_keeps_what_it_reused_when_from_scratch_replac
     result = (await _row(setup, under_way)).result
     assert result is not None
     assert [run["verdict"] for run in result["runs"]] == ["accepted", "accepted"]
-    later = await _grading(setup, acme, islands)
+    later = await _regrading(setup, acme, islands, first)
     assert [name for name, _ in await _to_run(setup, later, "early")] == later_runs
 
 
@@ -1330,3 +1361,14 @@ async def test_done_waits_for_the_store_a_bounded_time(
     monkeypatch.setattr(steps, "STORE_WAIT", timedelta(milliseconds=50))
     with pytest.raises(Unavailable, match="in time"):
         await _done_with(setup, acme, islands, hung)
+
+
+async def test_a_second_submission_of_identical_code_runs_its_steps_again(
+    setup: Setup, acme: Acme, islands: Islands
+) -> None:
+    await _saved(setup, acme, islands)
+    first = await _grading(setup, acme, islands)
+    await _early(setup, acme, first)
+    second = await _grading(setup, acme, islands)
+    assert (await _row(setup, first)).submission_id != (await _row(setup, second)).submission_id
+    assert [name for name, _ in await _to_run(setup, second, "early")] == ["solution", "compare"]

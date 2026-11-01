@@ -114,6 +114,7 @@ def _next_attempt(
     regrade: uuid.UUID | None = None,
     over_limit: int | None = None,
     released_split: bool | None = None,
+    from_scratch: bool = False,
 ) -> Grading:
     """The next attempt on `row`'s line against `publication`, in the
     regrade `regrade` when given and otherwise in the one `row` belongs to,
@@ -139,4 +140,5 @@ def _next_attempt(
         pipeline=row.pipeline,
         early=row.early_id,
         released_split=row.released_split if released_split is None else released_split,
+        from_scratch=from_scratch,
     )

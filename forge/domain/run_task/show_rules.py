@@ -250,5 +250,5 @@ def _hidden(entry: str, then: str, time: str | None) -> Problem:
     return Problem(
         path=path_text(("scoring", "show", time)) if time else "scoring.show",
         message=f"Entrants have been shown {entry} {SHOWN_WORDS[then]}, and what they have "
-        "been shown cannot be hidden again. List it as soon as before.",
+        "been shown may have been seen or kept; it would now be hidden or shown later.",
     )

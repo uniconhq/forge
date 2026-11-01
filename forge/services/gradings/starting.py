@@ -55,6 +55,7 @@ def new_row(
     early: uuid.UUID | None = None,
     unwaited: bool = False,
     released_split: bool = False,
+    from_scratch: bool = False,
 ) -> Grading:
     """A new `queued` grading, added to the unit of work, whose run starts once the unit of work
     commits, in the background when it is `unwaited`, since nobody asking
@@ -87,6 +88,7 @@ def new_row(
         pipeline=pipeline,
         early_id=early,
         released_split=released_split,
+        from_scratch=from_scratch,
     )
     ctx.db.add(row)
     if over_limit is not None:

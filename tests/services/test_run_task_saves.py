@@ -439,20 +439,25 @@ async def test_what_was_shown_under_a_graded_publication_is_not_hidden_again(
     )
     dropped = text.replace(", samples/]", "]")
 
-    assert _errors(await _save(setup, acme, sum_task, {"task.yaml": later.encode()})) == [
-        (
-            "scoring.show.after_close",
-            "Entrants have been shown sample_time as soon as a grading ends, and what they have "
-            "been shown cannot be hidden again. List it as soon as before.",
+    for text_after, named in ((later, "sample_time"), (dropped, "samples/")):
+        before = await acme.fake.content.list_files(PLATFORM, sum_task)
+        with pytest.raises(ConfirmationRequired) as asked:
+            await _save(setup, acme, sum_task, {"task.yaml": text_after.encode()})
+        assert len(asked.value.hiding) == 1
+        assert named in asked.value.hiding[0]
+        assert "since" in asked.value.hiding[0] and "seen or kept" in asked.value.hiding[0]
+        assert (await acme.fake.content.list_files(PLATFORM, sum_task)).version == before.version
+        assert isinstance(
+            await _save(
+                setup,
+                acme,
+                sum_task,
+                {"task.yaml": text_after.encode()},
+                confirm=True,
+                asked=asked.value.extra["asked"],
+            ),
+            Published,
         )
-    ]
-    assert _errors(await _save(setup, acme, sum_task, {"task.yaml": dropped.encode()})) == [
-        (
-            "scoring.show",
-            "Entrants have been shown samples/ as soon as a grading ends, and what they have "
-            "been shown cannot be hidden again. List it as soon as before.",
-        )
-    ]
     # The same files listed one by one show as much.
     each = text.replace("samples/]", "samples/1.in, samples/1.ans, samples/2.in, samples/2.ans]")
     listed = await _save(setup, acme, sum_task, {"task.yaml": each.encode()}, confirm=True)

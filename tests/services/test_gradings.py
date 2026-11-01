@@ -865,3 +865,20 @@ async def test_a_cancel_the_ci_refuses_still_cancels_the_grading(
 
     assert cancelled.status == GradingStatus.CANCELLED
     assert (await _row(setup, row.id)).status == GradingStatus.CANCELLED
+
+
+async def test_from_scratch_restarts_the_latest_submission_attempt_before_dispatch(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    row = await _submit(setup, acme, entered)
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+    with pytest.raises(WrongStatus):
+        await gradings.regrade_from_scratch(setup, manager, row.id)
+    await _graded(setup, row.id)
+    made = await gradings.regrade_from_scratch(setup, manager, row.id)
+    fresh = await _row(setup, made.id)
+    assert fresh.from_scratch and fresh.pipeline == "early"
+    assert fresh.submission_id == row.submission_id
+    assert fresh.attempt == row.attempt + 1
+    assert fresh.status == GradingStatus.DISPATCHED
+    assert not (await _row(setup, row.id)).from_scratch

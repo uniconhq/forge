@@ -77,7 +77,7 @@ from decimal import Decimal
 from typing import Any, cast
 
 from pydantic import ValidationError
-from sqlalchemy import select, text, tuple_, update
+from sqlalchemy import and_, false, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
@@ -386,6 +386,7 @@ async def step_done(
                 StepOutput(
                     id=uuid.uuid4(),
                     org_id=org,
+                    submission_id=None if held.pipeline == "save" else row.submission_id,
                     key=keys[item.run],
                     pipeline=held.pipeline,
                     reusable=True,
@@ -969,6 +970,12 @@ class _Reader:
                         StepOutput.org_id == self.org,
                         StepOutput.key == key,
                         StepOutput.reusable,
+                        or_(
+                            and_(StepOutput.pipeline == "save", StepOutput.submission_id.is_(None)),
+                            StepOutput.submission_id == self.row.submission_id
+                            if self.row.submission_id is not None
+                            else false(),
+                        ),
                         StepOutput.pipeline.in_(reads_from(self.pipeline)),
                     )
                 )
@@ -1723,16 +1730,32 @@ async def _check_stored(
 
 
 async def _keep(ctx: Context, found: StepOutput, *, replace: bool) -> None:
-    """Keep one item, reused when it is the first of its org's key in its
-    pipeline, and otherwise only the grading's own. To `replace`, from
+    """Keep one item, reused when it is the first of its submission's key in its
+    pipeline, or its org's key for a save row, and otherwise only the grading's own.
+    To `replace`, from
     scratch, it is reused in place of the one reused till now, which stays
     its own grading's."""
     values = {column.name: getattr(found, column.name) for column in StepOutput.__table__.columns}
+    scope = (
+        StepOutput.submission_id == found.submission_id
+        if found.submission_id is not None
+        else and_(StepOutput.org_id == found.org_id, StepOutput.submission_id.is_(None))
+    )
+    index = (
+        ["submission_id", "key", "pipeline"]
+        if found.submission_id is not None
+        else ["org_id", "key", "pipeline"]
+    )
+    predicate = (
+        "reusable and submission_id is not null"
+        if found.submission_id is not None
+        else "reusable and submission_id is null"
+    )
     if replace:
         await ctx.db.execute(
             update(StepOutput)
             .where(
-                StepOutput.org_id == found.org_id,
+                scope,
                 StepOutput.key == found.key,
                 StepOutput.pipeline == found.pipeline,
                 StepOutput.reusable,
@@ -1743,9 +1766,7 @@ async def _keep(ctx: Context, found: StepOutput, *, replace: bool) -> None:
     first = await ctx.db.execute(
         insert(StepOutput)
         .values(**values)
-        .on_conflict_do_nothing(
-            index_elements=["org_id", "key", "pipeline"], index_where=text("reusable")
-        )
+        .on_conflict_do_nothing(index_elements=index, index_where=text(predicate))
         .returning(StepOutput.id)
     )
     if first.scalar_one_or_none() is None:

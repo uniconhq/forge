@@ -8,7 +8,7 @@ a rejudge are new rows; nothing about one row is written into another.
 """
 
 from forge.services.gradings.attempt_history import _next_attempt, last_goods, latest_of, record
-from forge.services.gradings.controls import cancel, free_user, rejudge, retry
+from forge.services.gradings.controls import cancel, free_user, regrade_from_scratch, rejudge, retry
 from forge.services.gradings.following import behind, follow, stop
 from forge.services.gradings.listing import (
     _is_latest,
@@ -182,6 +182,7 @@ __all__ = [
     "queue_submission",
     "record",
     "regrade",
+    "regrade_from_scratch",
     "rejudge",
     "retry",
     "retry_by_itself",

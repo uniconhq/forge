@@ -29,6 +29,7 @@ from forge.adapters.ids import parse_task, parse_workspace
 from forge.db.tables import Entrant, EntrantMember, Upload
 from forge.domain.errors import (
     AlreadyInvited,
+    ConfirmationRequired,
     EntrantChanged,
     EntrantFull,
     EntrantHasSubmissions,
@@ -577,8 +578,13 @@ async def test_an_organiser_extends_an_entrant_on_the_named_tasks_alone(
     with pytest.raises(TaskClosed) as refused:
         await _submit(setup, acme, dan, sum_task, "key-0002-bbbb")
     assert refused.value.extra == {"reason": "closed"}
-    with pytest.raises(InvalidExtension, match="third's hidden results were shown"):
+    with pytest.raises(ConfirmationRequired) as asked:
         await entrants.extend(setup, manager, SPRING, takers.id, timedelta(hours=1))
+    assert "third's hidden results were shown" in asked.value.hiding[0]
+    extended = await entrants.extend(
+        setup, manager, SPRING, takers.id, timedelta(hours=1), confirm=True
+    )
+    assert extended.time_extension == timedelta(hours=1)
     made = (
         "sum's submission 1, made on 26 September 2026 at 16:30 UTC, would then be after the "
         "task closed"

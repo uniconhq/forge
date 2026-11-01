@@ -52,6 +52,7 @@ async def follow(ctx: Context, early: Grading) -> Grading | None:
         pipeline=LATE,
         early=early.id,
         released_split=early.released_split,
+        from_scratch=early.from_scratch,
         unwaited=True,
     )
 

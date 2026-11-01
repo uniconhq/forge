@@ -34,7 +34,7 @@ from forge.services.task_save.records import (
     Published,
 )
 from forge.services.task_save.sources import _published_snapshot, _saved_snapshot
-from forge.services.task_save.stored_facts import _marks_digest
+from forge.services.task_save.stored_facts import _hiding_digest, _marks_digest
 from forge.services.task_save.writing import _draft, _landed_under, _plan_files, _write
 
 log = get_logger(__name__)
@@ -135,7 +135,9 @@ async def save(
     expected = basis if question is None else f"{basis}:{_marks_digest(checked.run_task)}"
     if pinned:
         expected = f"{expected}:{PIN_ANSWER}"
-    exact = question is not None or pinned
+    if checked.hiding:
+        expected = f"{expected}:{_hiding_digest(checked.hiding)}"
+    exact = question is not None or pinned or bool(checked.hiding)
     confirmed = confirm and (asked == expected if exact else asked in (None, basis))
     if not confirmed:
         await _ask(

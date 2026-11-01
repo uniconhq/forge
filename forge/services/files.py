@@ -262,7 +262,7 @@ async def write(
             current.version
             or (await ctx.forge.content.list_files(organiser.identity, contest)).version
             if current is not None
-            else None
+            else (await ctx.forge.content.list_files(organiser.identity, contest)).version
         )
         if confirm and asked is not None and asked != basis:
             raise Conflict(
@@ -274,20 +274,24 @@ async def write(
                 log.info("files.refused", place=place, keys=keys, user_id=organiser.user.id)
                 raise AdminOnly(admin_only_refusal(scope.name, keys), keys=keys)
         standing = await _last_read(ctx, organiser, contest, before)
-        problems = await timelines.check_contest(ctx, contest, standing, after)
+        timeline = await timelines.check_contest(ctx, contest, standing, after)
+        problems = timeline.problems
         checked = await leaderboards.check_contest(ctx, contest, standing, after)
         problems += checked.problems
         notes = checked.notes
         if problems:
             raise InvalidDefinition(CONTEST_FILE, problems)
-        if standing is not None and has_started(standing, ctx.now) and not confirm:
-            changes = contest_changes(standing, after)
-            if changes:
-                assert current is not None
+        hiding = (*timeline.hiding, *checked.hiding)
+        if not confirm:
+            changes = (
+                contest_changes(standing, after)
+                if standing is not None and has_started(standing, ctx.now)
+                else ()
+            )
+            if changes or hiding:
                 raise ConfirmationRequired(
-                    " ".join(
-                        ["The contest is running, so this save asks first.", *changes, "Save it?"]
-                    ),
+                    " ".join(["This save asks first.", *changes, "Save it?"]),
+                    hiding=tuple(hiding),
                     changes=list(changes),
                     asked=str(basis),
                 )

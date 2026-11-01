@@ -79,6 +79,7 @@ from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.domain.leaderboard_task_check import (
     Scored,
     across,
+    hold_hiding,
     hold_problems,
     leaderboards_of,
     marks_of,
@@ -491,6 +492,7 @@ class ContestCheck:
 
     problems: list[Problem]
     notes: list[str]
+    hiding: tuple[str, ...] = ()
 
 
 async def check_contest(
@@ -505,7 +507,7 @@ async def check_contest(
     none yet left to its first save (`leaderboard_checks.across`), and against
     its newest while a save row still checks that one, since it then takes
     over with no save to check the leaderboards again (`_checking`); the hold's
-    `from` inside the contest, and never set or moved to a time passed;
+    `from` inside the contest, and a hiding warning when set in the past;
     and C1's last rule, a task's marks not lowered below the marks a row
     holds on it."""
     listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
@@ -517,7 +519,7 @@ async def check_contest(
     found += hold_problems(before, settings, ctx.now)
     problems = [Problem(path=path_text(path), message=message) for path, message in found]
     problems += await _held_marks(ctx, settings, ids)
-    return ContestCheck(problems, [])
+    return ContestCheck(problems, [], hold_hiding(before, settings, ctx.now))
 
 
 async def _scored(

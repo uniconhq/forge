@@ -68,6 +68,7 @@ async def _graded_under(ctx: Context, task: TaskId) -> set[str]:
     """The publications a graded submission of the task ran under: once
     there is one, T7 and T10 hold.
     """
+    # Only entrant submissions count; filter staff test submissions when feature 13 adds them.
     return set(
         (
             await ctx.db.scalars(

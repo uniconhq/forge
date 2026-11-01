@@ -307,7 +307,20 @@ async def test_the_holds_from_stays_inside_the_contest_and_is_never_set_to_a_tim
     late = held.replace("T14:00", "T15:00")
     sooner = held.replace("end: 2026-09-26T15:00:00Z", "end: 2026-09-26T13:30:00Z")
 
-    assert [path for path, _ in await _refused(setup, acme, passed)] == ["hold.from"]
+    current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _write(setup, acme, passed)
+    assert "leaderboard submissions shown since" in asked.value.hiding[0]
+    await files.write(
+        setup,
+        acme.ada,
+        SPRING,
+        "contest.yaml",
+        passed.encode(),
+        current.token,
+        confirm=True,
+        asked=asked.value.extra["asked"],
+    )
     assert [path for path, _ in await _refused(setup, acme, late)] == ["hold.from"]
     await _write(setup, acme, held)
     assert await _refused(setup, acme, sooner) == [
