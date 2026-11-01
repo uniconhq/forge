@@ -51,7 +51,7 @@ from forge.services import gradings, submissions, task_save, tasks, timelines
 from forge.services.access import Organiser
 from forge.services.task_save import Draft, Published
 from forge.services.task_save.records import Preparing
-from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES, FakeClock
+from forge.testing import CLASSIC, PLACEHOLDER_DIGEST, PRIMITIVES, FakeClock, prepared
 from tests.services.conftest import Acme, Entered, checked, organiser, upload, write_contest
 
 RUNNING = """\
@@ -137,6 +137,7 @@ async def _save(
     result = await task_save.save(
         setup, who or acme.ada, task, await _edits(acme, task, contents), **options
     )
+    result = await prepared(setup, who or acme.ada, task, result)
     if isinstance(result, Published):
         await checked(setup, task)
     return result
@@ -186,13 +187,19 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
         scores=("No score changes.",),
         reading=("Entrants read the task from its release.",),
     )
-    (saved,) = acme.fake.calls_to("save_files")
-    # The platform writes it, with ada as its author (#443).
-    assert (saved.identity, saved.arguments["author"]) == (PLATFORM, acme.ada.user.id)
-    assert saved.arguments["paths"] == [PLAN_PATH, RUNS_PATH, "statement.md"]
+    saved = acme.fake.calls_to("save_files")
+    assert len(saved) == 3
+    assert all(
+        (call.identity, call.arguments["author"]) == (PLATFORM, acme.ada.user.id) for call in saved
+    )
+    assert [call.arguments["paths"] for call in saved] == [
+        ["statement.md"],
+        ["environment.lock"],
+        [PLAN_PATH, RUNS_PATH],
+    ]
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
     head = repo.history[-1]
-    assert (head.author_id, head.message) == (7, "Save")
+    assert (head.author_id, head.message) == (7, "Prepare task plan")
     assert repo.versions == {"published/1": head.version}
     assert sorted(path for path in repo.files if path.startswith("plans/")) == [
         PLAN_PATH,
@@ -207,7 +214,7 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
     assert sorted(plan.task_files) == ["tests/1.ans", "tests/1.in"]
     reads = acme.fake.calls_to("read_declaration")
     assert {call.arguments["primitive"] for call in reads} == {"exec"}
-    assert all(call.identity == acme.ada.identity for call in reads)
+    assert {call.identity for call in reads} == {acme.ada.identity, PLATFORM}
     (published,) = acme.fake.calls_to("publish")
     assert published.identity == PLATFORM
     (listed,) = await task_save.list_publications(setup, acme.ada, sum_task)
@@ -287,12 +294,13 @@ async def test_a_plan_file_the_compiler_no_longer_writes_is_removed_in_the_same_
     result = await _save(setup, acme, sum_task, {"statement.md": b"Add two numbers.\n"})
 
     assert isinstance(result, Published)
-    (saved,) = acme.fake.calls_to("save_files")
+    draft, lock, saved = acme.fake.calls_to("save_files")
+    assert draft.arguments["paths"] == ["statement.md"]
+    assert lock.arguments["paths"] == ["environment.lock"]
     assert saved.arguments["paths"] == [
         "plans/default.json",
         PLAN_PATH,
         RUNS_PATH,
-        "statement.md",
     ]
     assert sorted(path for path in repo.files if path.startswith("plans/")) == [
         PLAN_PATH,
@@ -389,7 +397,8 @@ async def test_a_managers_save_of_everything_else_publishes(
     )
 
     assert isinstance(result, Published), result
-    (saved,) = acme.fake.calls_to("save_files")
+    draft, lock, saved = acme.fake.calls_to("save_files")
+    assert all(call.arguments["author"] == manager.user.id for call in (draft, lock, saved))
     assert (saved.identity, saved.arguments["author"]) == (PLATFORM, manager.user.id)
 
 

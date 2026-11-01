@@ -43,7 +43,7 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 import pytest
@@ -53,7 +53,7 @@ from forge.db.migrations import upgrade_to_head
 from forge.db.tables import Entrant, EntrantMember, Name, metadata
 from forge.domain.clock import FakeClock
 from forge.domain.identity import PLATFORM, AsUser
-from forge.domain.ids import ContestId, OrgId
+from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.keys import key_from_name, random_key
 from forge.domain.workflow_definition import classic_files
 from forge.domain.workflows import Visibility
@@ -62,6 +62,10 @@ from forge.runtime.context import Context
 from forge.runtime.held import hold, release
 from forge.runtime.setup import Setup
 from forge.settings import Settings
+
+if TYPE_CHECKING:
+    from forge.services.access import Organiser
+    from forge.services.task_save.records import Draft, Preparing, Published
 
 __all__ = [
     "APP_URL",
@@ -81,6 +85,7 @@ __all__ = [
     "Visibility",
     "logged",
     "name_places",
+    "prepared",
     "register_entrant",
     "seed_classic",
     "seed_primitives",
@@ -497,3 +502,20 @@ async def ctx(setup: Setup) -> AsyncIterator[Context]:
     """One unit of work, committed when the test ends."""
     async with setup.unit_of_work() as context:
         yield context
+
+
+async def prepared(
+    setup: Setup, organiser: Organiser, task: TaskId, result: Published | Draft | Preparing
+) -> Published | Draft:
+    """Finish a fixture's background preparation, preserving its exact save answer."""
+    from pydantic import TypeAdapter
+
+    from forge.services.task_save import preparing
+    from forge.services.task_save.records import Preparing, Published
+
+    if not isinstance(result, Preparing):
+        return result
+    await setup.settle()
+    state = await preparing.read(setup, organiser, task)
+    assert state.status == "ready", state.reason
+    return TypeAdapter(Published).validate_python(state.result)

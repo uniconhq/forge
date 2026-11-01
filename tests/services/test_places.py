@@ -32,7 +32,7 @@ from forge.runtime.setup import Setup
 from forge.services import entrants, files, places, task_save, uploads
 from forge.services.turns import Turns
 from forge.settings import Settings
-from forge.testing import APP_URL, FORGE_URL, logged
+from forge.testing import APP_URL, FORGE_URL, logged, prepared
 from tests.services.conftest import (
     RUNNING,
     SPRING,
@@ -136,6 +136,7 @@ async def test_a_first_live_publication_makes_the_places_though_an_earlier_one_w
         },
         confirm=True,
     )
+    waiting = await prepared(setup, acme.ada, sum_task, waiting)
     assert isinstance(waiting, task_save.Published), waiting
     await setup.settle()
     assert _made(acme.fake) == []

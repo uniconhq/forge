@@ -1299,7 +1299,12 @@ class _Job:
         placed = {
             port: await self._value(value, run, item, manifest=port == MANIFEST)
             for port, value in inputs.items()
+            if port != "environment"
         }
+        if "environment" in inputs:
+            placed["environment"] = await self._value(
+                inputs["environment"], run, item, languages=_chosen(placed)
+            )
         for port in self.step.folders or ():
             given = placed.get(port)
             if isinstance(given, dict) and set(given) == {"file"}:
@@ -1324,6 +1329,7 @@ class _Job:
         *,
         name: str | None = None,
         manifest: bool = False,
+        languages: set[str] | None = None,
     ) -> Any:
         if "environment" in value:
             lock = value["environment"]
@@ -1334,10 +1340,17 @@ class _Job:
                 raise InvalidCallback(
                     "The job must name a locked platform: linux-64 or linux-aarch64."
                 )
-            languages = lock["platforms"][self.platform]
+            locked_languages = lock["platforms"][self.platform]
+            if languages is not None and not languages <= locked_languages.keys():
+                raise Misconfigured("The task's lock does not cover the step's chosen language.")
+            selected = {
+                name: entry
+                for name, entry in locked_languages.items()
+                if languages is None or name in languages
+            }
             pieces = {}
-            for entry in languages.values():
-                for piece in entry.get("pypi", []):
+            for entry in selected.values():
+                for piece in [*entry.get("conda", []), *entry.get("pypi", [])]:
                     digest = piece["sha256"]
                     path = f"cache/pieces/{digest}"
                     pieces[digest] = path
@@ -1358,7 +1371,7 @@ class _Job:
                     "version": 2,
                     "prefix": lock["prefix"],
                     "platform": self.platform,
-                    "languages": languages,
+                    "languages": selected,
                     "pieces": pieces,
                 },
                 sort_keys=True,
@@ -1668,7 +1681,7 @@ async def _objects(
                 ports.get("environment", {}).get("environment", {}).get("platforms", {}).values()
             ):
                 for entry in languages.values():
-                    for piece in entry.get("pypi", []):
+                    for piece in [*entry.get("conda", []), *entry.get("pypi", [])]:
                         found[piece["sha256"]] = piece["size"]
     task = TaskId(row.task_id)
     listing = await ctx.forge.content.list_files(PLATFORM, task, at=publication.version)
@@ -1872,3 +1885,22 @@ def _result_problem(result: Mapping[str, Any]) -> str | None:
     if broken is not None:
         return f"The result does not match result.schema.json {broken}"[:ERROR_LIMIT]
     return None
+
+
+def _chosen(ports: Mapping[str, Any]) -> set[str] | None:
+    """The languages a job's placed inputs choose, or none when a language
+    is not a plain value yet, such as one wired from another step's output:
+    the job then lists every language the lock holds, as the plan locked
+    them all (`environment_plan.languages_in`).
+    """
+    found: set[str] = set()
+    if "language" in ports:
+        if not isinstance(ports["language"], str):
+            return None
+        found.add(ports["language"])
+    for program in ports.get(PROGRAMS, {}).get(PROGRAMS, {}).values():
+        inner = _chosen(program)
+        if inner is None:
+            return None
+        found |= inner
+    return {"python" if language == "ipynb" else language for language in found}

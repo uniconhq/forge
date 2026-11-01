@@ -30,6 +30,7 @@ from forge.runtime.setup import Setup
 from forge.services import files, leaderboards, task_save
 from forge.services.task_save import Draft, Published
 from forge.services.task_save.records import Preparing
+from forge.testing import prepared
 from tests.services.conftest import RUNNING, SPRING, Acme, checked, make_task, write_contest
 from tests.services.test_run_task_saves import TASKS
 
@@ -88,11 +89,13 @@ async def _save(
     contents = {"task.yaml": text.encode(), **(data or {})}
     edits = {path: Edit(content, head.tokens.get(path)) for path, content in contents.items()}
     try:
-        return await task_save.save(setup, acme.ada, task, edits, confirm=True)
+        result = await task_save.save(setup, acme.ada, task, edits, confirm=True)
     except ConfirmationRequired as asked:
-        return await task_save.save(
+        result = await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
+
+    return await prepared(setup, acme.ada, task, result)
 
 
 async def _live(setup: Setup, acme: Acme, text: str = MARKED) -> TaskId:

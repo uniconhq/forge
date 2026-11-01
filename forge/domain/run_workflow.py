@@ -576,15 +576,21 @@ class _Checker:
     def _ports(
         self, at: Path, use: str, ports: Mapping[str, Port], given: Mapping[str, Any]
     ) -> None:
+        from forge.domain.run_plan.records import implicit_inputs
+
         # A program's settings are read as YAML wrote them, so a key may be a
         # number or nothing, which is no input's name and sorts with no text.
         for name in given:
+            if name in implicit_inputs(use):
+                self.refuse((*at, name), "The task's lock supplies this input; leave it unwired.")
             if not isinstance(name, str):
                 self.refuse((*at, str(name)), f"{name!r} is not an input's name. Remove it.")
         unknown = {name for name in given if isinstance(name, str)} - set(ports) - {SELF_REPORTED}
         for name in sorted(unknown):
             self.refuse((*at, name), f"{use} has no input called {name}. Remove it.")
         for name, port in ports.items():
+            if name in implicit_inputs(use):
+                continue
             if not port.optional and name not in given:
                 self.refuse((*at, name), f"{use} needs a value for its input {name}.")
 

@@ -11,6 +11,7 @@ import os
 import re
 import sys
 from datetime import timedelta
+from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
@@ -313,6 +314,7 @@ class Settings(BaseSettings):
     public_url: HttpUrl
     internal_url: HttpUrl
     machine_url: HttpUrl
+    resolve_cache: Path = Path("/tmp/unicon-resolve")
     environment_max: int = Field(default=2 * 1024**3, ge=1)
     organiser_file_max: int = Field(default=20 * 1024**3, ge=1)
     upload_part_size: int = Field(default=16 * 1024**2, ge=5 * 1024**2)

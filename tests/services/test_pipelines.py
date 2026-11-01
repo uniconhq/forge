@@ -788,7 +788,10 @@ async def test_an_early_compile_error_gives_every_late_run_its_verdict_and_no_la
     failed = {"r1": "compile_error", "r2": "compile_error"}
     await _step(setup, acme, early.id, "early", "solution", _batch(failed, log="main.py:1: no"))
     access = await _mint(setup, early.id, "early", "compare")
-    assert await steps.step_job(setup, early.id, _named(access), _bearer(access)) is None
+    assert (
+        await steps.step_job(setup, early.id, _named(access), _bearer(access), platform="linux-64")
+        is None
+    )
     assert await _report(setup, early.id, "early") is GradingStatus.DONE
     await setup.settle()
 
@@ -973,7 +976,7 @@ async def test_a_pointer_to_an_upload_the_submission_did_not_take_is_given_no_li
         await ctx.db.execute(update(UploadRow).values(consumed_by="acme/spring/@u9/islands#1"))
 
     with pytest.raises(Misconfigured, match="is no upload it took"):
-        await steps.step_job(setup, early.id, _named(access), _bearer(access))
+        await steps.step_job(setup, early.id, _named(access), _bearer(access), platform="linux-64")
 
 
 async def test_a_task_with_nothing_early_makes_its_late_row_at_once(

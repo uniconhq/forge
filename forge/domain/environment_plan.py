@@ -20,7 +20,11 @@ def languages_in(inputs: Mapping[str, Any], entrant: Mapping[str, EntrantInput])
             found.update(
                 entry.form.options if entry.form.options is not None else (entry.options or ())
             )
-    for program in inputs.get("programs", {}).values():
+    if "step" in language:
+        from forge.domain.environment.tools import LANGUAGES
+
+        found.update(LANGUAGES)
+    for program in inputs.get("programs", {}).get("programs", {}).values():
         found.update(languages_in(program, entrant))
     return {"python" if each == "ipynb" else each for each in found}
 
@@ -73,3 +77,17 @@ def with_environment(
             }
         )
     return plan.model_copy(update={"steps": amended})
+
+
+def languages_of(plan: RunPlan, entrant: Mapping[str, EntrantInput]) -> set[str]:
+    return {
+        language
+        for step in plan.steps.values()
+        if step.primitive == EXEC_USE
+        for ports in (
+            [step.inputs]
+            if step.inputs is not None
+            else [item.inputs for item in (step.items or {}).values()]
+        )
+        for language in languages_in(ports, entrant)
+    }

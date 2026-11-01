@@ -22,7 +22,7 @@ from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
 from forge.services import contests, identity, names, orgs, roles, task_save, tasks
 from forge.services.task_save import Draft, Published
-from forge.testing import CLASSIC
+from forge.testing import CLASSIC, prepared
 from tests.services.conftest import Acme, checked, organiser, signed_in
 
 KEY_LENGTH = 26
@@ -156,6 +156,7 @@ async def _save_with(setup: Setup, acme: Acme, task: TaskId, workflow: bytes) ->
     saved = await task_save.save(
         setup, acme.ada, task, {"task.yaml": Edit(content, head.tokens["task.yaml"])}
     )
+    saved = await prepared(setup, acme.ada, task, saved)
     if isinstance(saved, Published):
         await checked(setup, task)
     return saved

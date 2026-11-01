@@ -66,6 +66,7 @@ class FakeUploads:
 
     held: dict[str, dict[tuple[str, int], bytes]] = field(default_factory=dict)
     _addresses: dict[str, _Address] = field(default_factory=dict)
+    lfs: dict[str, bytes] = field(default_factory=dict)
 
     def door(self, place: UploadPlace, *, as_: Identity, digest: str, size: int) -> Door:
         repo = _repo_of(place)
@@ -144,6 +145,7 @@ class FakeUploads:
         if hashlib.sha256(body).hexdigest() != address.digest:
             raise Rejected("content hash does not match OID")
         kept[(address.digest, address.size)] = body
+        self.lfs[address.digest] = body
 
     def put(self, place: UploadPlace, content: bytes) -> tuple[str, int]:
         """Put an object into a place without going through a door, for a
@@ -151,6 +153,7 @@ class FakeUploads:
         """
         digest, size = hashlib.sha256(content).hexdigest(), len(content)
         self.held.setdefault(_repo_of(place), {})[(digest, size)] = content
+        self.lfs[digest] = content
         return digest, size
 
     def forget(self, place: UploadPlace, digest: str, size: int) -> None:

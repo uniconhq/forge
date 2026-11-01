@@ -46,7 +46,7 @@ from forge.services import (
 )
 from forge.services.access import Organiser
 from forge.services.task_save import Published
-from forge.testing import seed_classic
+from forge.testing import prepared, seed_classic
 
 ACME = OrgId("acme")
 SPRING = ContestId("acme/spring")
@@ -155,6 +155,7 @@ async def publish(
         },
         confirm=True,
     )
+    result = await prepared(setup, acme.ada, task, result)
     assert isinstance(result, Published), result
     await checked(setup, task)
     return result

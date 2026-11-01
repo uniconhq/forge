@@ -2296,3 +2296,61 @@ def test_each_exec_step_gets_only_its_languages_environment(
         set(languages) == {"python"}
         for languages in inputs["environment"]["environment"]["platforms"].values()
     )
+
+
+def test_changing_python_packages_keeps_the_cpp_steps_lock_identical(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    def locked(python: str) -> EnvironmentLock:
+        return EnvironmentLock(
+            platforms={
+                platform: {
+                    "cpp": LanguageLock(
+                        asked={"version": "14"}, picked="gxx 14.3", fingerprint="a" * 64
+                    ),
+                    "python": LanguageLock(
+                        asked={"packages": [python]}, picked="python 3.14", fingerprint=python * 64
+                    ),
+                }
+                for platform in PLATFORMS
+            }
+        )
+
+    text = ISLANDS.replace("options: [cpp, python]", "options: [cpp]")
+    before = ok(islands(primitives, text, environment=locked("b")))
+    after = ok(islands(primitives, text, environment=locked("c")))
+    assert before.steps["solution"] == after.steps["solution"]
+    assert before.steps["compare"] != after.steps["compare"]
+
+
+def test_language_collection_covers_entrant_options_fixed_python_and_notebooks(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    from forge.domain.definitions import Form
+    from forge.domain.environment_plan import languages_in, languages_of
+    from forge.domain.run_task.models import EntrantInput
+    from forge.domain.types import Type
+
+    built = ok(islands(primitives))
+    entry = EntrantInput("language", Type.ENUM, ("cpp", "python"), Form())
+    assert languages_of(built, {"language": entry}) == {"cpp", "python"}
+    notebook = EntrantInput("language", Type.ENUM, ("cpp", "ipynb"), Form())
+    assert languages_in({"language": {"entrant": "language"}}, {"language": notebook}) == {
+        "cpp",
+        "python",
+    }
+    assert languages_in({"language": {"value": "ipynb"}}, {}) == {"python"}
+
+
+def test_language_collection_reads_the_programs_ports_nested_value() -> None:
+    from forge.domain.environment_plan import languages_in
+
+    inputs = {
+        "programs": {
+            "programs": {
+                "entrant": {"language": {"value": "cpp"}},
+                "judge": {"language": {"value": "python"}},
+            }
+        }
+    }
+    assert languages_in(inputs, {}) == {"cpp", "python"}

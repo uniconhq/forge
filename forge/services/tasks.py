@@ -39,7 +39,7 @@ withdrawn task keeps its place and its letter. A task of the org the
 contest does not list is not on it.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from forge.domain.contest_entries import Unlisted, with_entry
@@ -83,6 +83,12 @@ LIST_TRIES = 3
 
 
 @dataclass(frozen=True, slots=True)
+class Toolchain:
+    picked: str
+    version: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class TaskState:
     """Where a task's files stand: the version at their head, the latest
     publication, and whether the head is a draft, a state no publication
@@ -103,6 +109,7 @@ class TaskState:
     statement_written: bool
     head_statement_written: bool
     results: ResultsState
+    toolchains: dict[str, Toolchain] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,14 +257,30 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
         ctx, task, head.version, token
     )
     results_now = await results.state_of(ctx, task)
+    from forge.services.task_save.environments import at
+
+    locked = await at(ctx, organiser.identity, task, latest.version) if latest is not None else None
+    toolchains = {
+        language: Toolchain(
+            entry.picked, str(entry.asked["version"]) if "version" in entry.asked else None
+        )
+        for language, entry in (locked.platforms.get("linux-64", {}) if locked else {}).items()
+    }
     if latest is not None and latest.version == head.version:
-        return TaskState(head.version, latest, False, (), written, written, results_now)
+        return TaskState(head.version, latest, False, (), written, written, results_now, toolchains)
     checked = await task_save.check(ctx, organiser.identity, task, head, {})
     published_written = latest is not None and await entrant_view.statement_written_at(
         ctx, task, latest.version, latest.id
     )
     return TaskState(
-        head.version, latest, True, checked.errors, published_written, written, results_now
+        head.version,
+        latest,
+        True,
+        checked.errors,
+        published_written,
+        written,
+        results_now,
+        toolchains,
     )
 
 

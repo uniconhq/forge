@@ -24,7 +24,7 @@ from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
 from forge.services import steps, task_save
 from forge.services.task_save import Draft, Published
-from forge.testing import PLACEHOLDER_DIGEST
+from forge.testing import PLACEHOLDER_DIGEST, prepared
 from tests.conftest import sibling
 from tests.services.conftest import Acme, checked, make_task, write_contest
 from tests.services.test_run_task_saves import DRAFT, ISLANDS_DATA
@@ -225,6 +225,7 @@ async def _publish(
         found = await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
+    found = await prepared(setup, acme.ada, task, found)
     assert isinstance(found, Published), found
     return task, found
 
@@ -265,6 +266,7 @@ async def test_a_boxed_classic_task_saves_and_plans_as_the_flat_one(
     assert plan.steps["build-judge/compare"].inputs == {
         "source": {"workflow": "diff/", "pin": 2},
         "language": {"value": "python"},
+        "environment": compare["environment"],
     }
     solution = (plan.steps["solve/solution"].items or {})["r1"].inputs
     assert (solution["source"], solution["language"]) == (
@@ -459,6 +461,7 @@ async def _publish_over(setup: Setup, acme: Acme, task: TaskId, text: str) -> Pu
         found = await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
+    found = await prepared(setup, acme.ada, task, found)
     assert isinstance(found, Published), found
     return found
 
@@ -493,4 +496,5 @@ async def test_a_withdrawn_inner_pin_survives_updating_its_workflows_name(
         saved = await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
+    saved = await prepared(setup, acme.ada, task, saved)
     assert isinstance(saved, Published), saved

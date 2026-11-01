@@ -34,6 +34,7 @@ from forge.runtime.setup import Setup
 from forge.services import files, submissions, taking_out, task_save, tasks, timelines, uploads
 from forge.services.access import Organiser
 from forge.services.task_save import Published
+from forge.testing import prepared
 from tests.services.conftest import (
     RUNNING,
     SPRING,
@@ -250,6 +251,8 @@ async def test_a_tasks_write_is_a_save_and_its_rollback_a_save_too(
     (created,) = await files.history(setup, acme.ada, sum_task, "statement.md")
 
     first = await files.write(setup, acme.ada, sum_task, "statement.md", b"Add.\n", statement.token)
+    assert not isinstance(first, files.Written)
+    first = await prepared(setup, acme.ada, sum_task, first)
     current = await files.read(setup, acme.ada, sum_task, "statement.md")
     second = await files.rollback(
         setup, acme.ada, sum_task, "statement.md", VersionId(created.version), current.token
@@ -261,7 +264,12 @@ async def test_a_tasks_write_is_a_save_and_its_rollback_a_save_too(
         statement.content
     )
     assert len(acme.fake.calls_to("write_file")) == 0
-    assert len(acme.fake.calls_to("save_files")) == 2
+    assert [call.arguments["paths"] for call in acme.fake.calls_to("save_files")] == [
+        ["statement.md"],
+        ["environment.lock"],
+        ["plans/plan.json", "plans/runs.json"],
+        ["statement.md"],
+    ]
 
 
 @pytest.mark.parametrize(
@@ -370,6 +378,7 @@ async def test_a_task_that_gives_no_points_may_have_a_due(
         {"task.yaml": Edit(pointless, head.tokens["task.yaml"])},
         confirm=True,
     )
+    saved = await prepared(setup, acme.ada, entered.task, saved)
     assert isinstance(saved, Published), saved
 
     # Any task may have a due (stage 5, phase 5.7).
@@ -769,6 +778,7 @@ async def test_a_listing_gives_each_small_text_files_start_in_one_read_of_them_a
             "tests/long.txt": Edit("ü".encode() * 100, None),
         },
     )
+    saved = await prepared(setup, acme.ada, sum_task, saved)
     assert isinstance(saved, (Published, task_save.Draft))
     acme.fake.reset_calls()
 
@@ -946,6 +956,7 @@ async def test_a_scheduled_task_cannot_publish_an_unwritten_statement(
         {"statement.md": Edit(statement, current.token)},
         confirm=True,
     )
+    result = await prepared(setup, acme.ada, sum_task, result)
     assert isinstance(result, task_save.Draft)
     assert result.errors == (
         {"path": "statement.md", "message": "A · sum: its statement is not written yet."},
@@ -960,6 +971,7 @@ async def test_an_unscheduled_task_can_publish_an_unwritten_statement(
         _running("  - {id: sum, release_at: 2026-09-26T15:00:00Z}\n").decode(),
     )
     result = await task_save.save(setup, acme.ada, sum_task, {}, confirm=True)
+    result = await prepared(setup, acme.ada, sum_task, result)
     assert isinstance(result, Published)
 
 

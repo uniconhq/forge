@@ -51,7 +51,7 @@ from forge.services import (
 )
 from forge.services.task_save import Draft, Published
 from forge.services.task_save.records import Preparing
-from forge.testing import FakeClock, register_entrant
+from forge.testing import FakeClock, prepared, register_entrant
 from tests.services.conftest import (
     RUNNING,
     SPRING,
@@ -105,14 +105,17 @@ TASKS: dict[str, tuple[str, Mapping[str, bytes], Mapping[str, bytes]]] = {
 async def _save(
     setup: Setup, acme: Acme, task: TaskId, contents: Mapping[str, bytes | None], **options: Any
 ) -> Published | Draft | Preparing:
+    wait = options.pop("wait_for_preparation", True)
     head = await acme.fake.content.list_files(PLATFORM, task)
-    return await task_save.save(
+    result = await task_save.save(
         setup,
         acme.ada,
         task,
         {path: Edit(content, head.tokens.get(path)) for path, content in contents.items()},
         **options,
     )
+
+    return await prepared(setup, acme.ada, task, result) if wait else result
 
 
 async def _ready(acme: Acme, which: str, contest: str = DRAFT) -> str:
@@ -186,10 +189,11 @@ async def test_the_three_tasks_publish_their_runs_and_plan(
     assert {run.id for run in runs.runs if run.early} == early
     plan = _plan(acme)
     assert [(run.id, run.early) for run in plan.runs] == [(run.id, run.early) for run in runs.runs]
-    # Each save resolves the version once, as the organiser, and reads
-    # every file at that commit, which the plan pins.
+    # The request resolves as the organiser; preparation checks again as the
+    # platform before publishing the same pinned version.
     calls = acme.fake.calls_to("workflow_version")
-    assert calls and {call.identity for call in calls} == {acme.ada.identity}
+    assert calls and calls[0].identity == acme.ada.identity
+    assert {call.identity for call in calls} == {acme.ada.identity, PLATFORM}
     commit = acme.fake.state.repos[("unicon", f"{which}.workflow")].versions["v1"]
     assert (plan.workflow.ref, plan.workflow.commit) == (f"unicon/{which}@v1", commit)
     reads = [*acme.fake.calls_to("read_workflow_at"), *acme.fake.calls_to("workflow_files")]

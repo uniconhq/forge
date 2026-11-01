@@ -20,6 +20,13 @@ RELEASE_MOVED = (
 """The words a save says when it moves only the released split, which
 grades nothing again while the task's results are not released."""
 EXEC_USE = "unicon/exec@v3"
+
+
+def implicit_inputs(use: str) -> frozenset[str]:
+    """Inputs supplied by the planner, never wired by a workflow author."""
+    return frozenset({"environment"}) if use == EXEC_USE else frozenset()
+
+
 PROGRAM_USES = (EXEC_USE,)
 """The primitive a value's `exec` program is compiled and run with, and a
 source of the task's own is checked with at the save, by its `build` form,

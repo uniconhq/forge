@@ -16,6 +16,7 @@ from forge.domain.errors import NotFound, PortError, Rejected, TooLarge
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId, VersionId
 from forge.domain.roles import Role, task_scope
+from forge.log import get_logger
 from forge.port.uploads import PackagePlace
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -23,8 +24,18 @@ from forge.services.access import Organiser, require
 from forge.services.task_save.records import Preparing, Published
 from forge.services.task_save.writing import _landed_under
 
+log = get_logger(__name__)
+
 LIMIT = timedelta(minutes=15)
 INTERRUPTED = "Preparing the packages was interrupted; save again"
+FAILED = "Preparing the packages failed; save again"
+AT_ONCE = 2
+ROOM = asyncio.Semaphore(AT_ONCE)
+"""The process's preparations downloading and storing at once; the rest wait."""
+
+
+class _Replaced(Exception):
+    """A later save replaced the preparation while it ran."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +94,8 @@ async def start(
     version: VersionId,
     asked: Environment,
     publish: Callable[[Context, EnvironmentLock, VersionId], Awaitable[Published]],
+    *,
+    previous: EnvironmentLock | None = None,
 ) -> Preparing:
     row = EnvironmentPreparation(
         task_id=str(task),
@@ -98,56 +111,74 @@ async def start(
     identity = row.id
 
     async def later(later: Context) -> None:
+        async def proceed() -> None:
+            # Unlocked, so a later save replacing the row never waits on it,
+            # and committed, so no connection is held between downloads.
+            status = await later.db.scalar(
+                select(EnvironmentPreparation.status).where(EnvironmentPreparation.id == identity)
+            )
+            await later.db.commit()
+            if status != "preparing":
+                raise _Replaced
+
         try:
-            async with asyncio.timeout(LIMIT.total_seconds()):
-                async with later.forge.packages.prepare(
-                    asked, cap=later.settings.environment_max
-                ) as prepared:
-                    for digest, path in prepared.files.items():
-                        size = path.stat().st_size
-                        if not await later.forge.uploads.holds(
-                            PackagePlace(), as_=PLATFORM, digest=digest, size=size
-                        ):
-                            await later.forge.uploads.store(
-                                PackagePlace(),
-                                as_=PLATFORM,
-                                digest=digest,
-                                size=size,
-                                content=_chunks(path),
-                            )
-                        if not await later.forge.uploads.holds(
-                            PackagePlace(), as_=PLATFORM, digest=digest, size=size
-                        ):
-                            raise Rejected("A package was not held by the large-file store.")
-                    current = await _current(later, identity)
-                    if current is None:
-                        return
-                    head = await later.forge.content.list_files(PLATFORM, task)
-                    if str(head.version) != current.version:
-                        current.status = "replaced"
-                        return
-                    if not await later.forge.content.may_write(task, organiser.user.id):
-                        raise Rejected("You no longer have permission to write this task.")
-                    locked = await later.forge.content.save_files(
-                        PLATFORM,
-                        task,
-                        {LOCK_PATH: prepared.lock.to_bytes()},
-                        expected={LOCK_PATH: head.tokens.get(LOCK_PATH)},
-                        message="Prepare packages",
-                        author=organiser.user.id,
-                    )
-                    if await _landed_under(later, PLATFORM, task, head, locked, {LOCK_PATH}):
-                        raise Rejected(
-                            "The task changed while its packages were prepared. Save again."
+            # Only resolving, downloading and storing the pieces is limited: a
+            # limit firing once Forgejo holds the publication, before the commit,
+            # would leave it without its pipeline and regrade rows.
+            async with (
+                asyncio.timeout(LIMIT.total_seconds()),
+                ROOM,
+                later.forge.packages.prepare(
+                    asked, cap=later.settings.environment_max, previous=previous, proceed=proceed
+                ) as prepared,
+            ):
+                for digest, path in prepared.files.items():
+                    await proceed()
+                    size = path.stat().st_size
+                    if not await later.forge.uploads.holds(
+                        PackagePlace(), as_=PLATFORM, digest=digest, size=size
+                    ):
+                        await later.forge.uploads.store(
+                            PackagePlace(),
+                            as_=PLATFORM,
+                            digest=digest,
+                            size=size,
+                            content=_chunks(path),
                         )
-                    # The row stays locked through both writes. A later save waits,
-                    # then replaces this preparation before changing the task.
-                    current = await _current(later, identity)
-                    if current is None:
-                        return
-                    result = await publish(later, prepared.lock, locked)
-                    current.status = "ready"
-                    current.result = json.loads(json.dumps(asdict(result), default=str))
+                    if not await later.forge.uploads.holds(
+                        PackagePlace(), as_=PLATFORM, digest=digest, size=size
+                    ):
+                        raise Rejected("A package was not held by the large-file store.")
+                lock = prepared.lock
+            current = await _current(later, identity)
+            if current is None:
+                return
+            head = await later.forge.content.list_files(PLATFORM, task)
+            if str(head.version) != current.version:
+                current.status = "replaced"
+                return
+            if not await later.forge.content.may_write(task, organiser.user.id):
+                raise Rejected("You no longer have permission to write this task.")
+            locked = await later.forge.content.save_files(
+                PLATFORM,
+                task,
+                {LOCK_PATH: lock.to_bytes()},
+                expected={LOCK_PATH: head.tokens.get(LOCK_PATH)},
+                message="Prepare packages",
+                author=organiser.user.id,
+            )
+            if await _landed_under(later, PLATFORM, task, head, locked, {LOCK_PATH}):
+                raise Rejected("The task changed while its packages were prepared. Save again.")
+            # The row stays locked through both writes. A later save waits,
+            # then replaces this preparation before changing the task.
+            current = await _current(later, identity)
+            if current is None:
+                return
+            result = await publish(later, lock, locked)
+            current.status = "ready"
+            current.result = json.loads(json.dumps(asdict(result), default=str))
+        except _Replaced:
+            return
         except (PortError, TooLarge, TimeoutError) as error:
             await later.db.rollback()
             current = await _current(later, identity)
@@ -158,6 +189,12 @@ async def start(
                     if isinstance(error, TimeoutError)
                     else str(error)
                 )[:4000]
+        except Exception:
+            log.exception("preparations.failed", task=task, preparation=identity)
+            await later.db.rollback()
+            current = await _current(later, identity)
+            if current is not None:
+                current.status, current.reason = "refused", FAILED
 
     ctx.in_background(later)
     return Preparing(row.id, version)

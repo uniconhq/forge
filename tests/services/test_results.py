@@ -47,7 +47,7 @@ from forge.services import (
 from forge.services.results import ResultsState
 from forge.services.task_save import Draft, Published
 from forge.services.task_save.records import Preparing
-from forge.testing import FakeClock
+from forge.testing import FakeClock, prepared
 from tests.services.conftest import SPRING, Acme
 from tests.services.test_pipelines import (
     AFTER_CLOSE,
@@ -298,11 +298,13 @@ async def _try_save(
     head = await acme.fake.content.list_files(PLATFORM, task)
     edits = {"task.yaml": Edit(text.encode(), head.tokens.get("task.yaml"))}
     try:
-        return await task_save.save(setup, acme.ada, task, edits, confirm=True)
+        result = await task_save.save(setup, acme.ada, task, edits, confirm=True)
     except ConfirmationRequired as asked:
-        return await task_save.save(
+        result = await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
+
+    return await prepared(setup, acme.ada, task, result)
 
 
 def _errors(result: Published | Draft | Preparing) -> list[tuple[str, str]]:
@@ -528,3 +530,66 @@ async def test_a_new_release_asks_again_when_it_adds_to_a_saves_hiding_lines(
         ),
         Published,
     )
+
+
+async def test_a_release_during_package_preparation_does_not_publish_unconfirmed_hiding(
+    setup: Setup,
+    acme: Acme,
+    spring: str,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    from collections.abc import AsyncIterator, Awaitable, Callable
+    from contextlib import asynccontextmanager
+
+    from forge.domain.environment import Environment, EnvironmentLock
+    from forge.port.packages import PreparedEnvironment
+    from forge.services.task_save import preparing
+
+    clock.set(BEFORE_CLOSE)
+    islands, _ = await _graded_both(setup, acme, RELEASING)
+    before = await acme.fake.workspaces.list_publications(islands.task)
+    content = RELEASING.replace("now: [sample_score, sample_time,", "now: [sample_score,")
+    content = content.replace("on_release: [st2, st2_tests, tests/4.in]", "on_release: [st2]")
+    content += "\nenvironment:\n  python:\n    packages: [numpy]\n"
+    head = await acme.fake.content.list_files(PLATFORM, islands.task)
+    changes = {"task.yaml": Edit(content.encode(), head.tokens["task.yaml"])}
+    with pytest.raises(ConfirmationRequired) as asked:
+        await task_save.save(setup, acme.ada, islands.task, changes)
+    assert len(asked.value.hiding) == 1
+    entered, released = asyncio.Event(), asyncio.Event()
+    resolve = acme.fake.packages.prepare
+
+    @asynccontextmanager
+    async def delayed(
+        asked: Environment,
+        *,
+        cap: int,
+        previous: EnvironmentLock | None = None,
+        proceed: Callable[[], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[PreparedEnvironment]:
+        entered.set()
+        await released.wait()
+        async with resolve(asked, cap=cap, previous=previous, proceed=proceed) as value:
+            yield value
+
+    monkeypatch.setattr(acme.fake.packages, "prepare", delayed)
+    pending = await task_save.save(
+        setup, acme.ada, islands.task, changes, confirm=True, asked=asked.value.extra["asked"]
+    )
+    assert isinstance(pending, Preparing)
+    await asyncio.wait_for(entered.wait(), 5)
+    await _release(setup, acme, islands.task)
+    released.set()
+    await setup.settle()
+    state = await preparing.read(setup, acme.ada, islands.task)
+    assert state.status == "refused" and "shown" in (state.reason or ""), state
+    assert await acme.fake.workspaces.list_publications(islands.task) == before
+    with pytest.raises(ConfirmationRequired) as changed:
+        await task_save.save(setup, acme.ada, islands.task, {})
+    assert len(changed.value.hiding) == 3
+    final = await task_save.save(
+        setup, acme.ada, islands.task, {}, confirm=True, asked=changed.value.extra["asked"]
+    )
+    assert isinstance(final, Published)

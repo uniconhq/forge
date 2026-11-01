@@ -361,9 +361,16 @@ async def _check_runs(
         inner_workflows=tuple(inners),
         machine=run_machine(ctx.settings.slot_sizes),
         programs={use: primitives[use] for use in PROGRAM_USES if use in primitives},
-        environment=await matching(ctx, as_, task, head, written, definition.environment),
     )
     if planned.plan is None:
         return Checked(definition, tuple(planned.problems), pins)
+    from forge.domain.environment import Environment
+    from forge.domain.environment_plan import languages_of, with_environment
+
+    asked = (definition.environment or Environment()).covering(
+        languages_of(planned.plan, found.task.entrant)
+    )
+    locked = await matching(ctx, as_, task, head, written, asked)
+    plan = with_environment(planned.plan, locked, found.task.entrant) if locked else planned.plan
     hiding = await _shown_before_runs(ctx, task, definition, present, found.task)
-    return Checked(definition, (), pins, found.task, planned.plan, tuple(hiding))
+    return Checked(definition, (), pins, found.task, plan, tuple(hiding))

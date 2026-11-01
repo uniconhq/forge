@@ -12,7 +12,7 @@ from forge.adapters.fake_world import FakeWorld
 from forge.adapters.git.fake import FakeGitHost
 from forge.adapters.mail.fake import FakeMail
 from forge.adapters.objects.fake import FakeObjects
-from forge.adapters.packages.fake import FakePackages
+from forge.adapters.registries.fake import FakePackages
 from forge.domain.clock import Clock
 
 
@@ -34,5 +34,6 @@ class FakeForge(FakeGitHost):
         self.grading = self.ci.grading
         self.computes = self.ci.computes
         self.objects = FakeObjects(world.clock)
+        self.uploads.lfs = self.objects.lfs
         self.mail = FakeMail()
         self.packages = FakePackages()

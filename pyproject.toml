@@ -27,6 +27,7 @@ dependencies = [
     "rfc3339-validator>=0.1.4",
     "rfc3986-validator>=0.1.1",
     "ruamel-yaml>=0.19.1",
+    "py-rattler==0.28.1",
 ]
 
 [project.scripts]
@@ -112,6 +113,7 @@ modules = [
     "forge.adapters.ci",
     "forge.adapters.objects",
     "forge.adapters.mail",
+    "forge.adapters.registries",
 ]
 
 [[tool.importlinter.contracts]]
@@ -129,6 +131,7 @@ forbidden_modules = [
     "forge.adapters.ci",
     "forge.adapters.objects",
     "forge.adapters.mail",
+    "forge.adapters.registries",
 ]
 
 [[tool.importlinter.contracts]]
@@ -139,6 +142,7 @@ source_modules = [
     "forge.adapters.ci",
     "forge.adapters.objects",
     "forge.adapters.mail",
+    "forge.adapters.registries",
 ]
 forbidden_modules = ["forge.services", "forge.db"]
 
@@ -150,6 +154,7 @@ source_modules = [
     "forge.adapters.ci.fake",
     "forge.adapters.objects.fake",
     "forge.adapters.mail.fake",
+    "forge.adapters.registries.fake",
     "forge.adapters.fake_world",
     "forge.adapters.fakes",
 ]

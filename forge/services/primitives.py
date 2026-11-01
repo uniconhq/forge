@@ -15,6 +15,7 @@ from forge.domain.port_values import natural
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.roles import PRIMITIVE_OWNER, primitive_id_of
 from forge.domain.run_plan import RETIRED, retired
+from forge.domain.run_plan.records import implicit_inputs
 from forge.domain.sessions import Session
 from forge.domain.workflow_definition import WORKFLOW_FILE, WorkflowRef
 from forge.domain.yaml_models import InvalidDefinition
@@ -88,6 +89,10 @@ class PrimitiveVersion:
     @property
     def ref(self) -> str:
         return f"{PRIMITIVE_OWNER}/{self.name}@{self.version}"
+
+    @property
+    def automatic_inputs(self) -> frozenset[str]:
+        return implicit_inputs(self.ref)
 
 
 @action
