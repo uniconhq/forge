@@ -31,9 +31,10 @@ from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
-from forge.services import files, submissions, taking_out, task_save, timelines, uploads
+from forge.services import files, submissions, taking_out, task_save, tasks, timelines, uploads
 from forge.services.access import Organiser
 from forge.services.task_save import Published
+from forge.testing import prepared
 from tests.services.conftest import (
     RUNNING,
     SPRING,
@@ -55,6 +56,29 @@ async def manager(setup: Setup, acme: Acme, spring: ContestId) -> Organiser:
     found = await organiser(setup, acme.fake, 8, Scope("acme", "spring"), Role.MANAGER)
     acme.fake.reset_calls()
     return found
+
+
+@pytest.mark.parametrize("caller", ["files", "tasks", "taking_out", "task_save"])
+async def test_a_persons_write_is_refused_after_the_forge_revokes_their_role(
+    setup: Setup, acme: Acme, sum_task: TaskId, caller: str
+) -> None:
+    before = await acme.fake.content.list_files(PLATFORM, SPRING)
+    task_before = await acme.fake.content.list_files(PLATFORM, sum_task)
+    await acme.fake.orgs.revoke_role(7, Scope("acme"), Role.ADMIN)
+
+    with pytest.raises(Forbidden):
+        if caller == "files":
+            await files.write(setup, acme.ada, SPRING, "notes.txt", b"new", None)
+        elif caller == "tasks":
+            await tasks.create(setup, acme.ada, SPRING, "another")
+        elif caller == "taking_out":
+            await taking_out.take_out(setup, acme.ada, sum_task, taking_out.TakeOut.REMOVE)
+        else:
+            await publish(setup, acme, sum_task, statement=b"A changed statement.\n")
+
+    assert await acme.fake.content.list_files(PLATFORM, SPRING) == before
+    assert await acme.fake.content.list_files(PLATFORM, sum_task) == task_before
+    assert not await acme.fake.content.exists(TaskId("acme/spring/another"))
 
 
 async def test_the_history_names_an_author_who_no_longer_holds_a_role(
@@ -227,6 +251,8 @@ async def test_a_tasks_write_is_a_save_and_its_rollback_a_save_too(
     (created,) = await files.history(setup, acme.ada, sum_task, "statement.md")
 
     first = await files.write(setup, acme.ada, sum_task, "statement.md", b"Add.\n", statement.token)
+    assert not isinstance(first, files.Written)
+    first = await prepared(setup, acme.ada, sum_task, first)
     current = await files.read(setup, acme.ada, sum_task, "statement.md")
     second = await files.rollback(
         setup, acme.ada, sum_task, "statement.md", VersionId(created.version), current.token
@@ -238,7 +264,12 @@ async def test_a_tasks_write_is_a_save_and_its_rollback_a_save_too(
         statement.content
     )
     assert len(acme.fake.calls_to("write_file")) == 0
-    assert len(acme.fake.calls_to("save_files")) == 2
+    assert [call.arguments["paths"] for call in acme.fake.calls_to("save_files")] == [
+        ["statement.md"],
+        ["environment.lock"],
+        ["plans/plan.json", "plans/runs.json"],
+        ["statement.md"],
+    ]
 
 
 @pytest.mark.parametrize(
@@ -347,6 +378,7 @@ async def test_a_task_that_gives_no_points_may_have_a_due(
         {"task.yaml": Edit(pointless, head.tokens["task.yaml"])},
         confirm=True,
     )
+    saved = await prepared(setup, acme.ada, entered.task, saved)
     assert isinstance(saved, Published), saved
 
     # Any task may have a due (stage 5, phase 5.7).
@@ -377,22 +409,38 @@ async def test_a_timeline_that_moves_behind_no_row_is_saved(
     )
 
 
-async def test_a_release_that_has_passed_is_not_moved_later(
+async def _warn_contest(setup: Setup, acme: Acme, content: bytes) -> tuple[str, ...]:
+    current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
+    with pytest.raises(ConfirmationRequired) as asked:
+        await files.write(setup, acme.ada, SPRING, "contest.yaml", content, current.token)
+    assert asked.value.hiding
+    assert (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content == current.content
+    await files.write(
+        setup,
+        acme.ada,
+        SPRING,
+        "contest.yaml",
+        content,
+        current.token,
+        confirm=True,
+        asked=asked.value.extra["asked"],
+    )
+    return asked.value.hiding
+
+
+async def test_a_release_moved_later_warns_and_saves(
     setup: Setup, acme: Acme, entered: Entered
 ) -> None:
-    refused = await _refused(
-        setup, acme, _running(SUM_ENTRY + "    release_at: 2026-09-26T11:00:00Z\n")
-    )
-    started_later = await _refused(
-        setup, acme, _running(SUM_ENTRY).replace(b"T10:00:00Z", b"T11:00:00Z")
-    )
-
-    said = (
-        "sum was released on 26 September 2026 at 10:00 UTC, so entrants have seen it, and a later "
-        "release time would hide it again."
-    )
-    assert refused == [("tasks[0].release_at", said)]
-    assert started_later == [("start", said)]
+    for content in (
+        _running(SUM_ENTRY + "    release_at: 2026-09-26T11:00:00Z\n"),
+        _running(SUM_ENTRY).replace(b"T10:00:00Z", b"T11:00:00Z"),
+    ):
+        await _write_contest(setup, acme, _running(SUM_ENTRY))
+        lines = await _warn_contest(setup, acme, content)
+        assert lines == (
+            "sum was shown to entrants since 26 September 2026 at 10:00 UTC. "
+            "They may have seen or kept it; a later release time would hide it again.",
+        )
 
 
 async def test_a_due_is_not_moved_earlier_past_a_submission_it_would_make_late(
@@ -441,17 +489,14 @@ async def test_a_close_is_not_moved_later_once_the_task_has_revealed(
     await _write_contest(setup, acme, _running(SUM_ENTRY + "    closes: 2026-09-26T12:05:00Z\n"))
     clock.advance(timedelta(minutes=10))
 
-    refused = await _refused(
+    hiding = await _warn_contest(
         setup, acme, _running(SUM_ENTRY + "    closes: 2026-09-26T13:00:00Z\n")
     )
-
-    assert refused == [
-        (
-            "tasks[0].closes",
-            "sum's hidden results were shown on 26 September 2026 at 12:05 UTC, so a later closing "
-            "time would let entrants submit knowing them.",
-        )
-    ]
+    assert hiding == (
+        "sum's hidden results were shown to entrants since 26 September 2026 at 12:05 UTC. "
+        "They may have seen or kept them; a later closing time would let "
+        "entrants submit knowing them.",
+    )
 
 
 async def test_an_end_moved_before_a_submission_or_later_after_the_reveal_is_refused_at_end(
@@ -463,7 +508,7 @@ async def test_an_end_moved_before_a_submission_or_later_after_the_reveal_is_ref
     before = await _refused(setup, acme, contest.replace(b"T15:00:00Z", b"T11:59:00Z"))
     await _write_contest(setup, acme, contest.replace(b"T15:00:00Z", b"T12:05:00Z"))
     clock.advance(timedelta(minutes=10))
-    after = await _refused(setup, acme, contest)
+    after = await _warn_contest(setup, acme, contest)
 
     assert before == [
         (
@@ -472,13 +517,11 @@ async def test_an_end_moved_before_a_submission_or_later_after_the_reveal_is_ref
             "task closed. Close it later.",
         )
     ]
-    assert after == [
-        (
-            "end",
-            "sum's hidden results were shown on 26 September 2026 at 12:05 UTC, so a later closing "
-            "time would let entrants submit knowing them.",
-        )
-    ]
+    assert after == (
+        "sum's hidden results were shown to entrants since 26 September 2026 at 12:05 UTC. "
+        "They may have seen or kept them; a later closing time would let "
+        "entrants submit knowing them.",
+    )
 
 
 async def test_a_task_the_contest_did_not_list_never_opened_so_its_entry_may_open_it_later(
@@ -735,6 +778,7 @@ async def test_a_listing_gives_each_small_text_files_start_in_one_read_of_them_a
             "tests/long.txt": Edit("ü".encode() * 100, None),
         },
     )
+    saved = await prepared(setup, acme.ada, sum_task, saved)
     assert isinstance(saved, (Published, task_save.Draft))
     acme.fake.reset_calls()
 
@@ -912,6 +956,7 @@ async def test_a_scheduled_task_cannot_publish_an_unwritten_statement(
         {"statement.md": Edit(statement, current.token)},
         confirm=True,
     )
+    result = await prepared(setup, acme.ada, sum_task, result)
     assert isinstance(result, task_save.Draft)
     assert result.errors == (
         {"path": "statement.md", "message": "A · sum: its statement is not written yet."},
@@ -926,6 +971,7 @@ async def test_an_unscheduled_task_can_publish_an_unwritten_statement(
         _running("  - {id: sum, release_at: 2026-09-26T15:00:00Z}\n").decode(),
     )
     result = await task_save.save(setup, acme.ada, sum_task, {}, confirm=True)
+    result = await prepared(setup, acme.ada, sum_task, result)
     assert isinstance(result, Published)
 
 
@@ -994,3 +1040,32 @@ async def test_a_contest_change_before_its_start_does_not_ask(
     )
     written = await files.write(setup, acme.ada, SPRING, "contest.yaml", changed, before.token)
     assert isinstance(written, files.Written)
+
+
+async def test_recreating_contest_settings_can_confirm_a_hiding_warning(
+    setup: Setup, acme: Acme, spring: ContestId
+) -> None:
+    repo = acme.fake.state.repos[("acme", "spring.contest")]
+    acme.fake.state.commit(repo, {"contest.yaml": None}, "Remove settings", 7)
+    content = (
+        _running("")
+        .replace(b"state: published", b"state: draft")
+        .replace(b"tasks:\n", b"tasks: []\n")
+    )
+    content += b"hold: {from: 2026-09-26T11:00:00Z, until: staff}\n"
+    before = repo.head
+    with pytest.raises(ConfirmationRequired) as asked:
+        await files.write(setup, acme.ada, SPRING, "contest.yaml", content, None)
+    assert asked.value.hiding and repo.head == before
+    assert asked.value.extra["asked"] == before
+    await files.write(
+        setup,
+        acme.ada,
+        SPRING,
+        "contest.yaml",
+        content,
+        None,
+        confirm=True,
+        asked=asked.value.extra["asked"],
+    )
+    assert (await files.read(setup, acme.ada, SPRING, "contest.yaml")).content == content

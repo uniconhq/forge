@@ -28,6 +28,7 @@ from sqlalchemy import select
 from forge.db.tables import Entrant, EntrantMember
 from forge.domain.errors import (
     AlreadyRegistered,
+    ConfirmationRequired,
     ContestantConflict,
     ContestFull,
     DomainNotAllowed,
@@ -576,10 +577,15 @@ async def test_an_extension_is_refused_on_a_task_whose_reveal_has_passed(
     bob = entered.entrant
     clock.advance(timedelta(hours=1, minutes=30))
 
-    with pytest.raises(InvalidExtension, match="sum's hidden results were shown"):
+    with pytest.raises(ConfirmationRequired) as asked:
         await entrants.extend(setup, manager, SPRING, bob, timedelta(hours=1), tasks=["sum"])
-    with pytest.raises(InvalidExtension):
+    assert "sum's hidden results were shown" in asked.value.hiding[0]
+    with pytest.raises(ConfirmationRequired):
         await entrants.extend(setup, manager, SPRING, bob, timedelta(hours=1))
+    saved = await entrants.extend(
+        setup, manager, SPRING, bob, timedelta(hours=1), tasks=["sum"], confirm=True
+    )
+    assert saved.extension_tasks == ("sum",)
     other = await entrants.extend(setup, manager, SPRING, bob, timedelta(hours=1), tasks=["other"])
 
     assert other.extension_tasks == ("other",)

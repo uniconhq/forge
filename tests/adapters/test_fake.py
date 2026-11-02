@@ -532,6 +532,49 @@ async def test_contests_and_tasks_are_there_and_listed_as_the_reader_sees_them(
     assert await fake.content.list_tasks(_as(fake, 8), contest) == ()
 
 
+@pytest.mark.parametrize("many", [False, True])
+async def test_a_revoked_authors_write_changes_nothing(fake: FakeForge, many: bool) -> None:
+    _, task = await _contest_and_task(fake)
+    await fake.content.secure(task)
+    scope = Scope("acme", "spring", "sum")
+    await fake.orgs.grant_role(7, scope, Role.MANAGER)
+    assert await fake.content.may_write(task, 7)
+    await fake.orgs.revoke_role(7, scope, Role.MANAGER)
+    assert not await fake.content.may_write(task, 7)
+    before = await fake.content.list_files(PLATFORM, task)
+    with pytest.raises(Forbidden, match="no longer have write access"):
+        if many:
+            await fake.content.save_files(
+                PLATFORM,
+                task,
+                {"new.txt": b"a"},
+                expected={},
+                message="Save",
+                author=7,
+            )
+        else:
+            await fake.content.write_file(
+                PLATFORM,
+                task,
+                "new.txt",
+                b"a",
+                expected=None,
+                message="Save",
+                author=7,
+            )
+    assert await fake.content.list_files(PLATFORM, task) == before
+    fake.reset_calls()
+    await fake.content.write_file(
+        PLATFORM,
+        task,
+        "new.txt",
+        b"a",
+        expected=None,
+        message="Save",
+    )
+    assert not fake.calls_to("may_write")
+
+
 async def test_a_save_is_one_change_as_the_person_checked_file_by_file(fake: FakeForge) -> None:
     _, task = await _contest_and_task(fake)
     await fake.orgs.grant_role(7, Scope("acme"), Role.MANAGER)

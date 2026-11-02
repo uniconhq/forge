@@ -26,9 +26,9 @@ rows that put people in an entrant of a contest, for a test of what
 registration decides; `name_places` gives the org,
 contest and task ids a test made straight at the fake the names a route
 finds them by, each its own last part; and `seed_classic` puts the
-built-in workflow `unicon/classic@v4` and the primitive it uses at the fake
+built-in workflow `unicon/classic@v5` and the primitive it uses at the fake
 the way deploy's bootstrap puts them at a real forge, from `CLASSIC`, a copy
-of `deploy/workflows/classic/v4`, and `PRIMITIVES`, a copy of the
+of `deploy/workflows/classic/v5`, and `PRIMITIVES`, a copy of the
 primitive's `primitive.yaml`. The package's own tests check the copies
 agree with their repos when those are checked out beside this one.
 `RUN_WORKFLOWS` names the folder in deploy's checkout of each built-in
@@ -43,7 +43,7 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 import pytest
@@ -53,7 +53,7 @@ from forge.db.migrations import upgrade_to_head
 from forge.db.tables import Entrant, EntrantMember, Name, metadata
 from forge.domain.clock import FakeClock
 from forge.domain.identity import PLATFORM, AsUser
-from forge.domain.ids import ContestId, OrgId
+from forge.domain.ids import ContestId, OrgId, TaskId
 from forge.domain.keys import key_from_name, random_key
 from forge.domain.workflow_definition import classic_files
 from forge.domain.workflows import Visibility
@@ -62,6 +62,10 @@ from forge.runtime.context import Context
 from forge.runtime.held import hold, release
 from forge.runtime.setup import Setup
 from forge.settings import Settings
+
+if TYPE_CHECKING:
+    from forge.services.access import Organiser
+    from forge.services.task_save.records import Draft, Preparing, Published
 
 __all__ = [
     "APP_URL",
@@ -81,6 +85,7 @@ __all__ = [
     "Visibility",
     "logged",
     "name_places",
+    "prepared",
     "register_entrant",
     "seed_classic",
     "seed_primitives",
@@ -95,12 +100,12 @@ CALLBACK = f"{APP_URL}{CALLBACK_PATH}"
 _FORMATTER = JsonFormatter()
 
 CLASSIC = classic_files()
-"""`unicon/classic@v4`'s files, by their paths in the workflow, as deploy's
-bootstrap seeds them from `deploy/workflows/classic/v4`."""
+"""`unicon/classic@v5`'s files, by their paths in the workflow, as deploy's
+bootstrap seeds them from `deploy/workflows/classic/v5`."""
 
 RUN_WORKFLOWS = {
-    "unicon/classic@v4": "workflows/classic/v4",
-    "unicon/interactive@v2": "workflows/interactive/v2",
+    "unicon/classic@v5": "workflows/classic/v5",
+    "unicon/interactive@v3": "workflows/interactive/v3",
 }
 """Where deploy keeps each built-in workflow, by the reference it has at the
 forge: a folder holding its `workflow.yaml` and the files it reads, under
@@ -122,7 +127,7 @@ def _declared(name: str) -> bytes:
 
 
 PRIMITIVES: dict[str, bytes] = {
-    "unicon/exec@v2": _declared("exec"),
+    "unicon/exec@v3": _declared("exec"),
 }
 """The declaration of the primitive the built-in workflow uses, by its
 reference: the primitive repo's own `primitive.yaml`, copied under
@@ -133,7 +138,7 @@ one."""
 
 
 async def seed_primitives(fake: FakeForge) -> None:
-    """`unicon/exec@v2` at the fake, from `PRIMITIVES`, as bootstrap mirrors
+    """`unicon/exec@v3` at the fake, from `PRIMITIVES`, as bootstrap mirrors
     it into a real forge.
     """
     for reference, declaration in PRIMITIVES.items():
@@ -142,7 +147,7 @@ async def seed_primitives(fake: FakeForge) -> None:
 
 
 async def seed_classic(fake: FakeForge) -> None:
-    """`unicon/classic@v4` public at the fake, and the primitive it uses,
+    """`unicon/classic@v5` public at the fake, and the primitive it uses,
     as bootstrap makes them at a real forge, so a task's first save finds a
     workflow its organiser can read and every step's image.
     """
@@ -150,7 +155,7 @@ async def seed_classic(fake: FakeForge) -> None:
     workflow = await fake.workflows.create_workflow(
         PLATFORM, "unicon", "classic", CLASSIC, Visibility.PUBLIC
     )
-    await fake.workflows.create_workflow_version(PLATFORM, workflow, "v4")
+    await fake.workflows.create_workflow_version(PLATFORM, workflow, "v5")
 
 
 def logged(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]:
@@ -497,3 +502,20 @@ async def ctx(setup: Setup) -> AsyncIterator[Context]:
     """One unit of work, committed when the test ends."""
     async with setup.unit_of_work() as context:
         yield context
+
+
+async def prepared(
+    setup: Setup, organiser: Organiser, task: TaskId, result: Published | Draft | Preparing
+) -> Published | Draft:
+    """Finish a fixture's background preparation, preserving its exact save answer."""
+    from pydantic import TypeAdapter
+
+    from forge.services.task_save import preparing
+    from forge.services.task_save.records import Preparing, Published
+
+    if not isinstance(result, Preparing):
+        return result
+    await setup.settle()
+    state = await preparing.read(setup, organiser, task)
+    assert state.status == "ready", state.reason
+    return TypeAdapter(Published).validate_python(state.result)

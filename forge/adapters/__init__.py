@@ -6,12 +6,15 @@ and `cached` in front of the git host's reads. Nothing in `domain`,
 `Forge`, one of each joined into one, and the only place that joins them.
 """
 
+from pathlib import Path
+
 from forge.adapters.cached import CachedForge
 from forge.adapters.ci.woodpecker import WoodpeckerCi, WoodpeckerConfig
 from forge.adapters.fakes import FakeForge
 from forge.adapters.git.forgejo import ForgejoConfig, ForgejoForge
 from forge.adapters.mail.smtp import MailConfig, NoMail, SmtpMail
 from forge.adapters.objects.s3 import S3Objects, StorageConfig
+from forge.adapters.registries import EnvironmentResolver
 from forge.domain.errors import Misconfigured
 from forge.port import Ci, Forge, GitHost, MailPort, ObjectStore
 from forge.settings import Settings
@@ -23,7 +26,15 @@ class JoinedForge:
     name is the git host's, as the logs have always read.
     """
 
-    def __init__(self, *, git: GitHost, ci: Ci, objects: ObjectStore, mail: MailPort) -> None:
+    def __init__(
+        self,
+        *,
+        git: GitHost,
+        ci: Ci,
+        objects: ObjectStore,
+        mail: MailPort,
+        resolve_cache: Path = Path("/tmp/unicon-resolve"),
+    ) -> None:
         self.identity = git.identity
         self.orgs = git.orgs
         self.content = git.content
@@ -35,6 +46,7 @@ class JoinedForge:
         self.grading = ci.grading
         self.computes = ci.computes
         self.objects = objects
+        self.packages = EnvironmentResolver(resolve_cache)
         self.mail = mail
         self._git = git
         self._ci = ci
@@ -121,6 +133,8 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
                 access_key=s3.access_key,
                 secret_key=s3.secret_key.get_secret_value(),
                 results_bucket=s3.results_bucket,
+                uploads_bucket=s3.uploads_bucket,
+                public_url=str(settings.public_url),
                 machine_url=str(settings.machine_url),
                 lfs_access_key=s3.lfs_access_key,
                 lfs_secret_key=s3.lfs_secret_key.get_secret_value(),
@@ -128,6 +142,7 @@ def _implementation(settings: Settings, sign_in_redirect_uri: str) -> Forge:
             )
         ),
         mail=_mail(settings),
+        resolve_cache=settings.resolve_cache,
     )
 
 

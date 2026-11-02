@@ -619,7 +619,14 @@ class PrimitiveDeclaration(Model):
         """
         if not self.forms:
             return self
+        from forge.domain.run_plan.records import implicit_inputs
+
         wanted = set(given)
+        wanted.update(
+            name
+            for name in implicit_inputs(use)
+            if any(name in form.inputs for form in self.forms.values())
+        )
         fits = [
             form
             for form in self.forms.values()

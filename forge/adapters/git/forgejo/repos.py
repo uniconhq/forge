@@ -68,6 +68,29 @@ class Repos:
         self._no_reply = f"noreply.{urlparse(public_url).hostname}"
         self._org_ids: dict[str, int] = {}
 
+    async def search_page(
+        self, as_: Identity, *, query: str, page: int, limit: int, **filters: Any
+    ) -> tuple[list[dict[str, Any]], bool]:
+        response = await self._http.call(
+            as_,
+            "GET",
+            SEARCH_PATH,
+            params={"q": query, "includeDesc": "true", "page": page, "limit": limit, **filters},
+        )
+        found = json_of(response)
+        records: list[dict[str, Any]] = found.get("data") or []
+        total = response.headers.get("x-total-count")
+        more = page * limit < int(total) if total is not None else len(records) == limit
+        return records, more
+
+    async def set_description(self, owner: str, name: str, description: str) -> None:
+        await self._http.call(
+            PLATFORM,
+            "PATCH",
+            f"/api/v1/repos/{segment(owner)}/{segment(name)}",
+            json={"description": description},
+        )
+
     async def create(
         self, as_: Identity, owner: str, name: str, files: Files, *, private: bool
     ) -> None:

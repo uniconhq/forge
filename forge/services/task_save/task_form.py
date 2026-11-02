@@ -6,6 +6,7 @@ from forge.domain.errors import InvalidName, NotFound
 from forge.domain.ids import TaskId
 from forge.domain.roles import Role, task_scope
 from forge.domain.workflow_definition import parse_workflow_ref
+from forge.domain.workflows import Yanked
 from forge.domain.yaml_models import InvalidDefinition, load_mapping
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -55,6 +56,7 @@ class WorkflowForm:
     graded: bool = False
     newer: str | None = None
     text_values: tuple[str, ...] | None = None
+    yanked: Yanked | None = None
 
 
 @action
@@ -96,6 +98,8 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
         return WorkflowForm(named, problem=invalid.detail, text_values=plain)
     newer = await workflows.newer_version(ctx, organiser.identity, ref)
     opened = await _workflow(ctx, organiser.identity, ref)
+    marks = await workflows.yanks_of(ctx, list(opened.pins.values()))
+    yanked = marks.get(opened.pins.get(str(ref).rsplit("@", 1)[0], ""), {}).get(ref.version)
     workflow = opened.found.definition if opened.found is not None else None
     problems = opened.problems
     if workflow is None:
@@ -103,12 +107,14 @@ async def _workflow_form(ctx: Context, organiser: Organiser, task: TaskId) -> Wo
             str(ref),
             problem=problems[0]["message"] if problems else None,
             newer=newer,
+            yanked=yanked,
             text_values=plain,
         )
     types = {name: each.type.value for name, each in workflow.inputs.items()}
     return WorkflowForm(
         str(ref),
         newer=newer,
+        yanked=yanked,
         text_values=text_values_of(document, types),
         inputs=tuple(
             DeclaredInput(

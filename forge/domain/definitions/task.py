@@ -4,6 +4,7 @@ from typing import Annotated, Any
 from pydantic import Field, model_validator
 
 from forge.domain.definitions.basics import Count, Seconds
+from forge.domain.environment import Environment
 from forge.domain.workflow_definition import Options, Ref
 from forge.domain.yaml_models import Line, Model, Number, Problems, Size, already_listed, parse_size
 
@@ -304,6 +305,7 @@ class TaskDefinition(Model):
 
     name: Line
     workflow: Ref
+    environment: Environment | None = None
     inputs: dict[str, Any] = Field(default_factory=dict)
     repeat: list[Axis] = Field(default_factory=list)
     scoring: Scoring

@@ -17,6 +17,7 @@ from forge.domain.ids import TaskId
 from forge.domain.leaderboard_task_check import Scored, across, leaderboards_of
 from forge.domain.port_values import is_reserved
 from forge.domain.publication_record import Publication
+from forge.domain.release import in_words
 from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.run_task import (
     RunTask,
@@ -45,33 +46,24 @@ async def _shown_before_runs(
     definition: TaskDefinition,
     present: Collection[str],
     run_task: RunTask | None,
-) -> list[Problem]:
-    """T7 (SIMPLER-CORE.md 9.4 and 16): what `show` listed
-    under any publication a graded submission ran under, or whose files
-    were served (`_served`), is listed as soon, or sooner; a folder it
-    listed stands for the files that publication held under it, each still
-    in `present` shown as soon whichever entry now lists it. What it listed
-    under `on_release` counts only while the task's results are released,
-    and only from a publication that was the task's own at some time since
-    the release that stands, so what no release showed never holds a save
-    back, and after a take-back a save may drop it (stage 5 section 6 items
-    10 and 41). While released and before the reveal, `on_release` is
-    sooner than `after_close` (`openness`), so what a release shows stays
-    listed under `now` or `on_release` until the reveal. And a group or
-    value shown during the contest reads no fewer of the runs the task
-    still has (`fewer_runs`), checked once the task checks (`run_task`).
+) -> list[str]:
+    """Warnings for T7 and T10: entrant-visible files, groups and values
+    hidden by the save. A take-back does not undo an earlier exposure.
     """
     publications = await ctx.forge.workspaces.list_publications(task)
     counted = await sources._graded_under(ctx, task) | await _served(ctx, task, publications)
     if not counted:
         return []
-    since = await entrant_view.released_since(ctx, task)
-    shown_by_release = (
-        set()
-        if since is None
-        else _own_since(await entrant_view.live(ctx, task, publications), since)
-    )
-    rank = openness(released=since is not None, revealed=await _task_revealed(ctx, task))
+    periods = await timelines.released_periods(ctx, task)
+    own = await entrant_view.live(ctx, task, publications)
+    shown_by_release = {
+        publication.id
+        for index, publication in enumerate(own)
+        for start, end in periods
+        if (end is None or publication.at <= end)
+        and (index + 1 == len(own) or own[index + 1].at > start)
+    }
+    rank = openness(released=bool(periods), revealed=await _task_revealed(ctx, task))
     shown = []
     read = []
     for publication in publications:
@@ -92,7 +84,11 @@ async def _shown_before_runs(
     problems = hidden_again(most_shown(shown, rank), definition.scoring, present, rank)
     if run_task is not None:
         problems += fewer_runs(read, run_task)
-    return problems
+    since = min(publication.at for publication in publications if publication.id in counted)
+    return [
+        f"Under publications saved since {in_words(since)}: {problem['message']}"
+        for problem in problems
+    ]
 
 
 async def _task_revealed(ctx: Context, task: TaskId) -> bool:
@@ -195,7 +191,7 @@ async def _refuse_admin_only(
 def _refuse_reserved(written: Mapping[str, Edit]) -> None:
     for path in written:
         check_path(path)
-    reserved = sorted(path for path in written if is_reserved(path))
+    reserved = sorted(path for path in written if is_reserved(path) or path == "environment.lock")
     if reserved:
         raise ReservedPath(
             "Unicon writes the files in plans/ itself, so a save cannot change them. Save the "

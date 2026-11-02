@@ -29,7 +29,7 @@ from forge.adapters.ids import (
     parse_task,
 )
 from forge.domain.content import Change, ConflictToken, File, Files, FileSet, TreeEntry
-from forge.domain.errors import Conflict, PortError
+from forge.domain.errors import Conflict, Forbidden, PortError
 from forge.domain.identity import PLATFORM, Identity, User
 from forge.domain.ids import ContestId, OrgId, TaskId, VersionId
 from forge.domain.roles import Scope
@@ -90,6 +90,17 @@ class ForgejoContent:
     async def exists(self, place: ContentPlace) -> bool:
         return await self._repos.exists(*location(place))
 
+    async def may_write(self, place: ContentPlace, user_id: int) -> bool:
+        return await self._may_write(place, await self._users.find(user_id))
+
+    async def _may_write(self, place: ContentPlace, user: User) -> bool:
+        owner, name = location(place)
+        return await self._repos.permission_of(owner, name, user.username) in {
+            "write",
+            "admin",
+            "owner",
+        }
+
     async def list_contests(self, as_: Identity, org: OrgId) -> tuple[ContestId, ...]:
         names = sorted(
             str(repo["name"]) for repo in await self._repos.named_with(org, f".{CONTEST}", as_)
@@ -148,7 +159,7 @@ class ForgejoContent:
             content,
             message=message,
             expected=expected,
-            author=await self._author(author),
+            author=await self._author(place, author),
         )
 
     async def save_files(
@@ -169,14 +180,20 @@ class ForgejoContent:
             files,
             expected=expected,
             message=message,
-            author=await self._author(author),
+            author=await self._author(place, author),
         )
 
-    async def _author(self, user_id: int | None) -> User | None:
+    async def _author(self, place: ContentPlace, user_id: int | None) -> User | None:
         """The person a change the platform writes names as its author, read
-        as the platform.
+        as the platform. Check their current permission at this boundary so
+        every write naming an author gets the same check, with one user lookup.
         """
-        return await self._users.find(user_id) if user_id is not None else None
+        if user_id is None:
+            return None
+        user = await self._users.find(user_id)
+        if not await self._may_write(place, user):
+            raise Forbidden("You no longer have write access to this task at the forge.")
+        return user
 
     async def list_files(
         self, as_: Identity, place: ContentPlace, *, at: VersionId | None = None

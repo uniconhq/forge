@@ -39,6 +39,7 @@ from forge.domain.leaderboard_task_check import (
     Scored,
     across,
     check_contest,
+    hold_hiding,
     hold_problems,
     marks_of,
 )
@@ -1815,17 +1816,15 @@ def test_a_hold_set_or_moved_to_a_time_passed_is_refused_and_one_left_as_it_was_
 
     assert hold_problems(standing, _hold("12:00"), now) == []
     assert hold_problems(standing, _hold("13:00"), now) == []
-    # A from at this very moment has passed too.
-    assert [path for path, _ in hold_problems(None, _hold("12:30"), now)] == [("hold", "from")]
+    assert hold_hiding(standing, _hold("12:00"), now) == ()
+    assert hold_hiding(standing, _hold("13:00"), now) == ()
+    assert len(hold_hiding(None, _hold("12:30"), now)) == 1
     for before in (None, contest(""), _hold("13:00")):
-        found = hold_problems(before, _hold("12:00"), now)
-        assert found == [
-            (
-                ("hold", "from"),
-                "1 June 2026 at 12:00 UTC has passed, so a hold from then would hide submissions "
-                "others have already seen on the leaderboards. Give a time still to come.",
-            )
-        ]
+        assert hold_problems(before, _hold("12:00"), now) == []
+        assert hold_hiding(before, _hold("12:00"), now) == (
+            "A hold from 1 June 2026 at 12:00 UTC hides leaderboard submissions shown since then. "
+            "Other entrants may have seen or kept them.",
+        )
 
 
 # Across files

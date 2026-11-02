@@ -2,6 +2,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
+from typing import Literal
 
 from forge.domain.definitions import TaskDefinition
 from forge.domain.ids import PublicationId, VersionId
@@ -54,6 +55,13 @@ class Published:
 
 
 @dataclass(frozen=True, slots=True)
+class Preparing:
+    preparation: uuid.UUID
+    version: VersionId
+    status: Literal["preparing"] = "preparing"
+
+
+@dataclass(frozen=True, slots=True)
 class Draft:
     """A save kept as a draft: the version its files were written as, and
     either the errors that kept it from being published, each at its YAML
@@ -71,7 +79,7 @@ class Checked:
     """What checking a state found: the task's settings, its runs
     (`run_task`) and its plan (`run_plan`) when it is valid, and every
     problem when it is not, with which workflow each workflow name it uses
-    is, by the forge's own id for it.
+    is, by the forge's own id for it. `hiding` warns about earlier exposure.
     """
 
     definition: TaskDefinition | None
@@ -79,6 +87,7 @@ class Checked:
     workflows: Mapping[str, str] = field(default_factory=dict)
     run_task: RunTask | None = None
     run_plan: RunPlan | None = None
+    hiding: tuple[str, ...] = ()
 
     def plan_files(self) -> dict[str, bytes]:
         """What a save of the valid state writes under `plans/`: its runs file

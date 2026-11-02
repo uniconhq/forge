@@ -1,7 +1,8 @@
-"""A file's bytes going into the large-file store of the place that will hold
-them, without passing through the platform.
+"""A file's bytes going into the verified large-file store of their place.
 
-The platform never carries the bytes and never signs for them. It says where
+A contestant's bytes go through the proxy directly to the host. Organiser
+transfers stream from the temporary multipart store through `store`, and
+package preparation uses it for the platform's shared package store. It says where
 one upload's bytes go and what to present there (`door`), and the proxy puts
 the browser's body through that address; the host checks that the person may
 write to the place, hashes the body as it stores it, refuses anything that is
@@ -16,6 +17,7 @@ the ones named, made by the host and not by the client; and a way to ask
 whether a place holds an object.
 """
 
+from collections.abc import AsyncIterable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -46,7 +48,12 @@ class WorkflowPlace:
     workflow: WorkflowId
 
 
-UploadPlace = SubmissionPlace | TaskPlace | WorkflowPlace
+@dataclass(frozen=True, slots=True)
+class PackagePlace:
+    """The platform's shared, content-addressed package store."""
+
+
+UploadPlace = SubmissionPlace | TaskPlace | WorkflowPlace | PackagePlace
 
 
 class UploadPort(Protocol):
@@ -63,4 +70,16 @@ class UploadPort(Protocol):
         `as_`. False when it does not; `NotFound` when there is no such
         place.
         """
+        ...
+
+    async def store(
+        self,
+        place: UploadPlace,
+        *,
+        as_: Identity,
+        digest: str,
+        size: int,
+        content: AsyncIterable[bytes],
+    ) -> None:
+        """Stream a completed organiser upload into the same verified LFS door."""
         ...

@@ -26,7 +26,7 @@ from collections.abc import Callable
 from forge import log
 from forge.db.migrations import upgrade_to_head
 from forge.runtime.setup import Setup
-from forge.services import reconcile
+from forge.services import reconcile, workflows
 from forge.settings import load_database_settings, load_settings
 
 CALLBACK_PATH = "/"
@@ -37,11 +37,18 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("migrate", help="bring the database up to the latest migration")
     commands.add_parser(
+        "describe-workflows", help="copy each workflow's newest README paragraph to its description"
+    )
+    commands.add_parser(
         "reconcile",
         help="secure every contest and task again and give every submission at the forge "
         "without gradings its gradings",
     )
     arguments = parser.parse_args(argv)
+    if arguments.command == "describe-workflows":
+        log.setup()
+        asyncio.run(_describe_workflows(), loop_factory=_loop_factory())
+        return 0
     if arguments.command == "reconcile":
         log.setup()
         asyncio.run(_reconcile(), loop_factory=_loop_factory())
@@ -62,6 +69,15 @@ async def _reconcile() -> reconcile.Reconciled:
     try:
         async with setup.unit_of_work() as ctx:
             return await reconcile.reconcile(ctx)
+    finally:
+        await setup.stop()
+
+
+async def _describe_workflows() -> int:
+    setup = Setup.build(load_settings(), callback_path=CALLBACK_PATH)
+    try:
+        async with setup.unit_of_work() as ctx:
+            return await workflows.describe_workflows(ctx)
     finally:
         await setup.stop()
 

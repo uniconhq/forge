@@ -7,6 +7,8 @@ from forge.domain.checks import CHECKS_ROOM, RUNS_KEPT, TaskCheck, check_room, c
 from forge.domain.content import named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import DEFAULT_MAX_SIZE, TaskDefinition
+from forge.domain.environment import EnvironmentLock
+from forge.domain.environment_plan import with_environment
 from forge.domain.grading import WALL_CEILING, Machine, wall_of
 from forge.domain.port_values import scalar_to_text
 from forge.domain.primitives import PROGRAMS, PrimitiveDeclaration
@@ -55,6 +57,7 @@ def plan_runs(
     machine: Machine,
     inner_workflows: tuple[PinnedWorkflow, ...] = (),
     programs: Mapping[str, PrimitiveDeclaration] | None = None,
+    environment: EnvironmentLock | None = None,
 ) -> RunPlanCheck:
     """The plan of the task `definition`, as `check_run_task` checked it
     (`task`) against its workflow resolved at `commit` (`checked`).
@@ -154,6 +157,8 @@ def plan_runs(
         ),
         released=released,
     )
+    if environment is not None:
+        plan = with_environment(plan, environment, task.entrant)
     broken = violation(exact_json.loads(plan.to_bytes()), "plan")
     if broken is not None:
         return RunPlanCheck(

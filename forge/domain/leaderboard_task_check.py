@@ -120,8 +120,8 @@ def hold_problems(
     before: ContestDefinition | None, after: ContestDefinition, now: datetime
 ) -> Found:
     """The hold's `from` inside the contest of `after`, said at the date
-    that moved past it when the hold stayed as it was; and, when the save
-    sets or moves it, not a time already passed."""
+    that moved past it when the hold stayed as it was. A past start is
+    a hiding warning (`hold_hiding`), not a structural problem."""
     hold = after.hold
     if hold is None:
         return []
@@ -148,15 +148,21 @@ def hold_problems(
                     "first, or take the hold out.",
                 )
             )
-    if moved and hold.from_ <= now:
-        found.append(
-            (
-                ("hold", "from"),
-                f"{in_words(hold.from_)} has passed, so a hold from then would hide submissions "
-                "others have already seen on the leaderboards. Give a time still to come.",
-            )
-        )
     return found
+
+
+def hold_hiding(
+    before: ContestDefinition | None, after: ContestDefinition, now: datetime
+) -> tuple[str, ...]:
+    """Moving a hold into the past hides submissions that others could see."""
+    hold = after.hold
+    old = before.hold if before is not None else None
+    if hold is not None and (old is None or old.from_ != hold.from_) and hold.from_ <= now:
+        return (
+            f"A hold from {in_words(hold.from_)} hides leaderboard submissions shown since then. "
+            "Other entrants may have seen or kept them.",
+        )
+    return ()
 
 
 def across(

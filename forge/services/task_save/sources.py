@@ -29,7 +29,7 @@ from forge.domain.workflow_definition import (
 )
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.runtime.context import Context
-from forge.services import entrant_view, names, primitives
+from forge.services import entrant_view, names, primitives, workflows
 from forge.services.task_save.records import CHANGED_CONTENT, DEFINITION_KEPT, Checked
 
 
@@ -68,6 +68,7 @@ async def _graded_under(ctx: Context, task: TaskId) -> set[str]:
     """The publications a graded submission of the task ran under: once
     there is one, T7 and T10 hold.
     """
+    # Only entrant submissions count; filter staff test submissions when feature 13 adds them.
     return set(
         (
             await ctx.db.scalars(
@@ -186,6 +187,46 @@ async def _moved_workflows(
                 ),
             )
         )
+    return problems
+
+
+async def _yanked_workflows(ctx: Context, task: TaskId, pinned: Mapping[str, str]) -> list[Problem]:
+    """Refuse only references newly pinned to a withdrawn version."""
+    marks = await workflows.yanks_of(ctx, list(pinned.values()))
+    if not marks:
+        return []
+    allowed: set[tuple[str, str]] = set()
+    publications = await ctx.forge.workspaces.list_publications(task)
+    if publications:
+        latest = publications[-1]
+        try:
+            file = await ctx.forge.content.read_file(PLATFORM, task, PLAN_PATH, at=latest.version)
+        except NotFound:
+            file = None
+        if file is not None:
+            try:
+                plan = RunPlan.from_bytes(file.content)
+            except ValueError:
+                plan = None
+            for pin in () if plan is None else (plan.workflow, *plan.inner_workflows):
+                name = pin.ref.rsplit("@", 1)[0]
+                key = latest.workflows.get(name)
+                if key is not None:
+                    allowed.add((key, pin.ref.rsplit("@", 1)[1]))
+    problems: list[Problem] = []
+    for ref, key in pinned.items():
+        version = ref.rsplit("@", 1)[1]
+        mark = marks.get(key, {}).get(version)
+        if mark is not None and (key, version) not in allowed:
+            problems.append(
+                Problem(
+                    path="workflow",
+                    message=(
+                        f"{ref} is not for new tasks. Its owner stopped new use of this "
+                        f"version: {mark.reason}"
+                    ),
+                )
+            )
     return problems
 
 

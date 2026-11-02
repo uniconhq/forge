@@ -22,7 +22,7 @@ from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
 from forge.services import contests, identity, names, orgs, roles, task_save, tasks
 from forge.services.task_save import Draft, Published
-from forge.testing import CLASSIC
+from forge.testing import CLASSIC, prepared
 from tests.services.conftest import Acme, checked, organiser, signed_in
 
 KEY_LENGTH = 26
@@ -150,12 +150,13 @@ async def _bob_workflow(fake: FakeForge) -> None:
 async def _save_with(setup: Setup, acme: Acme, task: TaskId, workflow: bytes) -> object:
     current = await acme.fake.content.read_file(PLATFORM, task, "task.yaml")
     head = await acme.fake.content.list_files(PLATFORM, task)
-    content = current.content.replace(b"workflow: unicon/classic@v4", b"workflow: " + workflow)
+    content = current.content.replace(b"workflow: unicon/classic@v5", b"workflow: " + workflow)
     if content == current.content:
         content += b"\n"
     saved = await task_save.save(
         setup, acme.ada, task, {"task.yaml": Edit(content, head.tokens["task.yaml"])}
     )
+    saved = await prepared(setup, acme.ada, task, saved)
     if isinstance(saved, Published):
         await checked(setup, task)
     return saved
@@ -203,7 +204,7 @@ async def test_a_workflow_named_by_its_org_is_read_from_the_org_key(
 
     async with setup.unit_of_work() as ctx:
         found = await names.workflow_id(ctx, parse_workflow_ref("acme/sorting@v1"))
-        platform = await names.workflow_id(ctx, parse_workflow_ref("unicon/classic@v4"))
+        platform = await names.workflow_id(ctx, parse_workflow_ref("unicon/classic@v5"))
         person = await names.workflow_id(ctx, parse_workflow_ref("bob/mine@v1"))
 
     assert (found, platform, person) == (made, "unicon/classic", "bob/mine")

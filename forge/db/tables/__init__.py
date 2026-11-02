@@ -6,22 +6,26 @@ tests compare against; reading it from here is what puts them there.
 from forge.db.base import Base
 from forge.db.tables.entrants import Entrant, EntrantMember
 from forge.db.tables.entries import Entry
+from forge.db.tables.environment_preparations import EnvironmentPreparation
 from forge.db.tables.gradings import Grading
 from forge.db.tables.hold_ends import HoldEnd
 from forge.db.tables.invites import Invite
 from forge.db.tables.marks import Mark
 from forge.db.tables.names import Name
 from forge.db.tables.org_accounts import OrgAccount
+from forge.db.tables.part_uploads import PartUpload
 from forge.db.tables.regrades import Regrade
 from forge.db.tables.releases import Release
 from forge.db.tables.sessions import Session
 from forge.db.tables.steps import GradingReuse, GradingStep, PublicationObjects, StepOutput
 from forge.db.tables.uploads import Upload
+from forge.db.tables.workflow_yanks import WorkflowYank
 
 __all__ = [
     "Entrant",
     "EntrantMember",
     "Entry",
+    "EnvironmentPreparation",
     "Grading",
     "GradingReuse",
     "GradingStep",
@@ -30,12 +34,14 @@ __all__ = [
     "Mark",
     "Name",
     "OrgAccount",
+    "PartUpload",
     "PublicationObjects",
     "Regrade",
     "Release",
     "Session",
     "StepOutput",
     "Upload",
+    "WorkflowYank",
     "metadata",
 ]
 

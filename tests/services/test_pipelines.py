@@ -420,10 +420,13 @@ async def test_a_late_row_that_ends_is_told_to_its_entrant_only_after_the_reveal
     await _submit(setup, acme, islands)
     [early] = await _rows(setup, "early")
     await _early(setup, acme, early.id)
-    # The same code again, its early steps reused, and its late ones too
-    # once the first's have run.
+    # A second submission runs its own steps, even with the same code.
     await _submit(setup, acme, islands, user=9)
-    first, second = await _rows(setup, "late")
+    [second_early] = [row for row in await _rows(setup, "early") if row.id != early.id]
+    await _early(setup, acme, second_early.id)
+    late_rows = await _rows(setup, "late")
+    [first] = [row for row in late_rows if row.early_id == early.id]
+    [second] = [row for row in late_rows if row.early_id == second_early.id]
     told: list[Nudge] = []
     nudge = Context.nudge
 
@@ -441,6 +444,8 @@ async def test_a_late_row_that_ends_is_told_to_its_entrant_only_after_the_reveal
     await _step(setup, acme, first.id, "late", "solution", _batch())
     await _step(setup, acme, first.id, "late", "compare", _batch(score=True))
     assert await reported(first) == [(str(first.id), False)]
+    await _step(setup, acme, second.id, "late", "solution", _batch())
+    await _step(setup, acme, second.id, "late", "compare", _batch(score=True))
     clock.set(AFTER_CLOSE)
     assert await reported(second) == [(str(second.id), False), (str(second.early_id), True)]
 
@@ -783,7 +788,10 @@ async def test_an_early_compile_error_gives_every_late_run_its_verdict_and_no_la
     failed = {"r1": "compile_error", "r2": "compile_error"}
     await _step(setup, acme, early.id, "early", "solution", _batch(failed, log="main.py:1: no"))
     access = await _mint(setup, early.id, "early", "compare")
-    assert await steps.step_job(setup, early.id, _named(access), _bearer(access)) is None
+    assert (
+        await steps.step_job(setup, early.id, _named(access), _bearer(access), platform="linux-64")
+        is None
+    )
     assert await _report(setup, early.id, "early") is GradingStatus.DONE
     await setup.settle()
 
@@ -915,6 +923,9 @@ async def test_a_late_row_reads_what_its_early_row_read_and_reuses_as_it_did(
         await ctx.db.execute(
             update(GradingStep).where(GradingStep.grading_id == early.id).values(from_scratch=True)
         )
+        await ctx.db.execute(
+            update(Grading).where(Grading.id == early.id).values(from_scratch=True)
+        )
     await _step(setup, acme, early.id, "early", "solution", _batch(), from_scratch=True)
     await _step(setup, acme, early.id, "early", "compare", _batch(score=True), from_scratch=True)
 
@@ -940,6 +951,19 @@ async def test_a_late_row_reads_what_its_early_row_read_and_reuses_as_it_did(
     code = _download(job, f"{source}/main.py")
     assert code["sha256"] == hashlib.sha256(CODE).hexdigest()
 
+    await _step(setup, acme, late.id, "late", "solution", _batch(), from_scratch=True)
+    await _step(setup, acme, late.id, "late", "compare", _batch(score=True), from_scratch=True)
+    report = await _mint(setup, late.id, "late", "report", from_scratch=True)
+    assert (
+        await steps.step_report(setup, late.id, "report", _bearer(report), b"{}")
+        is GradingStatus.DONE
+    )
+    await setup.settle()
+    manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
+    retried = await gradings.retry(setup, manager, late.id)
+    await setup.settle()
+    assert (await _row(setup, retried.id)).status == GradingStatus.DONE
+
 
 async def test_a_pointer_to_an_upload_the_submission_did_not_take_is_given_no_link(
     setup: Setup, acme: Acme, spring: str
@@ -952,7 +976,7 @@ async def test_a_pointer_to_an_upload_the_submission_did_not_take_is_given_no_li
         await ctx.db.execute(update(UploadRow).values(consumed_by="acme/spring/@u9/islands#1"))
 
     with pytest.raises(Misconfigured, match="is no upload it took"):
-        await steps.step_job(setup, early.id, _named(access), _bearer(access))
+        await steps.step_job(setup, early.id, _named(access), _bearer(access), platform="linux-64")
 
 
 async def test_a_task_with_nothing_early_makes_its_late_row_at_once(

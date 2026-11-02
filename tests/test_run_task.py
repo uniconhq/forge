@@ -59,7 +59,7 @@ def mirrored(name: str) -> PrimitiveDeclaration:
 @pytest.fixture(scope="module")
 def primitives() -> dict[str, PrimitiveDeclaration]:
     return {
-        "unicon/exec@v2": mirrored("exec"),
+        "unicon/exec@v3": mirrored("exec"),
     }
 
 
@@ -84,7 +84,7 @@ inputs:
   seed: number
 steps:
   - id: episode
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ workflow.runner/ }}
       language: python
@@ -112,7 +112,7 @@ inputs:
   best: number
 steps:
   - id: check
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ workflow.checker/ }}
       language: python
@@ -145,7 +145,7 @@ inputs:
   judge_time_limit: number
 steps:
   - id: game
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       programs:
         entrant:
@@ -168,7 +168,7 @@ reads its reports is checked at the task's save."""
 
 ISLANDS = """\
 name: Islands
-workflow: unicon/classic@v4
+workflow: unicon/classic@v5
 inputs:
   code: {entrant: {label: Your solution, max_size: 1MB}}
   language: {entrant: {options: [cpp, python], default: cpp}}
@@ -302,7 +302,7 @@ def check(
 def islands(
     primitives: Mapping[str, PrimitiveDeclaration], task: str = ISLANDS, **kw: Any
 ) -> RunTaskCheck:
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     return check(primitives, task, workflow, files, kw.pop("paths", ISLANDS_PATHS), **kw)
 
 
@@ -903,6 +903,42 @@ def test_manifests_that_disagree_on_a_columns_type_are_refused(
     assert found.task is None
 
 
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("better: lower", "better: higher"),
+        ("at_least: 0", "at_least: 1"),
+        ("at_most: 2000", "at_most: 1000"),
+    ],
+)
+def test_manifest_bounds_agree_for_every_file(
+    primitives: dict[str, PrimitiveDeclaration], first: str, second: str
+) -> None:
+    task = JUDGED_TASK.replace("  judge_manifest: judge/program.yaml\n", "").replace(
+        "scoring:",
+        "repeat:\n  - inputs: [judge_manifest]\n    tuples:\n"
+        "      - [judge/program.yaml]\n      - [judge/other.yaml]\nscoring:",
+    )
+    found = check(
+        primitives,
+        task,
+        JUDGED,
+        {"workflow.yaml": JUDGED.encode()},
+        JUDGED_PATHS | {"judge/other.yaml"},
+        manifests={
+            "judge/program.yaml": f"reports:\n  moves: {{{first}}}\n".encode(),
+            "judge/other.yaml": f"reports:\n  moves: {{{second}}}\n".encode(),
+        },
+    )
+    assert found.task is None
+    assert any(
+        "judge/program.yaml" in problem["message"]
+        and "judge/other.yaml" in problem["message"]
+        and "Give it the same bounds in every file." in problem["message"]
+        for problem in found.problems
+    )
+
+
 def test_manifests_that_disagree_on_a_report_the_workflow_does_not_read_are_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
@@ -945,7 +981,7 @@ def test_an_entrant_judge_with_a_manifest_is_refused_where_it_cannot_be_marked(
 
     assert at(found, "inputs.judge") == [
         "judge is the entrant's, and reaches the program judge of the step game, which is given "
-        "a manifest. unicon/exec@v2 cannot mark what such a program reports as the "
+        "a manifest. unicon/exec@v3 cannot mark what such a program reports as the "
         "entrant's own, so the task must give judge itself."
     ]
 
@@ -1279,8 +1315,9 @@ def test_every_result_a_leaderboard_reads_of_a_task_is_listed_in_show_by_its_nam
     assert hidden_again(before, _scoring(text.replace("[compiled]", "[]")), ISLANDS_PATHS) == [
         {
             "path": "scoring.show",
-            "message": "Entrants have been shown compiled as soon as a grading ends, and what "
-            "they have been shown cannot be hidden again. List it as soon as before.",
+            "message": "Entrants have been shown compiled as soon as a grading ends, and what they "
+            "have been shown may have been seen or kept; it would now be hidden or shown "
+            "later.",
         }
     ]
 
@@ -1370,8 +1407,8 @@ def test_show_lists_a_report_by_its_name_but_not_one_also_a_file_of_the_task(
     assert hidden_again(before, _scoring(ISLANDS), ISLANDS_PATHS) == [
         {
             "path": "scoring.show",
-            "message": "Entrants have been shown log as soon as a grading ends, and what they "
-            "have been shown cannot be hidden again. List it as soon as before.",
+            "message": "Entrants have been shown log as soon as a grading ends, and what they have "
+            "been shown may have been seen or kept; it would now be hidden or shown later.",
         }
     ]
 
@@ -1398,18 +1435,23 @@ def test_what_was_shown_cannot_be_hidden_or_shown_later() -> None:
     assert problems == [
         {
             "path": "scoring.show.after_close",
-            "message": "Entrants have been shown sample_time as soon as a grading ends, and what "
-            "they have been shown cannot be hidden again. List it as soon as before.",
+            "message": "Entrants have been shown sample_time as soon as a "
+            "grading ends, and what they "
+            "have been shown may have been seen or kept; it would now be hidden or shown "
+            "later.",
         },
         {
             "path": "scoring.show",
-            "message": "Entrants have been shown st9 at the reveal, and what they have been "
-            "shown cannot be hidden again. List it as soon as before.",
+            "message": "Entrants have been shown st9 at the reveal, and what "
+            "they have been shown may "
+            "have been seen or kept; it would now be hidden or shown later.",
         },
         {
             "path": "scoring.show",
-            "message": "Entrants have been shown tests/3.in as soon as a grading ends, and what "
-            "they have been shown cannot be hidden again. List it as soon as before.",
+            "message": "Entrants have been shown tests/3.in as soon as a "
+            "grading ends, and what they "
+            "have been shown may have been seen or kept; it would now be hidden or shown "
+            "later.",
         },
     ]
     assert hidden_again(before, scoring, ISLANDS_PATHS - {"tests/3.in"})[2:] == []
@@ -1428,8 +1470,9 @@ def test_a_shown_file_is_compared_by_path_whichever_entry_lists_it() -> None:
     ) == [
         {
             "path": "scoring.show",
-            "message": "Entrants have been shown samples/ as soon as a grading ends, and what "
-            "they have been shown cannot be hidden again. List it as soon as before.",
+            "message": "Entrants have been shown samples/ as soon as a grading ends, and what they "
+            "have been shown may have been seen or kept; it would now be hidden or shown "
+            "later.",
         }
     ]
 
@@ -1607,9 +1650,10 @@ def test_a_name_shown_during_the_contest_may_not_read_fewer_of_the_runs_left(
     assert fewer_runs([(shown, reads)], fewer) == [
         {
             "path": "scoring.groups.sample_tests",
-            "message": "Entrants have been shown sample_tests during the contest over 2 runs "
-            "the task still has, and it would now read 1 fewer. What they have been shown "
-            "cannot be hidden again, so keep those runs in it.",
+            "message": "Entrants have been shown sample_tests during the "
+            "contest over 2 runs the task "
+            "still has, and it would now read 1 fewer. What they have been shown may have "
+            "been seen or kept; those runs would now be hidden.",
         }
     ]
     # A run the task no longer has is not counted, nor what was shown at
@@ -1643,7 +1687,7 @@ def mean(
 def test_an_exec_value_names_its_program_and_runs_late_unless_shown_during_the_contest(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    workflow, files = deployed("unicon/classic@v4")
+    workflow, files = deployed("unicon/classic@v5")
     checked = check_run_workflow(
         parse_run_workflow(workflow), primitives, WorkflowFiles(frozenset(files), files)
     )

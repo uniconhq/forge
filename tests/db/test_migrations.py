@@ -61,6 +61,9 @@ TABLES = {
     "releases",
     "entries",
     "hold_ends",
+    "workflow_yanks",
+    "part_uploads",
+    "environment_preparations",
 }
 
 
@@ -994,3 +997,60 @@ def test_going_back_from_entrants_drops_a_members_invite_and_brings_the_tables_b
     engine.dispose()
     assert (grants, contestants) == (["contestant"], 0)
     upgrade_to_head(migrated_database_url)
+
+
+def test_submission_reuse_migration_copies_another_submissions_pinned_measurement(
+    migrated_database_url: str,
+) -> None:
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0032")
+    engine = create_engine(migrated_database_url)
+    first = "00000000-0000-0000-0000-000000000001"
+    second = "00000000-0000-0000-0000-000000000002"
+    output = "00000000-0000-0000-0000-000000000003"
+    with engine.begin() as connection:
+        _row(connection, id=f"'{first}'", **SUBMISSION)
+        _row(
+            connection,
+            id=f"'{second}'",
+            **{**SUBMISSION, "submission_id": "'acme/spring/@u7/sum#2'", "submission_number": "2"},
+        )
+        connection.execute(
+            text("""
+            INSERT INTO step_outputs
+              (id, org_id, key, pipeline, reusable, grading_id, step, outputs, files, measured_at)
+            VALUES (:id, 'acme', 'same-code', 'early', true, :grading, 'solution',
+                    '{"time_ms": "17"}', '{"out": {"object": "kept-object"}}', now())
+        """),
+            {"id": output, "grading": first},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO grading_reuses (grading_id,key,output_id) VALUES "
+                "(:grading,'same-code',:output)"
+            ),
+            {"grading": second, "output": output},
+        )
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT id::text,submission_id,outputs,files FROM step_outputs "
+                "WHERE reusable ORDER BY submission_id"
+            )
+        ).all()
+        assert [row.submission_id for row in rows] == [
+            "acme/spring/@u7/sum#1",
+            "acme/spring/@u7/sum#2",
+        ]
+        assert rows[0].id == output and rows[1].id != output
+        assert all(row.outputs == {"time_ms": "17"} for row in rows)
+        assert all(row.files == {"out": {"object": "kept-object"}} for row in rows)
+        assert (
+            connection.scalar(
+                text("SELECT output_id::text FROM grading_reuses WHERE grading_id=:grading"),
+                {"grading": second},
+            )
+            == output
+        )
+    engine.dispose()

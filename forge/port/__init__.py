@@ -27,6 +27,7 @@ from forge.port.identity import IdentityPort, SignedIn
 from forge.port.mail import MailPort
 from forge.port.objects import ObjectStore
 from forge.port.orgs import OrgPort
+from forge.port.packages import PackageResolver
 from forge.port.primitives import PrimitivePort
 from forge.port.threads import ThreadPort
 from forge.port.uploads import UploadPort
@@ -142,6 +143,9 @@ class Forge(Protocol):
 
     @property
     def objects(self) -> ObjectStore: ...
+
+    @property
+    def packages(self) -> PackageResolver: ...
 
     @property
     def uploads(self) -> UploadPort: ...

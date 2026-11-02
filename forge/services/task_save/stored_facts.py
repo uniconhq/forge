@@ -122,6 +122,11 @@ def _marks_digest(task: RunTask | None) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
+def _hiding_digest(lines: tuple[str, ...]) -> str:
+    """Bind a save's confirmation to the exposure warnings actually shown."""
+    return hashlib.sha256(json.dumps(lines).encode()).hexdigest()[:16]
+
+
 def _workflow_problem(ref: WorkflowRef, problem: Problem) -> Problem:
     return Problem(
         path="workflow",
