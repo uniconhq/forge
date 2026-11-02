@@ -47,7 +47,7 @@ from forge.services import (
     task_save,
     tasks,
 )
-from forge.services.task_save import Draft, Published
+from forge.services.task_save import Draft, Preparing, preparing
 from tests.live.conftest import (
     LIVE,
     credential_of,
@@ -173,8 +173,14 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
         },
     )
 
-    assert isinstance(saved, Published)
-    assert (saved.number, saved.grading_changed) == (1, False)
+    # The first save locks the task's toolchains, so it publishes once they
+    # are prepared, in the background.
+    assert isinstance(saved, Preparing)
+    await live_setup.settle()
+    prepared = await preparing.read(live_setup, organiser, task)
+    assert prepared.status == "ready", prepared
+    assert prepared.result is not None
+    assert (prepared.result["number"], prepared.result["grading_changed"]) == (1, False)
     repo = f"/api/v1/repos/{org}/spring.sum.task"
     tags = {tag["name"]: tag for tag in admin.get(f"{repo}/tags").json()}
     assert set(tags) == {"published/1"}
