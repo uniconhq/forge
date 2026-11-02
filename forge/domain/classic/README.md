@@ -1,7 +1,7 @@
-# unicon/classic@v4
+# unicon/classic@v5
 
 One run of an entrant's program on one input. `workflow.yaml` compiles and
-runs the entrant's code with `unicon/exec@v2` on the run's `input` under
+runs the entrant's code with `unicon/exec@v3` on the run's `input` under
 the task's limits, and compiles and runs `diff/diff.py` with exec, given
 `diff/program.yaml` as its manifest and the program's output and the run's
 `answer` as named files. A task repeats it over its tests with `repeat`.

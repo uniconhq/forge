@@ -42,9 +42,71 @@ class ForgejoWorkflows:
         self._repos = repos
         self._users = users
 
+    async def search_workflows(
+        self,
+        as_: Identity,
+        *,
+        q: str,
+        scope: str | None,
+        page: int,
+        limit: int,
+        org: str | None = None,
+    ) -> tuple[tuple[Workflow, ...], int | None]:
+        filters: list[dict[str, Any]] = [{}]
+        if scope == "mine":
+            filters = [{"uid": int((await self._users.me(as_))["id"]), "exclusive": "true"}]
+        elif scope == "public":
+            filters = [{"is_private": "false"}]
+        elif scope == "orgs":
+            orgs = await self._users.orgs_of(as_)
+            if org is not None:
+                orgs = [
+                    entry
+                    for entry in orgs
+                    if str(entry["username"]).lower() == org.lower()
+                    or str(entry.get("name", "")).lower() == org.lower()
+                ]
+            filters = [{"uid": int(entry["id"]), "exclusive": "true"} for entry in orgs]
+        if not filters:
+            return (), None
+        per_owner = max(1, limit // len(filters))
+        found: dict[str, Workflow] = {}
+        more = False
+        for selected in filters:
+            records, following = await self._repos.search_page(
+                as_,
+                query=q or WORKFLOW_TOPIC,
+                page=page,
+                limit=per_owner,
+                **selected,
+                **({"topic": "true", "sort": "updated", "order": "desc"} if not q else {}),
+            )
+            more |= following
+            for record in records:
+                if _is_workflow(record):
+                    workflow = await self._workflow(record)
+                    found[str(workflow.id)] = workflow
+        return tuple(found.values()), page + 1 if more else None
+
+    async def set_workflow_description(self, workflow: WorkflowId, description: str) -> None:
+        ref = parse_workflow(workflow)
+        await self._repos.set_description(ref.owner, ref.repo, description)
+
     async def workflow_key(self, workflow: WorkflowId) -> str:
         ref = parse_workflow(workflow)
         return str((await self._repos.record(ref.owner, ref.repo))["id"])
+
+    async def all_workflows(self) -> tuple[Workflow, ...]:
+        return tuple(
+            [
+                await self._workflow(repo)
+                for repo in await self._repos.marked(WORKFLOW_TOPIC)
+                if _is_workflow(repo)
+            ]
+        )
+
+    async def require_workflow_write(self, as_: Identity, workflow: WorkflowId) -> None:
+        await self._require_writer(as_, parse_workflow(workflow))
 
     async def create_workflow(
         self, as_: Identity, owner: str, name: str, files: Files, visibility: Visibility
@@ -292,11 +354,13 @@ class ForgejoWorkflows:
         name = str(repo["name"]).removesuffix(f".{WORKFLOW}")
         return Workflow(
             id=WorkflowRef(owner, name).id,
+            key=str(repo["id"]),
             owner=owner,
             name=name,
             visibility=await self._visibility(repo),
             stars=int(repo.get("stars_count") or 0),
             versions=tuple(await self._repos.versions(PLATFORM, owner, str(repo["name"]))),
+            description=str(repo.get("description") or ""),
         )
 
     async def _visibility(self, repo: dict[str, Any]) -> Visibility:

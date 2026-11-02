@@ -152,15 +152,17 @@ async def extend(
     entrant: uuid.UUID,
     extension: timedelta,
     tasks: Sequence[str] | None = None,
+    *,
+    confirm: bool = False,
 ) -> Entrant:
     """Give the entrant `extension` on the contest's `tasks`, by name, every
     task when none are named, in place of any it had, so an extension of
     nothing takes it away. It moves the entrant's due and close on those
     tasks. Needs the manager role at the contest, and the entrant pending or
     approved. `InvalidExtension` when it names a task the contest does not
-    list, would let the entrant submit to a task whose reveal has passed, or
-    would leave one of its submissions after the due or the close it was
-    made before.
+    list or would leave a submission after the due or close it was made
+    before. `ConfirmationRequired` asks before allowing submissions after
+    hidden results were shown; `confirm` answers that warning.
     """
     settings, row = await _decided(
         ctx, organiser, contest, entrant, registration.REGISTERED, "given time"
@@ -174,6 +176,7 @@ async def extend(
         workspace_of(ctx, row),
         timelines.of_entrant(row),
         timelines.extension_of(int(checked.total_seconds()), named),
+        confirm=confirm,
     )
     row.time_extension_seconds = int(checked.total_seconds())
     row.extension_tasks = [*named] if named is not None else None

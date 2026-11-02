@@ -64,9 +64,9 @@ GRADING = uuid.UUID("0199a2c1-6b7e-7c3a-9f10-5d2e4b8a6c31")
 
 def _planned(task: str, paths: frozenset[str], **kw: Any) -> RunPlan:
     primitives = {
-        "unicon/exec@v2": mirrored("exec"),
+        "unicon/exec@v3": mirrored("exec"),
     }
-    _, files = deployed("unicon/classic@v4")
+    _, files = deployed("unicon/classic@v5")
     found = planned(primitives, task, files["workflow.yaml"].decode(), files, paths, **kw)
     assert found.plan is not None, found.problems
     return found.plan

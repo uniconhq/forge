@@ -233,6 +233,7 @@ class CachedForge:
         self.grading = inner.grading
         self.computes = inner.computes
         self.objects = inner.objects
+        self.packages = inner.packages
         self.uploads = inner.uploads
         self.mail = inner.mail
 

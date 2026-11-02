@@ -29,6 +29,7 @@ from forge.services.task_save.records import (
     SAVE_MESSAGE,
     Checked,
     Draft,
+    Preparing,
     Published,
 )
 from forge.services.task_save.save_flow import _regrades, save
@@ -87,6 +88,7 @@ __all__ = [
     "Checked",
     "DeclaredInput",
     "Draft",
+    "Preparing",
     "Published",
     "WorkflowForm",
     "_Found",

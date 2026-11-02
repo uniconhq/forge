@@ -55,8 +55,9 @@ from sqlalchemy import func, select, text
 
 from forge.db.tables import Entrant, Grading
 from forge.db.tables.gradings import FRONT
+from forge.db.tables.releases import RELEASED, Release
 from forge.domain.definitions import ContestDefinition, ContestTask, State, letters
-from forge.domain.errors import InvalidExtension, NotFound
+from forge.domain.errors import ConfirmationRequired, InvalidExtension, NotFound
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.domain.names import EntrantOwner, WorkspaceOwner
@@ -100,14 +101,33 @@ async def hold_task(ctx: Context, task: TaskId, *, shared: bool = False) -> None
     )
 
 
-async def _released_held(ctx: Context, task: TaskId) -> bool:
-    """Whether the task's results are released, read under the task's hold
-    shared, so a release or a take-back in flight lands before the read or
-    after this unit of work, never between the read and what it decides
-    (stage 5 section 6 item 32).
+async def released_periods(ctx: Context, task: TaskId) -> list[tuple[datetime, datetime | None]]:
+    """Every interval when entrants could see released results, including
+    releases taken back since. Callers hold the task against release changes.
+    """
+    rows = list(
+        await ctx.db.scalars(select(Release).where(Release.task_id == task).order_by(Release.seq))
+    )
+    return [
+        (row.acted_at, rows[index + 1].acted_at if index + 1 < len(rows) else None)
+        for index, row in enumerate(rows)
+        if row.action == RELEASED
+    ]
+
+
+async def _released_held(ctx: Context, task: TaskId) -> datetime | None:
+    """The first time results were shown, even if a release was taken back,
+    read under the task's shared hold against an in-flight release.
     """
     await hold_task(ctx, task, shared=True)
-    return await entrant_view.results_released(ctx, task)
+    periods = await released_periods(ctx, task)
+    return periods[0][0] if periods else None
+
+
+@dataclass(frozen=True, slots=True)
+class ContestCheck:
+    problems: list[Problem]
+    hiding: tuple[str, ...] = ()
 
 
 def extension_of(length_seconds: int, tasks: Sequence[str] | None) -> Extension:
@@ -228,12 +248,12 @@ async def check_contest(
     contest: ContestId,
     before: ContestDefinition | None,
     after: ContestDefinition,
-) -> list[Problem]:
+) -> ContestCheck:
     """C1 across files and C2 for a contest save from `before` to `after`,
     each problem at its path in `contest.yaml`; a dropped entry's at
     `tasks`, since the file no longer has a line for it. A task whose
-    results are released now may not close later, as after its reveal,
-    read under its hold shared (`_released_held`).
+    results were released, including a take-back since, warns before
+    closing later, as after its reveal, under its shared hold.
     """
     listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
     tasks = {each.name: TaskId(each.id) for each in listed}
@@ -262,8 +282,9 @@ async def check_contest(
                 moved = old.release_at != entry.release_at
                 scheduled.append((index, entry, f"tasks[{index}].release_at" if moved else "end"))
         problems += await _not_ready(ctx, scheduled, tasks)
+    hiding: list[str] = []
     if before is None:
-        return problems
+        return ContestCheck(problems)
     if _drafted_after_start(before, after, ctx.now):
         problems.append(Problem(path="state", message=STARTED_STAYS_OPEN))
     problems += _sizes_moved(before, after, ctx.now)
@@ -285,7 +306,7 @@ async def check_contest(
                 )
             )
         for path, message in _moved(
-            before, old, after, entry, made.get(entry.id, []), extensions, ctx.now
+            before, old, after, entry, made.get(entry.id, []), extensions, ctx.now, hiding
         ):
             at = path if path in ("start", "end") else f"tasks[{index}].{path}"
             problems.append(Problem(path=at, message=message))
@@ -296,16 +317,14 @@ async def check_contest(
             and task is not None
             and after.closes_of(entry) > max(before.closes_of(old), ctx.now)
             and not any(problem["path"] == closes for problem in problems)
-            and await _released_held(ctx, task)
+            and (since := await _released_held(ctx, task)) is not None
         ):
-            problems.append(
-                Problem(
-                    path=closes,
-                    message=f"{entry.id}'s results are released, so a later closing time "
-                    "would let entrants submit knowing them.",
-                )
+            hiding.append(
+                f"{entry.id}'s results were shown to entrants since {in_words(since)}. "
+                "They may have seen or kept them; a later closing time would let entrants "
+                "submit knowing them."
             )
-    return problems
+    return ContestCheck(problems, tuple(hiding))
 
 
 async def _not_ready(
@@ -441,6 +460,7 @@ def _moved(
     made: Collection[Made],
     extensions: Collection[Extension],
     now: datetime,
+    hiding: list[str],
 ) -> list[tuple[str, str]]:
     """C2 for one task: how its entry moved against what rows did. Only a
     task released under `before` opened, and only one that also passed its
@@ -453,16 +473,12 @@ def _moved(
     task = new.id
     old = listed if listed is not None else ContestTask(id=task)
     opened = reached(before, task, now)
-    release_key = "release_at" if new.release_at is not None else "start"
     closes_key = "closes" if new.closes is not None else "end"
     old_release, new_release = before.release_of(old), after.release_of(new)
     if opened and new_release > old_release:
-        found.append(
-            (
-                release_key,
-                f"{task} was released on {in_words(old_release)}, so entrants have seen it, "
-                "and a later release time would hide it again.",
-            )
+        hiding.append(
+            f"{task} was shown to entrants since {in_words(old_release)}. "
+            "They may have seen or kept it; a later release time would hide it again."
         )
     for submission in made:
         old_due = due_of(before, old, submission.extension)
@@ -492,12 +508,10 @@ def _moved(
             break
     revealed = reveal_of(before, old, extensions)
     if opened and revealed <= now and after.closes_of(new) > before.closes_of(old):
-        found.append(
-            (
-                closes_key,
-                f"{task}'s hidden results were shown on {in_words(revealed)}, so a later "
-                "closing time would let entrants submit knowing them.",
-            )
+        hiding.append(
+            f"{task}'s hidden results were shown to entrants since {in_words(revealed)}. "
+            "They may have seen or kept them; a later closing time would let entrants "
+            "submit knowing them."
         )
     return found
 
@@ -509,34 +523,38 @@ async def refuse_extension(
     workspace: WorkspaceId,
     before: Extension,
     after: Extension,
+    *,
+    confirm: bool = False,
 ) -> None:
     """`InvalidExtension` when changing a row's extension from `before` to
-    `after` would let it submit to a task whose reveal has passed or whose
-    results are released now (a take-back allows it again, stage 5 section
-    6 item 10), or leave one of its submissions after the due or the close
-    it was made before.
+    `after` would leave one of its submissions after the due or the close
+    it was made before. Letting it submit after seeing hidden results asks
+    with `ConfirmationRequired`, including after a release was taken back.
     """
     listed = await names.named(ctx, await ctx.forge.content.list_tasks(PLATFORM, contest))
     tasks = {each.name: TaskId(each.id) for each in listed}
     extensions = await every_extension(ctx, contest)
     own = await _own(ctx, workspace, tasks)
+    hiding: list[str] = []
     for entry in settings.tasks:
         if after.on(entry.id) > before.on(entry.id):
             revealed = reveal_of(settings, entry, extensions)
             if revealed <= ctx.now and close_of(settings, entry, after) > ctx.now:
-                raise InvalidExtension(
-                    f"{entry.id}'s hidden results were shown on {in_words(revealed)}, so "
-                    "extra time on it would let this entrant submit knowing them."
+                hiding.append(
+                    f"{entry.id}'s hidden results were shown since {in_words(revealed)}. "
+                    "Entrants may have seen or kept them; extra time would let this entrant "
+                    "submit knowing them."
                 )
             task = tasks.get(entry.id)
             if (
                 task is not None
                 and close_of(settings, entry, after) > ctx.now
-                and await _released_held(ctx, task)
+                and (since := await _released_held(ctx, task)) is not None
             ):
-                raise InvalidExtension(
-                    f"{entry.id}'s results are released, so extra time on it would let this "
-                    "entrant submit knowing them."
+                hiding.append(
+                    f"{entry.id}'s results were shown since {in_words(since)}. "
+                    "Entrants may have seen or kept them; extra time would let this entrant "
+                    "submit knowing them."
                 )
         for number, at in own.get(entry.id, []):
             made = Made(after, number, at)
@@ -551,6 +569,12 @@ async def refuse_extension(
                     f"{entry.id}'s {made.said()} would then be after the task closed for this "
                     "entrant."
                 )
+
+    if hiding and not confirm:
+        raise ConfirmationRequired(
+            "This extension lets an entrant submit after seeing hidden results. Save it?",
+            hiding=tuple(hiding),
+        )
 
 
 async def _own(

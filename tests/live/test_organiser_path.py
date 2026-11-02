@@ -26,6 +26,7 @@ from sqlalchemy import update
 
 from forge.db.tables import Grading
 from forge.domain.content import Edit
+from forge.domain.environment import LOCK_PATH
 from forge.domain.errors import NotFound
 from forge.domain.grading import GradingStatus
 from forge.domain.ids import ContestId, OrgId, TaskId
@@ -47,7 +48,7 @@ from forge.services import (
     task_save,
     tasks,
 )
-from forge.services.task_save import Draft, Published
+from forge.services.task_save import Draft, Preparing, preparing
 from tests.live.conftest import (
     LIVE,
     credential_of,
@@ -173,19 +174,30 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
         },
     )
 
-    assert isinstance(saved, Published)
-    assert (saved.number, saved.grading_changed) == (1, False)
+    # The first save locks the task's toolchains, so it publishes once they
+    # are prepared, in the background.
+    assert isinstance(saved, Preparing)
+    await live_setup.settle()
+    prepared = await preparing.read(live_setup, organiser, task)
+    assert prepared.status == "ready", prepared
+    assert prepared.result is not None
+    assert (prepared.result["number"], prepared.result["grading_changed"]) == (1, False)
     repo = f"/api/v1/repos/{org}/spring.sum.task"
     tags = {tag["name"]: tag for tag in admin.get(f"{repo}/tags").json()}
     assert set(tags) == {"published/1"}
-    commit = admin.get(f"{repo}/git/commits/{tags['published/1']['commit']['sha']}").json()
-    assert commit["author"]["login"] == person["login"]
-    assert sorted(entry["filename"] for entry in commit["files"]) == [
-        "plans/plan.json",
-        "plans/runs.json",
-        "statement.md",
-        "task.yaml",
+    # The save commits the organiser's files, the preparation the lock, and
+    # the publication the plans, each as the organiser.
+    commits = [admin.get(f"{repo}/git/commits/{tags['published/1']['commit']['sha']}").json()]
+    for _ in range(2):
+        (parent,) = commits[-1]["parents"]
+        commits.append(admin.get(f"{repo}/git/commits/{parent['sha']}").json())
+    assert [commit["author"]["login"] for commit in commits] == [person["login"]] * 3
+    assert [sorted(entry["filename"] for entry in commit["files"]) for commit in commits] == [
+        ["plans/plan.json", "plans/runs.json"],
+        [LOCK_PATH],
+        ["statement.md", "task.yaml"],
     ]
+    assert commits[-1]["sha"] == saved.version
     plan = admin.get(f"{repo}/contents/plans/plan.json").json()
     assert plan["last_commit_sha"] == tags["published/1"]["commit"]["sha"]
 
@@ -195,7 +207,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
         organiser,
         task,
         "task.yaml",
-        current.content.replace(b"unicon/classic@v4", b"unicon/classic@v9"),
+        current.content.replace(b"unicon/classic@v5", b"unicon/classic@v9"),
         current.token,
     )
 

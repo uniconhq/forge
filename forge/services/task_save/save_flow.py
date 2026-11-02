@@ -3,8 +3,12 @@ from collections.abc import Mapping
 
 from forge.domain.content import Edit
 from forge.domain.definitions import STATEMENT_FILE
-from forge.domain.ids import TaskId
-from forge.domain.publication_record import Check, write_note
+from forge.domain.environment import Environment, EnvironmentLock
+from forge.domain.environment_plan import languages_of
+from forge.domain.errors import Conflict, Rejected
+from forge.domain.identity import PLATFORM
+from forge.domain.ids import TaskId, VersionId
+from forge.domain.publication_record import Check, Publication, write_note
 from forge.domain.regrades import RegradeCause
 from forge.domain.roles import Role, contest_id_of, holds, task_scope
 from forge.domain.run_plan import RELEASE_MOVED, pin_moved, run_plan_changes, steps_run_again
@@ -16,9 +20,10 @@ from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import entrant_view, entries, gradings, pipelines, places, timelines
 from forge.services.access import Organiser, require
-from forge.services.task_save import sources
+from forge.services.task_save import preparing, sources
 from forge.services.task_save.checking import _ask, _checked_first, check
 from forge.services.task_save.effect import _differing, _programs_again, _report, _save_effect
+from forge.services.task_save.environments import anticipated, at, matching
 from forge.services.task_save.guards import (
     _refuse_admin_only,
     _refuse_reserved,
@@ -31,13 +36,16 @@ from forge.services.task_save.records import (
     SAVE_MESSAGE,
     Checked,
     Draft,
+    Preparing,
     Published,
 )
 from forge.services.task_save.sources import _published_snapshot, _saved_snapshot
-from forge.services.task_save.stored_facts import _marks_digest
+from forge.services.task_save.stored_facts import _hiding_digest, _marks_digest
 from forge.services.task_save.writing import _draft, _landed_under, _plan_files, _write
 
 log = get_logger(__name__)
+
+CHANGED_WHILE_PREPARING = "The task changed while its packages were prepared. Save again."
 
 
 @action
@@ -51,7 +59,7 @@ async def save(
     asked: str | None = None,
     keep_as_draft: bool = False,
     message: str | None = None,
-) -> Published | Draft:
+) -> Published | Draft | Preparing:
     """Save the task's files, each path with its new content, or none to
     remove it, and the token it was read with, and publish the result when
     it is valid. Needs the manager role at the task. `keep_as_draft` writes
@@ -66,6 +74,7 @@ async def save(
     require(organiser, scope, Role.MANAGER)
     _refuse_reserved(changes)
     _refuse_untokened_removals(changes)
+    await preparing.replace(ctx, task)
     as_ = organiser.identity
     written = await _resolve(ctx, organiser, task, changes)
     head = await ctx.forge.content.list_files(as_, task)
@@ -80,6 +89,14 @@ async def save(
         version = await _write(ctx, organiser, task, head, written, {}, said)
         return _draft(organiser, task, version, checked.errors, ())
     assert checked.definition is not None
+    assert checked.run_plan is not None and checked.run_task is not None
+    environment = (checked.definition.environment or Environment()).covering(
+        languages_of(checked.run_plan, checked.run_task.entrant)
+    )
+    needs_preparation = (
+        bool(environment.requirements())
+        and await matching(ctx, as_, task, head, written, environment) is None
+    )
 
     # A publication still checked, or refused, is not the task's,
     # so a save says what it changes against the one entrants are graded on.
@@ -88,6 +105,7 @@ async def save(
     live = await entrant_view.live(ctx, task, made)
     latest = live[-1] if live else None
     newest = made[-1] if made else None
+    previous = await at(ctx, PLATFORM, task, latest.version) if latest is not None else None
     changed: tuple[str, ...] = ()
     rerun: tuple[str, ...] | None = None
     pinned = False
@@ -99,6 +117,9 @@ async def save(
         # What the plan changes is said from its plan and runs file, which
         # say whether anything moved.
         after = await _saved_snapshot(ctx, as_, task, head, written, checked, published_files)
+        if needs_preparation:
+            assert environment is not None and checked.run_task is not None
+            after = anticipated(after, environment, checked.run_task.entrant, previous)
         changed = run_plan_changes(before, after)
         pinned = pin_moved(before, after)
         if RELEASE_MOVED in changed and not await entrant_view.results_released(ctx, task):
@@ -135,7 +156,9 @@ async def save(
     expected = basis if question is None else f"{basis}:{_marks_digest(checked.run_task)}"
     if pinned:
         expected = f"{expected}:{PIN_ANSWER}"
-    exact = question is not None or pinned
+    if checked.hiding:
+        expected = f"{expected}:{_hiding_digest(checked.hiding)}"
+    exact = question is not None or pinned or bool(checked.hiding)
     confirmed = confirm and (asked == expected if exact else asked in (None, basis))
     if not confirmed:
         await _ask(
@@ -152,11 +175,93 @@ async def save(
             pinned=pinned,
         )
 
+    if needs_preparation:
+        assert environment is not None
+        version = await _write(ctx, organiser, task, head, written, {}, said)
+        if await _landed_under(ctx, as_, task, head, version, written):
+            return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
+
+        async def publish(later: Context, lock: EnvironmentLock, locked: VersionId) -> Published:
+            await timelines.hold_rules(later, contest_id_of(scope))
+            await timelines.hold_task(later, task)
+            listing = await later.forge.content.list_files(PLATFORM, task)
+            if listing.version != locked:
+                raise Conflict(CHANGED_WHILE_PREPARING)
+            # What the save said it changes is against the publication live
+            # then; one checked first may have gone live since.
+            await pipelines.take_over(later, task)
+            now_live = await entrant_view.live(later, task)
+            if (now_live[-1].id if now_live else None) != (latest.id if latest else None):
+                raise Conflict(CHANGED_WHILE_PREPARING)
+            final = await check(later, PLATFORM, task, listing, {})
+            if final.errors:
+                raise Rejected(
+                    "The prepared task could not be published: "
+                    + "; ".join(error["message"] for error in final.errors)
+                )
+            if _hiding_digest(final.hiding) != _hiding_digest(checked.hiding):
+                raise Rejected(
+                    "What entrants were shown changed while packages were prepared. "
+                    "Save again to confirm the updated warnings."
+                )
+            final_changed: tuple[str, ...] = ()
+            final_rerun: tuple[str, ...] = ()
+            if latest is not None:
+                actual = await _saved_snapshot(
+                    later, PLATFORM, task, listing, {}, final, published_files
+                )
+                final_changed = run_plan_changes(before, actual)
+                final_rerun = steps_run_again(before, actual)
+                if RELEASE_MOVED in final_changed and not await entrant_view.results_released(
+                    later, task
+                ):
+                    final_changed = tuple(each for each in final_changed if each != RELEASE_MOVED)
+            plans = await _plan_files(later, PLATFORM, task, listing, final)
+            published_at = await _write(
+                later, organiser, task, listing, {}, plans, "Prepare task plan"
+            )
+            if await _landed_under(later, PLATFORM, task, listing, published_at, set(plans)):
+                raise Rejected(CHANGED_WHILE_PREPARING)
+            return await _publish(
+                later,
+                organiser,
+                task,
+                final,
+                published_at,
+                latest,
+                newest,
+                final_changed,
+                final_rerun,
+                read,
+            )
+
+        return await preparing.start(
+            ctx, organiser, task, version, environment, publish, previous=previous
+        )
+
     plans = await _plan_files(ctx, as_, task, head, checked)
     version = await _write(ctx, organiser, task, head, written, plans, said)
     touched = {*written, *plans}
     if version != head.version and await _landed_under(ctx, as_, task, head, version, touched):
         return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
+    return await _publish(
+        ctx, organiser, task, checked, version, latest, newest, changed, rerun, read
+    )
+
+
+async def _publish(
+    ctx: Context,
+    organiser: Organiser,
+    task: TaskId,
+    checked: Checked,
+    version: VersionId,
+    latest: Publication | None,
+    newest: Publication | None,
+    changed: tuple[str, ...],
+    rerun: tuple[str, ...] | None,
+    read: ReadChanges,
+) -> Published:
+    assert checked.definition is not None
     notes = checked.run_plan.notes if checked.run_plan is not None else ()
     if newest is not None and version == newest.version:
         # A save that published a change to how the task grades and stopped

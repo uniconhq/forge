@@ -138,7 +138,13 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
     over = await _over_limit(ctx, row, attempts, gone)
     _settle(ctx, row, gone)
     made = attempt_history._next_attempt(
-        ctx, row, PublicationId(row.publication_id), attempts, automatic=True, over_limit=over
+        ctx,
+        row,
+        PublicationId(row.publication_id),
+        attempts,
+        automatic=True,
+        over_limit=over,
+        from_scratch=row.from_scratch,
     )
     await ctx.db.flush()
     log.info(

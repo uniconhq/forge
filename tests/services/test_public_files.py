@@ -23,7 +23,7 @@ from forge.domain.uploads import pointer_text
 from forge.runtime.setup import Setup
 from forge.services import contest_home, contests, landing, task_save, uploads
 from forge.services.entrant_view import PUBLIC_MOST
-from forge.testing import register_entrant
+from forge.testing import prepared, register_entrant
 from tests.services.conftest import (
     ACME,
     RUNNING,
@@ -54,6 +54,7 @@ async def _save(setup: Setup, acme: Acme, task: TaskId, files: dict[str, bytes])
         {path: Edit(content, head.tokens.get(path)) for path, content in files.items()},
         confirm=True,
     )
+    result = await prepared(setup, acme.ada, task, result)
     assert isinstance(result, task_save.Published), result
     await checked(setup, task)
 
@@ -302,6 +303,7 @@ async def test_an_upload_under_public_is_served_by_its_bytes(
         {"public/data.bin": Edit(Uploaded(slot.id), head.tokens.get("public/data.bin"))},
         confirm=True,
     )
+    result = await prepared(setup, acme.ada, public, result)
     assert isinstance(result, task_save.Published), result
     await checked(setup, public)
     stored = await acme.fake.content.read_file(PLATFORM, public, "public/data.bin")

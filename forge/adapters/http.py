@@ -22,7 +22,7 @@ closes when its block ends.
 """
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import AsyncIterable, Mapping
 from typing import Any, Protocol
 from urllib.parse import quote
 
@@ -158,6 +158,24 @@ class Http[C]:
                 return bytes(body)
         except httpx.HTTPError as exc:
             raise Unavailable(f"no answer from {path}: {type(exc).__name__}") from exc
+
+    async def put_stream(
+        self, path: str, content: AsyncIterable[bytes], *, headers: Mapping[str, str]
+    ) -> None:
+        """A one-shot upload; a streamed body is never silently replayed."""
+        try:
+            response = await self._client.put(
+                path,
+                content=content,
+                headers=headers,
+                timeout=httpx.Timeout(60, connect=5, pool=30),
+            )
+        except httpx.HTTPError as exc:
+            raise Unavailable(
+                f"the large-file transfer did not complete: {type(exc).__name__}"
+            ) from exc
+        if not response.is_success:
+            raise refusal(response)
 
     async def get_all(self, as_: C, path: str, /, **params: str | int) -> list[dict[str, Any]]:
         """Every page of a list endpoint, `params` its query, which may name a

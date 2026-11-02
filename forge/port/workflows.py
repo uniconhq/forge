@@ -21,6 +21,35 @@ from forge.domain.workflows import Visibility, Workflow
 
 
 class WorkflowPort(Protocol):
+    async def all_workflows(self) -> tuple[Workflow, ...]:
+        """Every marked workflow as the platform, for administrative backfills."""
+        ...
+
+    async def require_workflow_write(self, as_: Identity, workflow: WorkflowId) -> None:
+        """Refuse unless the caller currently has write access at the forge."""
+        ...
+
+    async def search_workflows(
+        self,
+        as_: Identity,
+        *,
+        q: str,
+        scope: str | None,
+        page: int,
+        limit: int,
+        org: str | None = None,
+    ) -> tuple[tuple[Workflow, ...], int | None]:
+        """One page of workflows visible at the forge, with the next page if present.
+
+        `scope` is mine, orgs or public. An org filter must be one of the
+        caller's own orgs. Filtering a word-search page may leave it short.
+        """
+        ...
+
+    async def set_workflow_description(self, workflow: WorkflowId, description: str) -> None:
+        """Update the workflow description as the platform."""
+        ...
+
     async def create_workflow(
         self, as_: Identity, owner: str, name: str, files: Files, visibility: Visibility
     ) -> WorkflowId:

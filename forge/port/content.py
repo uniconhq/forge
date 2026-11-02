@@ -61,6 +61,15 @@ class ContentPort(Protocol):
         """Whether the contest or task is there, read as the platform."""
         ...
 
+    async def may_write(self, place: ContentPlace, user_id: int) -> bool:
+        """Whether the person currently has write access at the forge.
+
+        Every write naming an author checks this permission in the adapter,
+        so callers cannot omit the check. Platform writes without an author
+        need no permission check.
+        """
+        ...
+
     async def list_contests(self, as_: Identity, org: OrgId) -> tuple[ContestId, ...]:
         """Every contest in the org the identity may read."""
         ...

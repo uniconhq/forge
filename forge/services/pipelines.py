@@ -131,7 +131,11 @@ async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
     to.
     """
     pipeline = _kind(row)
-    scratch = row.early_id is not None and await steps.from_scratch_of(ctx, row.early_id)
+    scratch = row.from_scratch
+    if row.early_id is not None:
+        scratch = scratch and bool(
+            await ctx.db.scalar(select(Grading.from_scratch).where(Grading.id == row.early_id))
+        )
     left = await steps.pipeline_to_run(ctx, row, pipeline, from_scratch=scratch)
     if not left:
         held = await gradings.find(ctx, row.id, lock=True)

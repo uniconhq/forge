@@ -24,7 +24,7 @@ from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
 from forge.services import steps, task_save
 from forge.services.task_save import Draft, Published
-from forge.testing import PLACEHOLDER_DIGEST
+from forge.testing import PLACEHOLDER_DIGEST, prepared
 from tests.conftest import sibling
 from tests.services.conftest import Acme, checked, make_task, write_contest
 from tests.services.test_run_task_saves import DRAFT, ISLANDS_DATA
@@ -43,12 +43,12 @@ from tests.services.test_steps import (
 from tests.services.test_workflow_boxes import JUDGE, OUTER, SOLVE
 from tests.test_run_task import ISLANDS
 
-TASK = ISLANDS.replace("unicon/classic@v4", "bob/outer@v1")
+TASK = ISLANDS.replace("unicon/classic@v5", "bob/outer@v1")
 BANNER = OUTER.replace(
     "steps:\n  - id: solve\n",
     "steps:\n"
     "  - id: banner\n"
-    "    use: unicon/exec@v2\n"
+    "    use: unicon/exec@v3\n"
     "    with:\n"
     "      source: ${{ inputs.code }}\n"
     "      language: ${{ inputs.language }}\n"
@@ -93,7 +93,7 @@ steps:
       code: ${{ inputs.code }}
       grader: ${{ inputs.grader }}
   - id: run
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ steps.judge.program }}
       language: python
@@ -128,7 +128,7 @@ inputs:
   time_limit: {type: number}
 steps:
   - id: solution
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: python
@@ -169,7 +169,7 @@ scoring:
 
 
 def _diff() -> dict[str, bytes]:
-    top = sibling("deploy", "workflows/classic/v4")
+    top = sibling("deploy", "workflows/classic/v5")
     return {
         "diff/diff.py": (top / "diff/diff.py").read_bytes(),
         "diff/program.yaml": (top / "diff/program.yaml").read_bytes(),
@@ -225,6 +225,7 @@ async def _publish(
         found = await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
+    found = await prepared(setup, acme.ada, task, found)
     assert isinstance(found, Published), found
     return task, found
 
@@ -265,6 +266,7 @@ async def test_a_boxed_classic_task_saves_and_plans_as_the_flat_one(
     assert plan.steps["build-judge/compare"].inputs == {
         "source": {"workflow": "diff/", "pin": 2},
         "language": {"value": "python"},
+        "environment": compare["environment"],
     }
     solution = (plan.steps["solve/solution"].items or {})["r1"].inputs
     assert (solution["source"], solution["language"]) == (
@@ -459,5 +461,40 @@ async def _publish_over(setup: Setup, acme: Acme, task: TaskId, text: str) -> Pu
         found = await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
+    found = await prepared(setup, acme.ada, task, found)
     assert isinstance(found, Published), found
     return found
+
+
+async def test_a_withdrawn_inner_pin_survives_updating_its_workflows_name(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    from forge.services import workflows
+    from tests.services.conftest import signed_in
+
+    task, _ = await _classic(setup, acme, "withdrawn-renamed")
+    bob = await signed_in(setup, acme.fake, 8)
+    await workflows.yank(setup, bob, "bob", "judge", "v1", "Use the next checker")
+    repo = acme.fake.state.repos.pop(("bob", "judge.workflow"))
+    repo.name = "renamed.workflow"
+    acme.fake.state.repos[("bob", "renamed.workflow")] = repo
+    outer = acme.fake.state.repo("bob", "outer.workflow")
+    acme.fake.state.commit(
+        outer,
+        {"workflow.yaml": OUTER.replace("bob/judge@v1", "bob/renamed@v1").encode()},
+        "Use the current workflow name",
+        8,
+    )
+    await workflows.create_version(setup, bob, "bob", "outer", "v2")
+    current = await acme.fake.content.read_file(PLATFORM, task, "task.yaml")
+    edits = {
+        "task.yaml": Edit(current.content.replace(b"bob/outer@v1", b"bob/outer@v2"), current.token)
+    }
+    try:
+        saved = await task_save.save(setup, acme.ada, task, edits, confirm=True)
+    except ConfirmationRequired as asked:
+        saved = await task_save.save(
+            setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
+        )
+    saved = await prepared(setup, acme.ada, task, saved)
+    assert isinstance(saved, Published), saved

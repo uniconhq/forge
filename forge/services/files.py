@@ -70,6 +70,7 @@ from forge.runtime.context import Context
 from forge.services import entrant_view, leaderboards, places, task_save, timelines
 from forge.services.access import Organiser, require
 from forge.services.task_save import Draft, Published
+from forge.services.task_save.records import Preparing
 
 log = get_logger(__name__)
 
@@ -227,7 +228,7 @@ async def write(
     confirm: bool = False,
     asked: str | None = None,
     keep_as_draft: bool = False,
-) -> Written | Published | Draft:
+) -> Written | Published | Draft | Preparing:
     """Write one file, `expected` being the token it was read with or none
     for a new file. A contest's file comes back as the version written, with
     its leaderboards' notes; a task's as the save's publication or draft,
@@ -262,7 +263,7 @@ async def write(
             current.version
             or (await ctx.forge.content.list_files(organiser.identity, contest)).version
             if current is not None
-            else None
+            else (await ctx.forge.content.list_files(organiser.identity, contest)).version
         )
         if confirm and asked is not None and asked != basis:
             raise Conflict(
@@ -274,20 +275,24 @@ async def write(
                 log.info("files.refused", place=place, keys=keys, user_id=organiser.user.id)
                 raise AdminOnly(admin_only_refusal(scope.name, keys), keys=keys)
         standing = await _last_read(ctx, organiser, contest, before)
-        problems = await timelines.check_contest(ctx, contest, standing, after)
+        timeline = await timelines.check_contest(ctx, contest, standing, after)
+        problems = timeline.problems
         checked = await leaderboards.check_contest(ctx, contest, standing, after)
         problems += checked.problems
         notes = checked.notes
         if problems:
             raise InvalidDefinition(CONTEST_FILE, problems)
-        if standing is not None and has_started(standing, ctx.now) and not confirm:
-            changes = contest_changes(standing, after)
-            if changes:
-                assert current is not None
+        hiding = (*timeline.hiding, *checked.hiding)
+        if not confirm:
+            changes = (
+                contest_changes(standing, after)
+                if standing is not None and has_started(standing, ctx.now)
+                else ()
+            )
+            if changes or hiding:
                 raise ConfirmationRequired(
-                    " ".join(
-                        ["The contest is running, so this save asks first.", *changes, "Save it?"]
-                    ),
+                    " ".join(["This save asks first.", *changes, "Save it?"]),
+                    hiding=tuple(hiding),
                     changes=list(changes),
                     asked=str(basis),
                 )
@@ -324,7 +329,7 @@ async def rollback(
     confirm: bool = False,
     asked: str | None = None,
     keep_as_draft: bool = False,
-) -> Written | Published | Draft:
+) -> Written | Published | Draft | Preparing:
     """Write the file as it was at `version` back as a new change, through
     `write`, `expected` being the token of the file as it is now. `NotFound`
     when the file was not there at that version.
@@ -401,7 +406,7 @@ async def write_upload(
     confirm: bool = False,
     asked: str | None = None,
     keep_as_draft: bool = False,
-) -> Published | Draft:
+) -> Published | Draft | Preparing:
     """Put a file the organiser uploaded into the task at `path`, as a save
     like any other: the commit carries the pointer to it beside the
     organiser's other files and the compiled plans, so a task is never half

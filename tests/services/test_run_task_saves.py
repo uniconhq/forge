@@ -50,7 +50,8 @@ from forge.services import (
     uploads,
 )
 from forge.services.task_save import Draft, Published
-from forge.testing import FakeClock, register_entrant
+from forge.services.task_save.records import Preparing
+from forge.testing import FakeClock, prepared, register_entrant
 from tests.services.conftest import (
     RUNNING,
     SPRING,
@@ -88,8 +89,8 @@ TOUR_DATA = {"parts/1.in": b"5 cities\n", "parts/2.in": b"9 cities\n"}
 
 TASKS: dict[str, tuple[str, Mapping[str, bytes], Mapping[str, bytes]]] = {
     "islands": (
-        ISLANDS.replace("unicon/classic@v4", "unicon/islands@v1"),
-        deployed("unicon/classic@v4")[1],
+        ISLANDS.replace("unicon/classic@v5", "unicon/islands@v1"),
+        deployed("unicon/classic@v5")[1],
         ISLANDS_DATA,
     ),
     "cartpole": (
@@ -103,15 +104,18 @@ TASKS: dict[str, tuple[str, Mapping[str, bytes], Mapping[str, bytes]]] = {
 
 async def _save(
     setup: Setup, acme: Acme, task: TaskId, contents: Mapping[str, bytes | None], **options: Any
-) -> Published | Draft:
+) -> Published | Draft | Preparing:
+    wait = options.pop("wait_for_preparation", True)
     head = await acme.fake.content.list_files(PLATFORM, task)
-    return await task_save.save(
+    result = await task_save.save(
         setup,
         acme.ada,
         task,
         {path: Edit(content, head.tokens.get(path)) for path, content in contents.items()},
         **options,
     )
+
+    return await prepared(setup, acme.ada, task, result) if wait else result
 
 
 async def _ready(acme: Acme, which: str, contest: str = DRAFT) -> str:
@@ -156,7 +160,7 @@ def _plan(acme: Acme) -> RunPlan:
     return RunPlan.from_bytes(acme.fake.state.repos[("acme", "spring.sum.task")].files[PLAN_PATH])
 
 
-def _errors(result: Published | Draft) -> list[tuple[str, str]]:
+def _errors(result: Published | Draft | Preparing) -> list[tuple[str, str]]:
     assert isinstance(result, Draft), result
     return [(error["path"], error["message"]) for error in result.errors]
 
@@ -185,10 +189,11 @@ async def test_the_three_tasks_publish_their_runs_and_plan(
     assert {run.id for run in runs.runs if run.early} == early
     plan = _plan(acme)
     assert [(run.id, run.early) for run in plan.runs] == [(run.id, run.early) for run in runs.runs]
-    # Each save resolves the version once, as the organiser, and reads
-    # every file at that commit, which the plan pins.
+    # The request resolves as the organiser; preparation checks again as the
+    # platform before publishing the same pinned version.
     calls = acme.fake.calls_to("workflow_version")
-    assert calls and {call.identity for call in calls} == {acme.ada.identity}
+    assert calls and calls[0].identity == acme.ada.identity
+    assert {call.identity for call in calls} == {acme.ada.identity, PLATFORM}
     commit = acme.fake.state.repos[("unicon", f"{which}.workflow")].versions["v1"]
     assert (plan.workflow.ref, plan.workflow.commit) == (f"unicon/{which}@v1", commit)
     reads = [*acme.fake.calls_to("read_workflow_at"), *acme.fake.calls_to("workflow_files")]
@@ -439,20 +444,25 @@ async def test_what_was_shown_under_a_graded_publication_is_not_hidden_again(
     )
     dropped = text.replace(", samples/]", "]")
 
-    assert _errors(await _save(setup, acme, sum_task, {"task.yaml": later.encode()})) == [
-        (
-            "scoring.show.after_close",
-            "Entrants have been shown sample_time as soon as a grading ends, and what they have "
-            "been shown cannot be hidden again. List it as soon as before.",
+    for text_after, named in ((later, "sample_time"), (dropped, "samples/")):
+        before = await acme.fake.content.list_files(PLATFORM, sum_task)
+        with pytest.raises(ConfirmationRequired) as asked:
+            await _save(setup, acme, sum_task, {"task.yaml": text_after.encode()})
+        assert len(asked.value.hiding) == 1
+        assert named in asked.value.hiding[0]
+        assert "since" in asked.value.hiding[0] and "seen or kept" in asked.value.hiding[0]
+        assert (await acme.fake.content.list_files(PLATFORM, sum_task)).version == before.version
+        assert isinstance(
+            await _save(
+                setup,
+                acme,
+                sum_task,
+                {"task.yaml": text_after.encode()},
+                confirm=True,
+                asked=asked.value.extra["asked"],
+            ),
+            Published,
         )
-    ]
-    assert _errors(await _save(setup, acme, sum_task, {"task.yaml": dropped.encode()})) == [
-        (
-            "scoring.show",
-            "Entrants have been shown samples/ as soon as a grading ends, and what they have "
-            "been shown cannot be hidden again. List it as soon as before.",
-        )
-    ]
     # The same files listed one by one show as much.
     each = text.replace("samples/]", "samples/1.in, samples/1.ans, samples/2.in, samples/2.ans]")
     listed = await _save(setup, acme, sum_task, {"task.yaml": each.encode()}, confirm=True)

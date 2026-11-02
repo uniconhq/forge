@@ -77,7 +77,7 @@ from decimal import Decimal
 from typing import Any, cast
 
 from pydantic import ValidationError
-from sqlalchemy import select, text, tuple_, update
+from sqlalchemy import and_, false, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
@@ -273,7 +273,12 @@ def access(ctx: Context, row: Grading, step: str, woodpecker: str) -> StepAccess
 
 @action
 async def step_job(
-    ctx: Context, grading: uuid.UUID, step: str, authorization: str | None
+    ctx: Context,
+    grading: uuid.UUID,
+    step: str,
+    authorization: str | None,
+    *,
+    platform: str | None = None,
 ) -> bytes | None:
     """The step's job, runner's `job.schema.json`, as JSON, or none when
     nothing is left for the step to do: every run of it left out, which
@@ -287,7 +292,7 @@ async def step_job(
     plan, publication = await plan_of(ctx, row)
     await _begin(ctx, row, plan, _kind(held))
     reader = await _Reader.load(ctx, row, held, plan)
-    built = await _Job(ctx, reader, held, publication).build()
+    built = await _Job(ctx, reader, held, publication, platform=platform).build()
     if built is None:
         log.info("steps.nothing_left", grading=str(row.id), step=held.step)
         return None
@@ -386,6 +391,7 @@ async def step_done(
                 StepOutput(
                     id=uuid.uuid4(),
                     org_id=org,
+                    submission_id=None if held.pipeline == "save" else row.submission_id,
                     key=keys[item.run],
                     pipeline=held.pipeline,
                     reusable=True,
@@ -969,6 +975,12 @@ class _Reader:
                         StepOutput.org_id == self.org,
                         StepOutput.key == key,
                         StepOutput.reusable,
+                        or_(
+                            and_(StepOutput.pipeline == "save", StepOutput.submission_id.is_(None)),
+                            StepOutput.submission_id == self.row.submission_id
+                            if self.row.submission_id is not None
+                            else false(),
+                        ),
                         StepOutput.pipeline.in_(reads_from(self.pipeline)),
                     )
                 )
@@ -1023,6 +1035,9 @@ class _Reader:
             if any(found is MISSING for found in programs.values()):
                 return MISSING
             return {PROGRAMS: programs}
+        if "environment" in value:
+            content = exact_json.dumps(value["environment"], sort_keys=True).encode()
+            return {"file": hashlib.sha256(content).hexdigest()}
         if set(value) == {"value"} or "links" in value or "secret" in value:
             return value
         if set(value) == {"runs"}:
@@ -1202,9 +1217,16 @@ class _Job:
     """One step's job, built from the plan's items for its runs."""
 
     def __init__(
-        self, ctx: Context, reader: _Reader, held: GradingStep, publication: Publication
+        self,
+        ctx: Context,
+        reader: _Reader,
+        held: GradingStep,
+        publication: Publication,
+        *,
+        platform: str | None = None,
     ) -> None:
         self.ctx = ctx
+        self.platform = platform
         self.reader = reader
         self.held = held
         self.plan = reader.plan
@@ -1277,7 +1299,12 @@ class _Job:
         placed = {
             port: await self._value(value, run, item, manifest=port == MANIFEST)
             for port, value in inputs.items()
+            if port != "environment"
         }
+        if "environment" in inputs:
+            placed["environment"] = await self._value(
+                inputs["environment"], run, item, languages=_chosen(placed)
+            )
         for port in self.step.folders or ():
             given = placed.get(port)
             if isinstance(given, dict) and set(given) == {"file"}:
@@ -1302,7 +1329,63 @@ class _Job:
         *,
         name: str | None = None,
         manifest: bool = False,
+        languages: set[str] | None = None,
     ) -> Any:
+        if "environment" in value:
+            lock = value["environment"]
+            if (
+                self.platform not in ("linux-64", "linux-aarch64")
+                or self.platform not in lock["platforms"]
+            ):
+                raise InvalidCallback(
+                    "The job must name a locked platform: linux-64 or linux-aarch64."
+                )
+            locked_languages = lock["platforms"][self.platform]
+            if languages is not None and not languages <= locked_languages.keys():
+                raise Misconfigured("The task's lock does not cover the step's chosen language.")
+            selected = {
+                name: entry
+                for name, entry in locked_languages.items()
+                if languages is None or name in languages
+            }
+            pieces = {}
+            for entry in selected.values():
+                for piece in [*entry.get("conda", []), *entry.get("pypi", [])]:
+                    digest = piece["sha256"]
+                    path = f"cache/pieces/{digest}"
+                    pieces[digest] = path
+                    if not any(each["path"] == path for each in self.files):
+                        self.files.append(
+                            {
+                                "path": path,
+                                "url": self.ctx.forge.objects.lfs_get_url(
+                                    digest, expires_in=LINK_LIFE
+                                ),
+                                "sha256": digest,
+                                "size": piece["size"],
+                                "cached": True,
+                            }
+                        )
+            content = exact_json.dumps(
+                {
+                    "version": 2,
+                    "prefix": lock["prefix"],
+                    "platform": self.platform,
+                    "languages": selected,
+                    "pieces": pieces,
+                },
+                sort_keys=True,
+            ).encode()
+            digest = hashlib.sha256(content).hexdigest()
+            self.served[digest] = {"kind": RUNS, "content": content.decode(), "sha256": digest}
+            return {
+                "file": self._download(
+                    ("environment", digest),
+                    lambda: f"{self.door}/files/{digest}",
+                    digest,
+                    len(content),
+                )
+            }
         if set(value) == {"value"}:
             return value["value"]
         if "links" in value:
@@ -1587,6 +1670,19 @@ async def _objects(
     if kept is not None:
         return frozenset(kept.objects)
     found: dict[str, int] = {}
+    for step in plan.steps.values():
+        inputs = (
+            [step.inputs]
+            if step.inputs is not None
+            else [item.inputs for item in (step.items or {}).values()]
+        )
+        for ports in inputs:
+            for languages in (
+                ports.get("environment", {}).get("environment", {}).get("platforms", {}).values()
+            ):
+                for entry in languages.values():
+                    for piece in [*entry.get("conda", []), *entry.get("pypi", [])]:
+                        found[piece["sha256"]] = piece["size"]
     task = TaskId(row.task_id)
     listing = await ctx.forge.content.list_files(PLATFORM, task, at=publication.version)
     small = [
@@ -1723,16 +1819,32 @@ async def _check_stored(
 
 
 async def _keep(ctx: Context, found: StepOutput, *, replace: bool) -> None:
-    """Keep one item, reused when it is the first of its org's key in its
-    pipeline, and otherwise only the grading's own. To `replace`, from
+    """Keep one item, reused when it is the first of its submission's key in its
+    pipeline, or its org's key for a save row, and otherwise only the grading's own.
+    To `replace`, from
     scratch, it is reused in place of the one reused till now, which stays
     its own grading's."""
     values = {column.name: getattr(found, column.name) for column in StepOutput.__table__.columns}
+    scope = (
+        StepOutput.submission_id == found.submission_id
+        if found.submission_id is not None
+        else and_(StepOutput.org_id == found.org_id, StepOutput.submission_id.is_(None))
+    )
+    index = (
+        ["submission_id", "key", "pipeline"]
+        if found.submission_id is not None
+        else ["org_id", "key", "pipeline"]
+    )
+    predicate = (
+        "reusable and submission_id is not null"
+        if found.submission_id is not None
+        else "reusable and submission_id is null"
+    )
     if replace:
         await ctx.db.execute(
             update(StepOutput)
             .where(
-                StepOutput.org_id == found.org_id,
+                scope,
                 StepOutput.key == found.key,
                 StepOutput.pipeline == found.pipeline,
                 StepOutput.reusable,
@@ -1743,9 +1855,7 @@ async def _keep(ctx: Context, found: StepOutput, *, replace: bool) -> None:
     first = await ctx.db.execute(
         insert(StepOutput)
         .values(**values)
-        .on_conflict_do_nothing(
-            index_elements=["org_id", "key", "pipeline"], index_where=text("reusable")
-        )
+        .on_conflict_do_nothing(index_elements=index, index_where=text(predicate))
         .returning(StepOutput.id)
     )
     if first.scalar_one_or_none() is None:
@@ -1775,3 +1885,22 @@ def _result_problem(result: Mapping[str, Any]) -> str | None:
     if broken is not None:
         return f"The result does not match result.schema.json {broken}"[:ERROR_LIMIT]
     return None
+
+
+def _chosen(ports: Mapping[str, Any]) -> set[str] | None:
+    """The languages a job's placed inputs choose, or none when a language
+    is not a plain value yet, such as one wired from another step's output:
+    the job then lists every language the lock holds, as the plan locked
+    them all (`environment_plan.languages_in`).
+    """
+    found: set[str] = set()
+    if "language" in ports:
+        if not isinstance(ports["language"], str):
+            return None
+        found.add(ports["language"])
+    for program in ports.get(PROGRAMS, {}).get(PROGRAMS, {}).values():
+        inner = _chosen(program)
+        if inner is None:
+            return None
+        found |= inner
+    return {"python" if language == "ipynb" else language for language in found}
