@@ -21,12 +21,13 @@ so the tests that care about who may write what drive the real thing.
 
 import base64
 import hashlib
+from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
 
 from forge.domain.errors import Forbidden, Rejected
-from forge.domain.identity import AsUser, Identity
+from forge.domain.identity import AsUser, Identity, Platform
 from forge.domain.uploads import Door, read_pointer
-from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace, WorkflowPlace
+from forge.port.uploads import PackagePlace, SubmissionPlace, TaskPlace, UploadPlace, WorkflowPlace
 
 
 def repo_of(place: UploadPlace) -> str:
@@ -36,6 +37,8 @@ def repo_of(place: UploadPlace) -> str:
 
 def _repo_of(place: UploadPlace) -> str:
     match place:
+        case PackagePlace():
+            return "unicon/packages"
         case WorkflowPlace(workflow=workflow):
             owner, name = workflow.split("/")
             return f"{owner}/{name}.workflow"
@@ -63,13 +66,33 @@ class FakeUploads:
 
     held: dict[str, dict[tuple[str, int], bytes]] = field(default_factory=dict)
     _addresses: dict[str, _Address] = field(default_factory=dict)
+    lfs: dict[str, bytes] = field(default_factory=dict)
 
     def door(self, place: UploadPlace, *, as_: Identity, digest: str, size: int) -> Door:
         repo = _repo_of(place)
         path = f"/{repo}.git/info/lfs/objects/{digest}/{size}"
-        authorization = _basic(as_)
+        authorization = (
+            "Basic platform"
+            if isinstance(place, PackagePlace) and isinstance(as_, Platform)
+            else _basic(as_)
+        )
         self._addresses[path] = _Address(repo, digest, size, authorization)
         return Door(path=path, authorization=authorization)
+
+    async def store(
+        self,
+        place: UploadPlace,
+        *,
+        as_: Identity,
+        digest: str,
+        size: int,
+        content: AsyncIterable[bytes],
+    ) -> None:
+        door = self.door(place, as_=as_, digest=digest, size=size)
+        body = bytearray()
+        async for chunk in content:
+            body.extend(chunk)
+        self.send(door.path, door.authorization, bytes(body))
 
     async def holds(self, place: UploadPlace, *, as_: Identity, digest: str, size: int) -> bool:
         """Whether the place holds that object at that length, measured
@@ -122,6 +145,7 @@ class FakeUploads:
         if hashlib.sha256(body).hexdigest() != address.digest:
             raise Rejected("content hash does not match OID")
         kept[(address.digest, address.size)] = body
+        self.lfs[address.digest] = body
 
     def put(self, place: UploadPlace, content: bytes) -> tuple[str, int]:
         """Put an object into a place without going through a door, for a
@@ -129,6 +153,7 @@ class FakeUploads:
         """
         digest, size = hashlib.sha256(content).hexdigest(), len(content)
         self.held.setdefault(_repo_of(place), {})[(digest, size)] = content
+        self.lfs[digest] = content
         return digest, size
 
     def forget(self, place: UploadPlace, digest: str, size: int) -> None:

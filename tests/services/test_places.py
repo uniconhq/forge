@@ -32,7 +32,7 @@ from forge.runtime.setup import Setup
 from forge.services import entrants, files, places, task_save, uploads
 from forge.services.turns import Turns
 from forge.settings import Settings
-from forge.testing import APP_URL, FORGE_URL, logged
+from forge.testing import APP_URL, FORGE_URL, logged, prepared
 from tests.services.conftest import (
     RUNNING,
     SPRING,
@@ -56,7 +56,7 @@ inputs:
   memory_limit: {type: number, title: Memory limit, unit: MB}
 steps:
   - id: solution
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
@@ -136,12 +136,13 @@ async def test_a_first_live_publication_makes_the_places_though_an_earlier_one_w
         },
         confirm=True,
     )
+    waiting = await prepared(setup, acme.ada, sum_task, waiting)
     assert isinstance(waiting, task_save.Published), waiting
     await setup.settle()
     assert _made(acme.fake) == []
 
     head = await acme.fake.content.list_files(PLATFORM, sum_task)
-    unchecked = starter.content.replace(b"unicon/classic@v4", b"unicon/unchecked@v1")
+    unchecked = starter.content.replace(b"unicon/classic@v5", b"unicon/unchecked@v1")
     live = await task_save.save(
         setup,
         acme.ada,

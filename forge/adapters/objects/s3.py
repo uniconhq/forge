@@ -25,7 +25,8 @@ thread. Signing makes no call at all.
 import asyncio
 import base64
 import re
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
@@ -41,7 +42,7 @@ from forge.domain.errors import (
     Rejected,
     Unavailable,
 )
-from forge.port.objects import Stored
+from forge.port.objects import Part, Stored
 
 if TYPE_CHECKING:
     from types_boto3_s3 import S3Client
@@ -73,6 +74,8 @@ class StorageConfig:
     lfs_access_key: str
     lfs_secret_key: str = field(repr=False)
     lfs_bucket: str
+    uploads_bucket: str = "unicon-uploads"
+    public_url: str | None = None
 
 
 def lfs_object(digest: str) -> str:
@@ -83,7 +86,9 @@ def lfs_object(digest: str) -> str:
     return f"{LFS_BASE}{digest[:2]}/{digest[2:4]}/{digest[4:]}"
 
 
-def _client(config: StorageConfig, endpoint: str, access_key: str, secret_key: str) -> S3Client:
+def _client(
+    config: StorageConfig, endpoint: str, access_key: str, secret_key: str, *, short: bool = False
+) -> S3Client:
     client: S3Client = boto3.client(
         "s3",
         endpoint_url=endpoint.rstrip("/"),
@@ -93,9 +98,9 @@ def _client(config: StorageConfig, endpoint: str, access_key: str, secret_key: s
         config=Config(
             signature_version="s3v4",
             s3={"addressing_style": "path"},
-            connect_timeout=5,
-            read_timeout=60,
-            retries={"max_attempts": 3, "mode": "standard"},
+            connect_timeout=3 if short else 5,
+            read_timeout=5 if short else 60,
+            retries={"total_max_attempts": 1 if short else 4, "mode": "standard"},
         ),
     )
     return client
@@ -124,6 +129,13 @@ class S3Objects:
         self._lfs = _client(
             config, config.machine_url, config.lfs_access_key, config.lfs_secret_key
         )
+        self._uploads = _client(
+            config, config.public_url or config.machine_url, config.access_key, config.secret_key
+        )
+        self._upload_internal = _client(
+            config, config.endpoint, config.access_key, config.secret_key, short=True
+        )
+        self._uploads_bucket = config.uploads_bucket
         self._bucket = config.results_bucket
         self._lfs_bucket = config.lfs_bucket
 
@@ -180,6 +192,88 @@ class S3Objects:
 
         return await self._call(read_all)
 
+    async def create_multipart(self, key: str) -> str:
+        made = await self._call(
+            self._upload_internal.create_multipart_upload, Bucket=self._uploads_bucket, Key=key
+        )
+        return str(made["UploadId"])
+
+    def part_url(self, key: str, upload: str, number: int, *, expires_in: timedelta) -> str:
+        return self._uploads.generate_presigned_url(
+            "upload_part",
+            Params={
+                "Bucket": self._uploads_bucket,
+                "Key": key,
+                "UploadId": upload,
+                "PartNumber": number,
+            },
+            ExpiresIn=int(expires_in.total_seconds()),
+        )
+
+    async def list_parts(self, key: str, upload: str) -> list[Part]:
+        found: list[Part] = []
+        marker = 0
+        while True:
+            page = await self._call(
+                self._upload_internal.list_parts,
+                Bucket=self._uploads_bucket,
+                Key=key,
+                UploadId=upload,
+                PartNumberMarker=marker,
+            )
+            found.extend(
+                Part(int(part["PartNumber"]), str(part["ETag"]), int(part["Size"]))
+                for part in page.get("Parts", [])
+            )
+            if not page.get("IsTruncated"):
+                return found
+            next_marker = int(page["NextPartNumberMarker"])
+            if next_marker <= marker:
+                raise Unavailable("the store's parts page did not advance")
+            marker = next_marker
+
+    async def complete_multipart(self, key: str, upload: str, parts: Sequence[Part]) -> None:
+        # Joining a large upload takes the store a while: the normal client's
+        # wait, not the short one's.
+        await self._call(
+            self._internal.complete_multipart_upload,
+            Bucket=self._uploads_bucket,
+            Key=key,
+            UploadId=upload,
+            MultipartUpload={
+                "Parts": [{"ETag": part.etag, "PartNumber": part.number} for part in parts]
+            },
+        )
+
+    async def abort_multipart(self, key: str, upload: str) -> None:
+        with suppress(NotFound):
+            await self._call(
+                self._upload_internal.abort_multipart_upload,
+                Bucket=self._uploads_bucket,
+                Key=key,
+                UploadId=upload,
+            )
+
+    async def head_upload(self, key: str) -> int:
+        got = await self._call(
+            self._upload_internal.head_object, Bucket=self._uploads_bucket, Key=key
+        )
+        return int(got["ContentLength"])
+
+    async def stream_upload(self, key: str) -> AsyncGenerator[bytes]:
+        got = await self._call(
+            self._upload_internal.get_object, Bucket=self._uploads_bucket, Key=key
+        )
+        body = got["Body"]
+        try:
+            while chunk := await self._call(lambda: body.read(CHUNK)):
+                yield chunk
+        finally:
+            await asyncio.to_thread(body.close)
+
+    async def delete_upload(self, key: str) -> None:
+        await self._call(self._upload_internal.delete_object, Bucket=self._uploads_bucket, Key=key)
+
     @staticmethod
     async def _call[T](function: Callable[..., T], /, **arguments: Any) -> T:
         try:
@@ -206,4 +300,28 @@ class NoStore:
         raise Misconfigured(NO_STORE)
 
     async def read(self, key: str, *, max_size: int | None = None) -> bytes:
+        raise Misconfigured(NO_STORE)
+
+    async def create_multipart(self, key: str) -> str:
+        raise Misconfigured(NO_STORE)
+
+    def part_url(self, key: str, upload: str, number: int, *, expires_in: timedelta) -> str:
+        raise Misconfigured(NO_STORE)
+
+    async def list_parts(self, key: str, upload: str) -> list[Part]:
+        raise Misconfigured(NO_STORE)
+
+    async def complete_multipart(self, key: str, upload: str, parts: Sequence[Part]) -> None:
+        raise Misconfigured(NO_STORE)
+
+    async def abort_multipart(self, key: str, upload: str) -> None:
+        raise Misconfigured(NO_STORE)
+
+    async def head_upload(self, key: str) -> int:
+        raise Misconfigured(NO_STORE)
+
+    def stream_upload(self, key: str) -> AsyncGenerator[bytes]:
+        raise Misconfigured(NO_STORE)
+
+    async def delete_upload(self, key: str) -> None:
         raise Misconfigured(NO_STORE)

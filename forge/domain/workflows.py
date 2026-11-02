@@ -4,6 +4,7 @@ grading step, defined by the platform alone.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 from forge.domain.ids import PrimitiveId, WorkflowId
@@ -16,13 +17,22 @@ class Visibility(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class Yanked:
+    reason: str
+    at: datetime
+    by: int
+
+
+@dataclass(frozen=True, slots=True)
 class Workflow:
     id: WorkflowId
+    key: str
     owner: str
     name: str
     visibility: Visibility
     stars: int
     versions: tuple[str, ...]
+    description: str = ""
 
 
 @dataclass(frozen=True, slots=True)

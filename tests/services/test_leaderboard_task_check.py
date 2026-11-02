@@ -29,6 +29,8 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import files, leaderboards, task_save
 from forge.services.task_save import Draft, Published
+from forge.services.task_save.records import Preparing
+from forge.testing import prepared
 from tests.services.conftest import RUNNING, SPRING, Acme, checked, make_task, write_contest
 from tests.services.test_run_task_saves import TASKS
 
@@ -81,17 +83,19 @@ async def _made(acme: Acme, setup: Setup, contest: str = DRAFT) -> TaskId:
 
 async def _save(
     setup: Setup, acme: Acme, task: TaskId, text: str, data: Mapping[str, bytes] | None = None
-) -> Published | Draft:
+) -> Published | Draft | Preparing:
     """islands saved as `text`, each question the save asks answered."""
     head = await acme.fake.content.list_files(PLATFORM, task)
     contents = {"task.yaml": text.encode(), **(data or {})}
     edits = {path: Edit(content, head.tokens.get(path)) for path, content in contents.items()}
     try:
-        return await task_save.save(setup, acme.ada, task, edits, confirm=True)
+        result = await task_save.save(setup, acme.ada, task, edits, confirm=True)
     except ConfirmationRequired as asked:
-        return await task_save.save(
+        result = await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
+
+    return await prepared(setup, acme.ada, task, result)
 
 
 async def _live(setup: Setup, acme: Acme, text: str = MARKED) -> TaskId:
@@ -114,7 +118,7 @@ async def _refused(setup: Setup, acme: Acme, content: str) -> list[tuple[str, st
     return [(error["path"], error["message"]) for error in refused.value.errors]
 
 
-def _errors(result: Published | Draft) -> list[tuple[str, str]]:
+def _errors(result: Published | Draft | Preparing) -> list[tuple[str, str]]:
     assert isinstance(result, Draft), result
     return [(error["path"], error["message"]) for error in result.errors]
 
@@ -307,7 +311,20 @@ async def test_the_holds_from_stays_inside_the_contest_and_is_never_set_to_a_tim
     late = held.replace("T14:00", "T15:00")
     sooner = held.replace("end: 2026-09-26T15:00:00Z", "end: 2026-09-26T13:30:00Z")
 
-    assert [path for path, _ in await _refused(setup, acme, passed)] == ["hold.from"]
+    current = await files.read(setup, acme.ada, SPRING, "contest.yaml")
+    with pytest.raises(ConfirmationRequired) as asked:
+        await _write(setup, acme, passed)
+    assert "leaderboard submissions shown since" in asked.value.hiding[0]
+    await files.write(
+        setup,
+        acme.ada,
+        SPRING,
+        "contest.yaml",
+        passed.encode(),
+        current.token,
+        confirm=True,
+        asked=asked.value.extra["asked"],
+    )
     assert [path for path, _ in await _refused(setup, acme, late)] == ["hold.from"]
     await _write(setup, acme, held)
     assert await _refused(setup, acme, sooner) == [

@@ -113,6 +113,7 @@ class Grading(Base, Timestamped):
     deadline_at: Mapped[datetime | None]
     error: Mapped[str | None]
     cancel_reason: Mapped[str | None]
+    from_scratch: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     automatic: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     submission_limit: Mapped[int | None]
     regrade_id: Mapped[uuid.UUID | None]

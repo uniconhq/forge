@@ -47,9 +47,9 @@ def refused(text: str) -> list[Problem]:
 
 
 def test_the_seeded_primitive_parses() -> None:
-    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v2"])
+    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v3"])
 
-    assert list(PRIMITIVES) == ["unicon/exec@v2"]
+    assert list(PRIMITIVES) == ["unicon/exec@v3"]
     assert (exec_.batch, exec_.network, exec_.cache) == (True, False, True)
     assert exec_.image == f"ghcr.io/uniconhq/primitive-exec@{PLACEHOLDER_DIGEST}"
     assert set(exec_.forms) == {"one", "programs", "build"}
@@ -100,7 +100,7 @@ def test_each_seeded_primitive_is_its_repos_own_with_the_image_written_in(
 
 
 def test_a_primitive_and_its_ports_say_what_they_are_for() -> None:
-    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v2"])
+    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v3"])
     plain = parse_primitive(BASE + OUTCOME)
 
     assert exec_.title == "Run programs"
@@ -129,7 +129,7 @@ def test_a_title_or_description_is_one_line_of_text(extra: str, path: str) -> No
 
 
 def test_each_seeded_primitive_says_what_each_outcome_it_reports_means() -> None:
-    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v2"])
+    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v3"])
     said = {name: form.outputs["outcome"].outcomes for name, form in exec_.forms.items()}
 
     assert {name: list(outcomes or {}) for name, outcomes in said.items()} == {
@@ -432,7 +432,7 @@ def mirrored(name: str) -> PrimitiveDeclaration:
 def test_exec_reads_the_cache_names_files_and_takes_outputs_from_a_manifest() -> None:
     formed = mirrored("exec")
     stepped = formed.for_step(
-        ("source", "language", "time_limit", "memory_limit"), "unicon/exec@v2"
+        ("source", "language", "time_limit", "memory_limit"), "unicon/exec@v3"
     )
     assert isinstance(stepped, PrimitiveDeclaration)
     exec_ = stepped
@@ -455,7 +455,7 @@ def test_exec_reads_the_cache_names_files_and_takes_outputs_from_a_manifest() ->
 
 def test_execs_programs_form_runs_programs_linked_and_sizes_its_container() -> None:
     formed = mirrored("exec")
-    several = formed.for_step(("programs",), "unicon/exec@v2")
+    several = formed.for_step(("programs",), "unicon/exec@v3")
     assert isinstance(several, PrimitiveDeclaration)
 
     assert (several.schema_version, several.cache, several.outputs_from) == (
@@ -502,7 +502,7 @@ def test_execs_programs_form_runs_programs_linked_and_sizes_its_container() -> N
 def test_exec_compiles_once_and_gives_its_log_and_a_compile_error_once() -> None:
     formed = mirrored("exec")
     one = formed.forms["one"]
-    built = formed.for_step(("source", "language"), "unicon/exec@v2")
+    built = formed.for_step(("source", "language"), "unicon/exec@v3")
     assert isinstance(built, PrimitiveDeclaration)
 
     assert one.outputs["log"].once is True
@@ -510,7 +510,10 @@ def test_exec_compiles_once_and_gives_its_log_and_a_compile_error_once() -> None
     assert one.outputs["outcome"].once_outcomes == ("compile_error",)
     assert one.outputs["output"].once is None
     assert one.limits is not None and one.limits.once_time_ms == 40000
-    assert (built.outputs_from, set(built.inputs)) == (None, {"source", "language", "entry"})
+    assert (built.outputs_from, set(built.inputs)) == (
+        None,
+        {"source", "language", "entry", "environment"},
+    )
     assert set(built.outputs) == {"log", "outcome"}
     assert built.limits is not None and built.limits.once_time_ms == 40000
 

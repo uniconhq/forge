@@ -18,10 +18,11 @@ the files it said it would upload (`uploads`), when it said it was done
 it, the item's key, the pipeline it was measured in, the grading and step
 that did it and the run, what `outputs.json` said of it (`outputs`) and the
 files those name, each with its object in the results store, its SHA-256
-and size (`files`). The first row of an org's key in a pipeline is the one
-reused (`reusable`, unique among those), until a grading from scratch
-keeps one of that key, which is reused in its place; any other is kept
-only for the grading that made it.
+and size (`files`). The first row of a submission's key in a pipeline is
+reused (`reusable`, unique among those). Save pipelines have no submission
+and reuse within their org; submission pipelines can read those save rows.
+A grading from scratch replaces its submission's reusable row; any other
+is kept only for the grading that made it.
 
 `grading_reuses` is, per grading and key, the `step_outputs` row the
 grading's first read of that key in the store resolved to: every later
@@ -88,6 +89,7 @@ class StepOutput(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=new_id)
     org_id: Mapped[str]
+    submission_id: Mapped[str | None]
     key: Mapped[str]
     pipeline: Mapped[str]
     reusable: Mapped[bool]
@@ -106,7 +108,15 @@ class StepOutput(Base):
             "key",
             "pipeline",
             unique=True,
-            postgresql_where=text("reusable"),
+            postgresql_where=text("reusable and submission_id is null"),
+        ),
+        Index(
+            "ix_step_outputs_submission_id_key_pipeline",
+            "submission_id",
+            "key",
+            "pipeline",
+            unique=True,
+            postgresql_where=text("reusable and submission_id is not null"),
         ),
         Index("ix_step_outputs_grading_id", "grading_id"),
     )

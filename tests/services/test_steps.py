@@ -33,9 +33,9 @@ from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
-from forge.db.tables import Grading, GradingStep, StepOutput
+from forge.db.tables import Grading, GradingStep, PublicationObjects, StepOutput
 from forge.domain import exact_json
 from forge.domain.content import Edit
 from forge.domain.contracts import violation
@@ -53,7 +53,7 @@ from forge.domain.errors import (
 )
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import PublicationId, TaskId, WorkflowId, WorkspaceId
+from forge.domain.ids import ContestId, PublicationId, TaskId, WorkflowId, WorkspaceId
 from forge.domain.names import EntrantOwner
 from forge.domain.run_plan import PipelineKind
 from forge.domain.step_data import BOX_BLOCK, LINK_LIFE, Fault
@@ -64,7 +64,7 @@ from forge.runtime.setup import Setup
 from forge.services import gradings, steps, task_save
 from forge.services.steps import TOKEN_LIFE, StepAccess
 from forge.services.task_save import Published
-from forge.testing import FakeClock
+from forge.testing import FakeClock, prepared
 from tests.conftest import sibling
 from tests.services.conftest import SPRING, Acme, make_task, write_contest
 from tests.services.test_run_task_saves import DRAFT, ISLANDS_DATA, TASKS
@@ -138,6 +138,7 @@ async def _save(setup: Setup, acme: Acme, task: TaskId, contents: Mapping[str, b
         found = await task_save.save(
             setup, acme.ada, task, edits, confirm=True, asked=asked.extra["asked"]
         )
+    found = await prepared(setup, acme.ada, task, found)
     assert isinstance(found, Published), found
     return found
 
@@ -189,6 +190,33 @@ async def _grading(setup: Setup, acme: Acme, islands: Islands, **submitted: Any)
         return row.id
 
 
+async def _regrading(setup: Setup, acme: Acme, islands: Islands, previous: uuid.UUID) -> uuid.UUID:
+    """Another attempt of the same submission, against this publication."""
+    async with setup.unit_of_work() as ctx:
+        old = await ctx.db.get(Grading, previous)
+        assert old is not None
+        highest = await ctx.db.scalar(
+            select(func.max(Grading.attempt)).where(
+                Grading.submission_id == old.submission_id, Grading.pipeline == old.pipeline
+            )
+        )
+        row = Grading(
+            task_id=islands.task,
+            workspace_id=old.workspace_id,
+            submission_id=old.submission_id,
+            submission_number=old.submission_number,
+            submission_version=old.submission_version,
+            submitted_at=old.submitted_at,
+            publication_id=islands.publication,
+            attempt=(highest or 0) + 1,
+            status=GradingStatus.DISPATCHED,
+            queued_at=ctx.now,
+        )
+        ctx.db.add(row)
+        await ctx.db.flush()
+        return row.id
+
+
 # Playing a machine
 
 
@@ -212,7 +240,7 @@ async def _mint(
 
 async def _job(setup: Setup, row: uuid.UUID, step: str, access: StepAccess | str) -> dict[str, Any]:
     asked = _named(access) if isinstance(access, StepAccess) else step
-    built = await steps.step_job(setup, row, asked, _bearer(access))
+    built = await steps.step_job(setup, row, asked, _bearer(access), platform="linux-64")
     assert built is not None
     job: dict[str, Any] = exact_json.loads(built)
     assert list(JOB_CHECK.iter_errors(job)) == []
@@ -471,7 +499,10 @@ async def test_a_compile_error_from_the_solutions_batch_is_every_runs_verdict_to
     await _step(setup, acme, row, "early", "solution", _batch(NOT_COMPILED, log="main.py:1: no"))
 
     access = await _mint(setup, row, "early", "compare")
-    assert await steps.step_job(setup, row, _named(access), _bearer(access)) is None
+    assert (
+        await steps.step_job(setup, row, _named(access), _bearer(access), platform="linux-64")
+        is None
+    )
     assert await _report(setup, row, "early") is GradingStatus.DONE
 
     result = (await _row(setup, row)).result
@@ -489,7 +520,7 @@ async def test_a_stored_compile_error_leaves_no_step_to_run(
     first = await _grading(setup, acme, islands)
     await _step(setup, acme, first, "early", "solution", _batch(NOT_COMPILED))
     await _report(setup, first, "early")
-    again = await _grading(setup, acme, islands)
+    again = await _regrading(setup, acme, islands, first)
 
     assert await _to_run(setup, again, "early") == []
     async with setup.unit_of_work() as ctx:
@@ -505,13 +536,20 @@ async def test_a_step_another_grading_did_first_has_nothing_to_do_and_the_rest_r
     setup: Setup, acme: Acme, islands: Islands
 ) -> None:
     await _saved(setup, acme, islands)
-    late, early = await _grading(setup, acme, islands), await _grading(setup, acme, islands)
+    early = await _grading(setup, acme, islands)
+    late = await _regrading(setup, acme, islands, early)
     assert [name for name, _ in await _to_run(setup, late, "early")] == ["solution", "compare"]
     await _step(setup, acme, early, "early", "solution", _batch())
 
     access = await _mint(setup, late, "early", "solution")
-    assert await steps.step_job(setup, late, _named(access), _bearer(access)) is None
-    assert await steps.step_job(setup, late, _named(access), _bearer(access)) is None
+    assert (
+        await steps.step_job(setup, late, _named(access), _bearer(access), platform="linux-64")
+        is None
+    )
+    assert (
+        await steps.step_job(setup, late, _named(access), _bearer(access), platform="linux-64")
+        is None
+    )
     await _step(setup, acme, late, "early", "compare", _batch(score=True))
 
     assert await _report(setup, late, "early") is GradingStatus.DONE
@@ -560,7 +598,7 @@ async def test_the_store_reuses_every_step_and_from_scratch_reuses_none_and_repl
     await _saved(setup, acme, islands)
     first = await _grading(setup, acme, islands)
     await _early(setup, acme, first)
-    again = await _grading(setup, acme, islands)
+    again = await _regrading(setup, acme, islands, first)
 
     assert await _to_run(setup, again, "early") == []
     async with setup.unit_of_work() as ctx:
@@ -571,7 +609,7 @@ async def test_the_store_reuses_every_step_and_from_scratch_reuses_none_and_repl
     assert reused.status == GradingStatus.DONE and reused.result is not None
     assert reused.result["runs"] == (await _row(setup, first)).result["runs"]  # type: ignore[index]
 
-    scratch = await _grading(setup, acme, islands)
+    scratch = await _regrading(setup, acme, islands, first)
     assert [name for name, _ in await _to_run(setup, scratch, "early", True)] == [
         "solution",
         "compare",
@@ -584,7 +622,7 @@ async def test_the_store_reuses_every_step_and_from_scratch_reuses_none_and_repl
     assert [each.reusable for each in mine] == [True, True]
     assert [each.reusable for each in before] == [False, False]
 
-    later = await _grading(setup, acme, islands)
+    later = await _regrading(setup, acme, islands, first)
     assert await _to_run(setup, later, "early") == [("compare", [])]
     compare = await _job(setup, later, "compare", await _mint(setup, later, "early", "compare"))
     output = compare["inputs"]["batch"][0]["inputs"]["files"]["files"]["output"]["file"]
@@ -595,7 +633,8 @@ async def test_a_checker_change_builds_it_again_and_runs_only_the_compare_steps(
     setup: Setup, acme: Acme, islands: Islands
 ) -> None:
     await _saved(setup, acme, islands)
-    await _early(setup, acme, await _grading(setup, acme, islands))
+    first = await _grading(setup, acme, islands)
+    await _early(setup, acme, first)
     _, draft = await acme.fake.workflows.read_workflow_draft(
         PLATFORM, islands.workflow, "diff/diff.py"
     )
@@ -616,7 +655,7 @@ async def test_a_checker_change_builds_it_again_and_runs_only_the_compare_steps(
     assert await _to_run(setup, save, "save") == [("build-compare", [])]
     await _step(setup, acme, save, "save", "build-compare", _built())
     assert await _report(setup, save, "save") is GradingStatus.DONE
-    regrade = await _grading(setup, acme, changed)
+    regrade = await _regrading(setup, acme, changed, first)
 
     assert await _to_run(setup, regrade, "early") == [("compare", [])]
     compare = await _step(setup, acme, regrade, "early", "compare", _batch(score=True))
@@ -647,7 +686,8 @@ async def test_two_gradings_making_one_key_at_once_keep_one(
     setup: Setup, acme: Acme, islands: Islands
 ) -> None:
     await _saved(setup, acme, islands)
-    rows = [await _grading(setup, acme, islands) for _ in range(2)]
+    first = await _grading(setup, acme, islands)
+    rows = [first, await _regrading(setup, acme, islands, first)]
     access = [await _mint(setup, row, "early", "solution") for row in rows]
     jobs = [
         await _job(setup, row, "solution", each) for row, each in zip(rows, access, strict=True)
@@ -674,7 +714,9 @@ async def test_a_step_holds_only_its_own_row_and_the_report_holds_every_steps(
 
     async with setup.unit_of_work() as ctx:
         assert await gradings.find(ctx, row, lock=True) is not None
-        job = await asyncio.wait_for(steps.step_job(setup, row, _named(access), _bearer(access)), 5)
+        job = await asyncio.wait_for(
+            steps.step_job(setup, row, _named(access), _bearer(access), platform="linux-64"), 5
+        )
         assert job is not None
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(
@@ -710,7 +752,7 @@ async def test_a_token_opens_only_its_own_step_of_its_own_grading(
         (row, "report", _bearer(access)),
     ):
         with pytest.raises(InvalidToken):
-            await steps.step_job(setup, grading, step, header)
+            await steps.step_job(setup, grading, step, header, platform="linux-64")
     with pytest.raises(NotFound):
         await _mint(setup, row, "early", "compile")
     assert access.data_url.endswith(f"/api/v1/gradings/{row}/steps/s1")
@@ -724,9 +766,9 @@ async def test_the_door_finds_a_step_by_its_woodpecker_name_and_an_older_row_by_
     row = await _grading(setup, acme, islands)
     access = await _mint(setup, row, "early", "solution")
 
-    assert await steps.step_job(setup, row, "s1", _bearer(access)) is not None
+    assert await steps.step_job(setup, row, "s1", _bearer(access), platform="linux-64") is not None
     with pytest.raises(InvalidToken):
-        await steps.step_job(setup, row, "solution", _bearer(access))
+        await steps.step_job(setup, row, "solution", _bearer(access), platform="linux-64")
 
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(
@@ -734,9 +776,12 @@ async def test_the_door_finds_a_step_by_its_woodpecker_name_and_an_older_row_by_
             .where(GradingStep.grading_id == row, GradingStep.step == "solution")
             .values(woodpecker=None)
         )
-    assert await steps.step_job(setup, row, "solution", _bearer(access)) is not None
+    assert (
+        await steps.step_job(setup, row, "solution", _bearer(access), platform="linux-64")
+        is not None
+    )
     with pytest.raises(InvalidToken):
-        await steps.step_job(setup, row, "s1", _bearer(access))
+        await steps.step_job(setup, row, "s1", _bearer(access), platform="linux-64")
     again = await _mint(setup, row, "early", "solution")
     assert again.data_url.endswith("/steps/solution") and again.token == access.token
 
@@ -751,7 +796,7 @@ async def test_a_token_is_refused_once_its_step_is_done_or_it_has_expired(
     links = await _finish(setup, acme, row, "solution", access, _batch()(job))
 
     with pytest.raises(InvalidToken):
-        await steps.step_job(setup, row, _named(access), _bearer(access))
+        await steps.step_job(setup, row, _named(access), _bearer(access), platform="linux-64")
     with pytest.raises(InvalidToken):
         await steps.step_uploads(setup, row, _named(access), _bearer(access), b'{"files": []}')
     with pytest.raises(GradingClosed):
@@ -761,7 +806,7 @@ async def test_a_token_is_refused_once_its_step_is_done_or_it_has_expired(
     compare = await _mint(setup, row, "early", "compare")
     clock.advance(TOKEN_LIFE)
     with pytest.raises(InvalidToken):
-        await steps.step_job(setup, row, _named(compare), _bearer(compare))
+        await steps.step_job(setup, row, _named(compare), _bearer(compare), platform="linux-64")
     with pytest.raises(InvalidToken):
         await steps.step_done(setup, row, _named(compare), _bearer(compare), b"{}")
 
@@ -778,7 +823,7 @@ async def test_a_finished_grading_takes_no_more_work(
         gradings.finish(ctx, found, GradingStatus.CANCELLED)
 
     with pytest.raises(GradingClosed):
-        await steps.step_job(setup, row, _named(access), _bearer(access))
+        await steps.step_job(setup, row, _named(access), _bearer(access), platform="linux-64")
     with pytest.raises(GradingClosed):
         await _mint(setup, row, "early", "compare")
 
@@ -948,7 +993,7 @@ async def test_the_token_never_reaches_a_link_or_a_log(
         links = await _finish(setup, acme, row, step, access, write(jobs[-1]))
         jobs.append(links)
     with pytest.raises(InvalidToken):
-        await steps.step_job(setup, row, "s1", _bearer(tokens[0]))
+        await steps.step_job(setup, row, "s1", _bearer(tokens[0]), platform="linux-64")
 
     logged = "\n".join(record.getMessage() + str(record.__dict__) for record in caplog.records)
     for token in tokens:
@@ -1027,7 +1072,7 @@ async def test_an_entrants_paths_never_leave_their_folder(
     access = await _mint(setup, row, "early", "solution")
 
     with pytest.raises(Misconfigured):
-        await steps.step_job(setup, row, _named(access), _bearer(access))
+        await steps.step_job(setup, row, _named(access), _bearer(access), platform="linux-64")
 
 
 async def test_a_boxed_step_holds_a_block_of_box_users_while_it_runs(
@@ -1055,7 +1100,7 @@ inputs:
   grid: file
 steps:
   - id: game
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       programs:
         first:
@@ -1174,12 +1219,16 @@ async def test_a_grading_under_way_keeps_what_it_reused_when_from_scratch_replac
     later_runs: list[str],
 ) -> None:
     await _saved(setup, acme, islands)
-    await _step(setup, acme, await _grading(setup, acme, islands), "early", "solution", _batch())
-    under_way = await _grading(setup, acme, islands)
+    first = await _grading(setup, acme, islands)
+    await _step(setup, acme, first, "early", "solution", _batch())
+    under_way = await _regrading(setup, acme, islands, first)
     access = await _mint(setup, under_way, "early", "solution")
-    assert await steps.step_job(setup, under_way, _named(access), _bearer(access)) is None
+    assert (
+        await steps.step_job(setup, under_way, _named(access), _bearer(access), platform="linux-64")
+        is None
+    )
 
-    scratch = await _grading(setup, acme, islands)
+    scratch = await _regrading(setup, acme, islands, first)
     await _step(setup, acme, scratch, "early", "solution", replaced, True)
     compare = await _step(setup, acme, under_way, "early", "compare", _batch(score=True))
 
@@ -1188,7 +1237,7 @@ async def test_a_grading_under_way_keeps_what_it_reused_when_from_scratch_replac
     result = (await _row(setup, under_way)).result
     assert result is not None
     assert [run["verdict"] for run in result["runs"]] == ["accepted", "accepted"]
-    later = await _grading(setup, acme, islands)
+    later = await _regrading(setup, acme, islands, first)
     assert [name for name, _ in await _to_run(setup, later, "early")] == later_runs
 
 
@@ -1200,7 +1249,7 @@ async def test_an_earlier_step_that_gave_nothing_is_a_fault_not_nothing_to_do(
     access = await _mint(setup, row, "early", "compare")
 
     with pytest.raises(Misconfigured, match="The step compare reads a step"):
-        await steps.step_job(setup, row, _named(access), _bearer(access))
+        await steps.step_job(setup, row, _named(access), _bearer(access), platform="linux-64")
 
 
 async def test_a_step_keeps_to_the_first_upload_list_it_sent(
@@ -1250,7 +1299,7 @@ async def test_a_step_name_no_plan_gives_is_refused_before_anything_is_read(
     header = _bearer("anything")
 
     for call in (
-        steps.step_job(setup, row, name, header),
+        steps.step_job(setup, row, name, header, platform="linux-64"),
         steps.step_admits(setup, row, name, header),
         steps.step_uploads(setup, row, name, header, b"{}"),
         steps.step_done(setup, row, name, header, b"{}"),
@@ -1330,3 +1379,77 @@ async def test_done_waits_for_the_store_a_bounded_time(
     monkeypatch.setattr(steps, "STORE_WAIT", timedelta(milliseconds=50))
     with pytest.raises(Unavailable, match="in time"):
         await _done_with(setup, acme, islands, hung)
+
+
+async def test_a_second_submission_of_identical_code_runs_its_steps_again(
+    setup: Setup, acme: Acme, islands: Islands
+) -> None:
+    await _saved(setup, acme, islands)
+    first = await _grading(setup, acme, islands)
+    await _early(setup, acme, first)
+    second = await _grading(setup, acme, islands)
+    assert (await _row(setup, first)).submission_id != (await _row(setup, second)).submission_id
+    assert [name for name, _ in await _to_run(setup, second, "early")] == ["solution", "compare"]
+
+
+@pytest.mark.parametrize(
+    ("placed", "chosen"),
+    [
+        ({"code": {"file": "in/0/code"}}, set()),
+        ({"language": "ipynb"}, {"python"}),
+        (
+            {"programs": {"programs": {"a": {"language": "c"}, "b": {"language": "java"}}}},
+            {"c", "java"},
+        ),
+        ({"language": {"file": "in/0/language"}}, None),
+        (
+            {
+                "language": "python",
+                "programs": {"programs": {"a": {"language": {"file": "in/1/language"}}}},
+            },
+            None,
+        ),
+    ],
+)
+def test_a_language_wired_from_another_step_keeps_every_locked_language(
+    placed: dict[str, Any], chosen: set[str] | None
+) -> None:
+    assert steps._chosen(placed) == chosen
+
+
+@pytest.mark.parametrize("platform", ["linux-64", "linux-aarch64"])
+async def test_a_job_lists_only_its_platforms_environment_pieces(
+    setup: Setup, acme: Acme, spring: ContestId, platform: str
+) -> None:
+    from forge.domain.environment import EnvironmentLock
+
+    task = await _islands(
+        setup,
+        acme,
+        text=TASKS["islands"][0] + "\nenvironment:\n  python:\n    packages: [numpy]\n",
+    )
+    row = await _grading(setup, acme, task)
+    access = await _mint(setup, row, "early", "solution")
+    body = await steps.step_job(setup, row, _named(access), _bearer(access), platform=platform)
+    assert body is not None
+    job = exact_json.loads(body)
+    assert list(JOB_CHECK.iter_errors(job)) == []
+    pieces = [file for file in job["files"] if file["path"].startswith("cache/pieces/")]
+    lock = EnvironmentLock.model_validate_json(_repo(acme, task.task).files["environment.lock"])
+    selected = lock.platforms[platform]["python"]
+    expected = {piece.sha256 for piece in selected.conda + selected.pypi}
+    assert {(file["sha256"], file["cached"]) for file in pieces} == {
+        (sha, True) for sha in expected
+    }
+    async with setup.unit_of_work() as ctx:
+        held = await ctx.db.get(PublicationObjects, task.publication)
+        assert held is not None
+        assert set(held.objects) >= {
+            piece.sha256
+            for entries in lock.platforms.values()
+            for entry in entries.values()
+            for piece in entry.conda + entry.pypi
+        }
+    for invalid in (None, "win-64"):
+        with pytest.raises(InvalidCallback, match="locked platform"):
+            await steps.step_job(setup, row, _named(access), _bearer(access), platform=invalid)

@@ -26,6 +26,7 @@ from forge.runtime.context import Context
 from forge.services import gradings, names
 from forge.services.task_save import sources
 from forge.services.task_save.effect import _programs_again, _save_effect
+from forge.services.task_save.environments import matching
 from forge.services.task_save.guards import _leaderboard_reads, _present, _shown_before_runs
 from forge.services.task_save.records import PIN_MOVED, Checked
 from forge.services.task_save.sources import (
@@ -141,6 +142,8 @@ async def _ask(
         asks.append(PIN_MOVED)
     if question is not None:
         asks.append(question)
+    if checked.hiding:
+        asks.append("This save hides things entrants may have seen or kept.")
     if not asks:
         return
     effect = await _save_effect(
@@ -158,6 +161,7 @@ async def _ask(
     marks = checked.run_task.self_reported if question and checked.run_task else {}
     raise ConfirmationRequired(
         " ".join([*asks, "Publish it, or keep it as a draft."]),
+        hiding=checked.hiding,
         changes=[*changed],
         regrades=regrades,
         **as_extra(effect),
@@ -256,6 +260,16 @@ async def _check_runs(
     flat = expanded.flat
     for pin in expanded.pins:
         pins[pin.use.rsplit("@", 1)[0]] = pin.key
+    withdrawn = await sources._yanked_workflows(
+        ctx,
+        task,
+        {
+            str(definition.workflow): pins[str(definition.workflow).rsplit("@", 1)[0]],
+            **{pin.use: pin.key for pin in expanded.pins},
+        },
+    )
+    if withdrawn:
+        return Checked(definition, tuple(withdrawn), pins)
     moved = await sources._moved_workflows(ctx, task, definition, pins)
     if moved:
         return Checked(definition, tuple(moved), pins)
@@ -309,7 +323,6 @@ async def _check_runs(
     problems = [
         *found.problems,
         *await _statement_ready(ctx, as_, task, head, written),
-        *await _shown_before_runs(ctx, task, definition, present, found.task),
         *await _leaderboard_reads(ctx, task, definition),
     ]
     if problems:
@@ -351,4 +364,13 @@ async def _check_runs(
     )
     if planned.plan is None:
         return Checked(definition, tuple(planned.problems), pins)
-    return Checked(definition, (), pins, found.task, planned.plan)
+    from forge.domain.environment import Environment
+    from forge.domain.environment_plan import languages_of, with_environment
+
+    asked = (definition.environment or Environment()).covering(
+        languages_of(planned.plan, found.task.entrant)
+    )
+    locked = await matching(ctx, as_, task, head, written, asked)
+    plan = with_environment(planned.plan, locked, found.task.entrant) if locked else planned.plan
+    hiding = await _shown_before_runs(ctx, task, definition, present, found.task)
+    return Checked(definition, (), pins, found.task, plan, tuple(hiding))

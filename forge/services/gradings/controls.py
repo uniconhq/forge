@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import select
 
 from forge.db.tables import Grading
+from forge.db.tables.gradings import EARLY
 from forge.domain.errors import Conflict, NotFound, WrongStatus
 from forge.domain.grading import AT_THE_CI, FINISHED, UNFINISHED, GradingStatus, cancel_reason
 from forge.domain.ids import PublicationId, RunId, TaskId
@@ -113,7 +114,12 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     over = await _over_limit(ctx, row, attempts, gone)
     _settle(ctx, row, gone)
     made = attempt_history._next_attempt(
-        ctx, row, PublicationId(row.publication_id), attempts, over_limit=over
+        ctx,
+        row,
+        PublicationId(row.publication_id),
+        attempts,
+        over_limit=over,
+        from_scratch=row.from_scratch and status is not GradingStatus.DONE,
     )
     await ctx.db.flush()
     log.info(
@@ -121,6 +127,37 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     )
     good = latest_with_result(attempts)
     return record(ctx, made, latest=True, last_good=good.attempt if good else None)
+
+
+@action
+async def regrade_from_scratch(
+    ctx: Context, organiser: Organiser, grading: uuid.UUID
+) -> GradingRecord:
+    """Restart this submission's latest early attempt, replacing its measurements.
+
+    A late grading identifies the same submission; its latest early attempt
+    supplies the publication and retry guards. The flag is set before the
+    shared transaction commits and starts the run.
+    """
+    found = await _managed(ctx, organiser, grading, lock=False)
+    if found.pipeline != EARLY:
+        early = await ctx.db.scalar(
+            select(Grading.id)
+            .where(Grading.submission_id == found.submission_id, Grading.pipeline == EARLY)
+            .order_by(Grading.attempt.desc())
+            .limit(1)
+        )
+        if early is None:
+            raise Conflict(
+                "This submission has no early grading to restart. Rejudge the task first."
+            )
+        grading = early
+    made = await retry(ctx, organiser, grading)
+    row = await ctx.db.get(Grading, made.id)
+    assert row is not None
+    row.from_scratch = True
+    await ctx.db.flush()
+    return made
 
 
 async def free_user(ctx: Context, user: int) -> bool:

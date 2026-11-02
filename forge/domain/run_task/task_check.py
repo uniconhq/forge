@@ -43,7 +43,7 @@ def fewer_runs(
                     message=f"Entrants have been shown {name} during the contest over "
                     f"{len(then)} {'run' if len(then) == 1 else 'runs'} the task still has, "
                     f"and it would now read {len(missing)} fewer. What they have been shown "
-                    "cannot be hidden again, so keep those runs in it.",
+                    "may have been seen or kept; those runs would now be hidden.",
                 )
             )
     return problems

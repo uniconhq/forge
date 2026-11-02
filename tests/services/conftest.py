@@ -1,6 +1,6 @@
 """What the organiser-path tests share: the org acme made with ada as its
 admin and its service account made, the built-in
-workflow `unicon/classic@v4` public at the fake as bootstrap makes it, a
+workflow `unicon/classic@v5` public at the fake as bootstrap makes it, a
 contest and a task made the way an organiser makes them, a checked
 `Organiser` for anyone, and what the fake holds, to compare before and after
 a create that failed. For the contestant's side: a session for anyone,
@@ -46,7 +46,7 @@ from forge.services import (
 )
 from forge.services.access import Organiser
 from forge.services.task_save import Published
-from forge.testing import seed_classic
+from forge.testing import prepared, seed_classic
 
 ACME = OrgId("acme")
 SPRING = ContestId("acme/spring")
@@ -155,6 +155,7 @@ async def publish(
         },
         confirm=True,
     )
+    result = await prepared(setup, acme.ada, task, result)
     assert isinstance(result, Published), result
     await checked(setup, task)
     return result

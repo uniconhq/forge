@@ -22,7 +22,7 @@ from forge.testing import PLACEHOLDER_DIGEST
 from tests.conftest import sibling
 from tests.services.conftest import Acme, signed_in
 
-CLASSIC = sibling("deploy", "workflows/classic/v4")
+CLASSIC = sibling("deploy", "workflows/classic/v5")
 
 BUILD = """\
 inputs:
@@ -30,7 +30,7 @@ inputs:
   language: {type: enum, options: [c, cpp, java, python]}
 steps:
   - id: compile
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
@@ -47,7 +47,7 @@ inputs:
   memory_limit: {type: number}
 steps:
   - id: solution
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
@@ -67,7 +67,7 @@ inputs:
   answer: {type: file}
 steps:
   - id: compare
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ workflow.diff/ }}
       language: python
@@ -145,7 +145,7 @@ inputs:
   note: {type: text, optional: true}
 steps:
   - id: whole
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
@@ -159,7 +159,7 @@ inputs:
   note: {type: text}
 steps:
   - id: told
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
@@ -173,7 +173,7 @@ inputs:
   note: {type: text}
 steps:
   - id: compile
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
@@ -189,7 +189,7 @@ inputs:
   judge_time_limit: {type: number}
 steps:
   - id: game
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       programs:
         entrant:
@@ -559,7 +559,7 @@ async def test_a_written_workflow_pin_is_refused(setup: Setup, acme: Acme) -> No
     text = """\
 steps:
   - id: compile
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ workflow@1.src/ }}
       language: python
@@ -631,7 +631,7 @@ inputs:
   note: {type: text, optional: true, title: Note}
 steps:
   - id: run
-    use: unicon/exec@v2
+    use: unicon/exec@v3
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
