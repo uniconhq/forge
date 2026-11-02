@@ -184,11 +184,19 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     repo = f"/api/v1/repos/{org}/spring.sum.task"
     tags = {tag["name"]: tag for tag in admin.get(f"{repo}/tags").json()}
     assert set(tags) == {"published/1"}
+    # The save commits the organiser's files, and the publication once
+    # prepared commits the plans on top.
     commit = admin.get(f"{repo}/git/commits/{tags['published/1']['commit']['sha']}").json()
     assert commit["author"]["login"] == person["login"]
     assert sorted(entry["filename"] for entry in commit["files"]) == [
         "plans/plan.json",
         "plans/runs.json",
+    ]
+    (parent,) = commit["parents"]
+    saved_commit = admin.get(f"{repo}/git/commits/{parent['sha']}").json()
+    assert saved_commit["sha"] == saved.version
+    assert saved_commit["author"]["login"] == person["login"]
+    assert sorted(entry["filename"] for entry in saved_commit["files"]) == [
         "statement.md",
         "task.yaml",
     ]
