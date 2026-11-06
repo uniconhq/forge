@@ -2007,6 +2007,29 @@ async def test_a_workflows_files_are_read_at_a_commit_and_never_at_a_name(
     assert [seen.url.path for seen in recorder.seen if seen.url.path != repo] == []
 
 
+async def test_a_workflows_readme_start_is_read_as_a_range_of_its_media_at_a_commit(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = "/api/v1/repos/acme/grading.workflow"
+    commit = "c" * 40
+    recorder.on("GET", repo, ok({"name": "grading.workflow", "topics": ["unicon-workflow"]}))
+    recorder.on("GET", f"{repo}/media/README.md", httpx.Response(206, content=b"# Grading"))
+    ada, workflow = AsUser(7, _credential()), WorkflowId("acme/grading")
+
+    read = await forgejo.workflows.read_workflow_media_prefix(
+        ada, workflow, VersionId(commit), "README.md", size=65536
+    )
+
+    assert read == b"# Grading"
+    [seen] = [seen for seen in recorder.seen if seen.url.path.endswith("/README.md")]
+    assert seen.url.params["ref"] == commit
+    assert seen.headers["Range"] == "bytes=0-65535"
+    with pytest.raises(NotFound):
+        await forgejo.workflows.read_workflow_media_prefix(
+            ada, workflow, VersionId("v1"), "README.md", size=65536
+        )
+
+
 async def test_a_workflow_version_is_the_commit_its_tag_stands_at(
     forgejo: ForgejoForge, recorder: Recorder
 ) -> None:

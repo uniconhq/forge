@@ -421,6 +421,20 @@ class Repos:
             max_size=max_size,
         )
 
+    async def read_raw_prefix(
+        self, as_: Identity, owner: str, name: str, path: str, *, at: str, size: int
+    ) -> bytes:
+        """One file's first `size` bytes at a version, or the whole file when
+        it is shorter, through the media endpoint, which resolves a file kept
+        in the large-file store and answers a range.
+        """
+        return await self._http.read_prefix(
+            as_,
+            f"/api/v1/repos/{segment(owner)}/{segment(name)}/media/{file_path(path)}",
+            params={"ref": at},
+            size=size,
+        )
+
     async def read_blob(
         self, as_: Identity, owner: str, name: str, path: str, *, at: str, max_size: int
     ) -> bytes:

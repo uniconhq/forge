@@ -277,6 +277,16 @@ class FakeWorkflows:
             raise Rejected(f"{path} is larger than {max_size} bytes")
         return content
 
+    async def read_workflow_media_prefix(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str, *, size: int
+    ) -> bytes:
+        self._state.record(
+            "read_workflow_media_prefix", as_, workflow=workflow, at=at, path=path, size=size
+        )
+        file = await self.read_workflow_at(as_, workflow, at, path)
+        ref = parse_workflow(workflow)
+        return self._uploads.resolve(f"{ref.owner}/{ref.repo}", file.content)[:size]
+
     async def workflow_media_door(
         self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str
     ) -> Door:

@@ -4,6 +4,7 @@ from forge.domain.content import Edit
 from forge.domain.errors import Forbidden
 from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import TaskId
+from forge.domain.uploads import pointer_text
 from forge.domain.workflow_definition import parse_workflow_ref
 from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
@@ -233,23 +234,38 @@ async def test_org_search_merges_the_same_per_org_pages_as_the_adapter(
     assert len({(item.owner, item.name) for page in pages for item in page.items}) == 31
 
 
-async def test_an_oversized_readme_leaves_the_description_without_an_unbounded_read(
-    setup: Setup, acme: Acme
-) -> None:
+async def _described(setup: Setup, acme: Acme, readme: bytes) -> str | None:
+    """The description bob's new workflow gets from `readme` at its first
+    version, over a description it held before."""
     bob = await signed_in(setup, acme.fake, 8)
     as_ = AsUser(8, acme.fake.mint(8))
     await acme.fake.workflows.create_workflow(
-        as_,
-        "bob",
-        "large",
-        {**CLASSIC, "README.md": b"x" * (workflows.MAX_DEFINITION + 1)},
-        Visibility.PUBLIC,
+        as_, "bob", "large", {**CLASSIC, "README.md": readme}, Visibility.PUBLIC
     )
     repo = acme.fake.state.repo("bob", "large.workflow")
     repo.description = "Kept description"
     await workflows.create_version(setup, bob, "bob", "large", "v1")
-    assert repo.description == "Kept description"
-    assert (
-        acme.fake.calls_to("read_workflow_media")[-1].arguments["max_size"]
-        == workflows.MAX_DEFINITION
-    )
+    return repo.description
+
+
+async def test_a_large_readme_gets_a_description_from_its_start(setup: Setup, acme: Acme) -> None:
+    # A README of any length is described from its first 64 KiB (#563).
+    readme = b"# Large\n\nFrom the **start**.\n\n" + b"x" * (300 * 1024)
+    assert await _described(setup, acme, readme) == "From the start."
+    (read,) = acme.fake.calls_to("read_workflow_media_prefix")
+    assert read.arguments["size"] == workflows.README_PREFIX
+
+
+async def test_a_character_cut_at_the_readmes_prefix_is_left_out(setup: Setup, acme: Acme) -> None:
+    heading = b"# " + b"h" * (workflows.README_PREFIX - 8) + b"\n\n"
+    readme = heading + "Caf\u00e9 au lait".encode()
+    assert readme[: workflows.README_PREFIX].endswith(b"Caf\xc3")
+    assert await _described(setup, acme, readme) == "Caf"
+
+
+async def test_an_empty_readme_gives_an_empty_description(setup: Setup, acme: Acme) -> None:
+    assert await _described(setup, acme, b"") == ""
+
+
+async def test_a_readme_read_back_as_its_pointer_is_no_readme(setup: Setup, acme: Acme) -> None:
+    assert await _described(setup, acme, pointer_text("0" * 64, 300 * 1024)) == "Kept description"

@@ -4,6 +4,8 @@ server, turns every refusal into one of the five errors, and signs each
 identity its own way. Over a real connection pool it keeps eight calls in
 flight, the ninth waiting its turn and `Unavailable` once the pool timeout
 passes, and every response, a stream's included, gives its connection back.
+A prefix read asks for a range and stops at it, whether the server answers
+the range or the whole body.
 """
 
 import asyncio
@@ -169,6 +171,37 @@ def test_an_org_accounts_credentials_are_never_printed() -> None:
     assert "token-acme" not in repr(ACME)
 
 
+@pytest.mark.parametrize(
+    ("answer", "read"),
+    [
+        (httpx.Response(206, content=b"x" * 100), b"x" * 100),
+        (httpx.Response(200, content=b"x" * 4096), b"x" * 100),
+        (httpx.Response(200, content=b""), b""),
+    ],
+)
+async def test_a_prefix_read_asks_for_a_range_and_takes_the_range_or_the_whole_body(
+    answer: httpx.Response, read: bytes
+) -> None:
+    seen: list[httpx.Request] = []
+    http = _client([answer], seen)
+
+    assert await http.read_prefix(PLATFORM, "/file", params={"ref": "c"}, size=100) == read
+    assert seen[0].headers["Range"] == "bytes=0-99"
+    assert seen[0].headers["Authorization"] == "token admin"
+
+
+@pytest.mark.parametrize(
+    ("status", "error"), [(404, NotFound), (403, Forbidden), (416, Rejected), (502, Unavailable)]
+)
+async def test_a_refused_prefix_read_is_one_of_the_five_errors(
+    status: int, error: type[Exception]
+) -> None:
+    http = _client([httpx.Response(status, json={"message": "no"})], [])
+
+    with pytest.raises(error):
+        await http.read_prefix(PLATFORM, "/file", params=None, size=100)
+
+
 async def test_a_list_is_read_until_a_short_page() -> None:
     pages: list[Any] = [[{"n": index} for index in range(50)], [{"n": 50}]]
     seen: list[httpx.Request] = []
@@ -279,6 +312,19 @@ async def test_a_capped_read_gives_its_connection_back_whether_it_fits_or_not(
         with pytest.raises(Rejected):
             await http.read_capped(PLATFORM, "/large", params=None, max_size=100)
         assert await http.read_capped(PLATFORM, "/large", params=None, max_size=10_000)
+
+    server.release.set()
+    assert (await http.call(PLATFORM, "GET", "/held")).text == "ok"
+    await http.aclose()
+
+
+async def test_a_prefix_read_gives_its_connection_back_when_it_stops_short(
+    server: Server,
+) -> None:
+    http = _pooled(server, pool=0.5)
+
+    for _ in range(CONCURRENT_CALLS + 2):
+        assert await http.read_prefix(PLATFORM, "/large", params=None, size=100) == b"x" * 100
 
     server.release.set()
     assert (await http.call(PLATFORM, "GET", "/held")).text == "ok"
