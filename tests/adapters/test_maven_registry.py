@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from forge.adapters.registries import EnvironmentResolver, maven
+from forge.adapters.registries import EnvironmentResolver, watch
 from forge.adapters.registries.maven import MavenResolver
 from forge.domain.environment import PLATFORMS, Environment, pieces_fingerprint
 from forge.domain.errors import Rejected, TooLarge, Unavailable
@@ -189,7 +189,7 @@ async def test_coursier_is_stopped_once_its_cache_passes_the_cap(
     program.write_text(GROWING)
     program.chmod(0o755)
     pids = tmp_path / "pids"
-    monkeypatch.setattr(maven, "WATCHED", 0.05)
+    monkeypatch.setattr(watch, "WATCHED", 0.05)
     real = asyncio.create_subprocess_exec
 
     async def started(*args: Any, **kwargs: Any) -> Any:

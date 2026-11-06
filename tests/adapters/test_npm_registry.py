@@ -7,14 +7,15 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
-from forge.adapters.registries import EnvironmentResolver
-from forge.adapters.registries.npm import NpmResolver, _confined, _runs_on
+from forge.adapters.registries import EnvironmentResolver, watch
+from forge.adapters.registries.npm import MOST_LOCKED, Held, NpmResolver, _confined, _runs_on
 from forge.domain.environment import PLATFORMS, Environment
 from forge.domain.errors import Rejected, TooLarge, Unavailable
 from tests.adapters.test_package_resolver import Registry, archive
@@ -210,8 +211,11 @@ async def test_each_platform_keeps_its_own_optional_packages_and_every_install_s
             {"node_modules/chai": {"version": "6.3.0", "integrity": "sha1-AAAA"}},
             "npm did not identify chai by sha512",
         ),
-        ({"node_modules/../../etc": {"version": "1.0.0"}}, "outside node_modules"),
-        ({"lib/chai": {"version": "1.0.0"}}, "outside node_modules"),
+        (
+            {"node_modules/../../etc": {"version": "1.0.0"}},
+            r"^npm placed a package outside node_modules\.$",
+        ),
+        ({"lib/chai": {"version": "1.0.0"}}, r"^npm placed a package outside node_modules\.$"),
         ({"node_modules/linked": {"link": True, "resolved": "../linked"}}, "linked linked"),
         (
             {"node_modules/fsevents": {"version": "2.3.3", "os": ["darwin"]}},
@@ -246,6 +250,55 @@ async def test_the_tarballs_are_held_to_the_cap(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", Install())
     with pytest.raises(TooLarge, match="npm packages"):
         await resolve(tmp_path, ["jest"], cap=100)
+
+
+async def test_a_lock_of_too_many_packages_downloads_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, served: list[str]
+) -> None:
+    many = {f"node_modules/p{each}": {"version": "1.0.0"} for each in range(MOST_LOCKED)}
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", Install(locked(many)))
+    with pytest.raises(Rejected, match=f"more than {MOST_LOCKED} packages"):
+        await resolve(tmp_path, ["jest"])
+    assert served == []
+
+
+GROWING = """#!/bin/sh
+if [ "$1" = "--version" ]; then echo 11.11.0; exit 0; fi
+echo $$ > "$PIDS"
+for arg; do case "$arg" in --cache=*) cache="${arg#--cache=}";; esac; done
+mkdir -p "$cache"
+while :; do
+    head -c 65536 /dev/zero >> "$cache/big"
+    sleep 0.05
+done
+"""
+"""An npm whose lock step downloads without end."""
+
+
+async def test_npm_is_stopped_once_its_cache_passes_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    program = tmp_path / "bin" / "npm"
+    program.parent.mkdir()
+    program.write_text(GROWING)
+    program.chmod(0o755)
+    pids = tmp_path / "pids"
+    monkeypatch.setattr(watch, "WATCHED", 0.05)
+    real = asyncio.create_subprocess_exec
+
+    async def started(*args: Any, **kwargs: Any) -> Any:
+        return await real(*args, **{**kwargs, "env": {**kwargs["env"], "PIDS": str(pids)}})
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", started)
+    root = tmp_path / "root"
+    root.mkdir()
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(TooLarge, match="npm packages"):
+            await asyncio.wait_for(
+                NpmResolver(str(program)).resolve(["jest"], root, client, cap=256 * 1024), 20
+            )
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pids.read_text()), 0)
 
 
 async def test_a_failed_resolve_names_npm_s_error_but_not_its_words(
@@ -451,8 +504,11 @@ async def test_a_typescript_lock_gives_each_platform_its_tree_in_its_fingerprint
         assert again.fingerprint != locks[0].fingerprint
 
 
-TOOLCHAIN = {platform: {"node_modules/typescript": "typescript"} for platform in PLATFORMS}
-"""Where the TypeScript toolchain's conda packages install TypeScript."""
+def toolchain(version: str | None = "5.9.3") -> dict[str, dict[str, Held]]:
+    """Where the TypeScript toolchain's conda packages install TypeScript."""
+    return {
+        platform: {"node_modules/typescript": Held("typescript", version)} for platform in PLATFORMS
+    }
 
 
 async def test_a_package_where_the_toolchain_installs_its_own_is_refused_and_a_peer_left_out(
@@ -462,7 +518,7 @@ async def test_a_package_where_the_toolchain_installs_its_own_is_refused_and_a_p
     monkeypatch.setattr(asyncio, "create_subprocess_exec", Install(peer))
     async with httpx.AsyncClient() as client:
         trees, _ = await NpmResolver().resolve(
-            ["jest"], tmp_path, client, cap=1024 * 1024, held=TOOLCHAIN
+            ["jest"], tmp_path, client, cap=1024 * 1024, held=toolchain()
         )
     assert not any("typescript" in package.path for package in trees["linux-64"])
     assert not any("typescript" in each for each in served)
@@ -474,20 +530,46 @@ async def test_a_package_where_the_toolchain_installs_its_own_is_refused_and_a_p
         async with httpx.AsyncClient() as client:
             with pytest.raises(Rejected, match="the toolchain's typescript already installs"):
                 await NpmResolver().resolve(
-                    ["jest"], tmp_path, client, cap=1024 * 1024, held=TOOLCHAIN
+                    ["jest"], tmp_path, client, cap=1024 * 1024, held=toolchain()
                 )
+    assert served == []
+
+
+@pytest.mark.parametrize(
+    ("version", "installs"), [("5.8.3", "typescript 5.8.3"), (None, "its own typescript")]
+)
+async def test_a_peer_of_another_version_than_the_toolchain_s_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    served: list[str],
+    version: str | None,
+    installs: str,
+) -> None:
+    peer = locked({"node_modules/typescript": {"version": "5.9.3", "peer": True}})
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", Install(peer))
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(Rejected) as refused:
+            await NpmResolver().resolve(
+                ["jest"], tmp_path, client, cap=1024 * 1024, held=toolchain(version)
+            )
+    assert str(refused.value) == (
+        f"The packages need typescript 5.9.3, but the toolchain's typescript installs "
+        f"{installs}. Ask for packages that work with the toolchain's typescript, or pick "
+        "another version of the toolchain."
+    )
     assert served == []
 
 
 async def test_the_places_the_toolchain_holds_come_from_its_conda_archives(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    members = (
-        "lib/node_modules/typescript/package.json",
-        "lib/node_modules/@scope/tool/index.js",
-        "lib/node_modules/README",
-        "lib/libnode.so",
-    )
+    members = {
+        "lib/node_modules/typescript/package.json": b'{"name": "typescript", "version": "5.9.3"}',
+        "lib/node_modules/@scope/tool/index.js": b"exit",
+        "lib/node_modules/@scope/tool/package.json": b"not json",
+        "lib/node_modules/README": b"exit",
+        "lib/libnode.so": b"exit",
+    }
     body = archive(members=members)
 
     async def downloaded(client: Any, piece: Any, path: Path) -> None:
@@ -512,8 +594,8 @@ async def test_the_places_the_toolchain_holds_come_from_its_conda_archives(
     assert seen == [
         {
             platform: {
-                "node_modules/typescript": "typescript",
-                "node_modules/@scope/tool": "typescript",
+                "node_modules/typescript": Held("typescript", "5.9.3"),
+                "node_modules/@scope/tool": Held("typescript", None),
             }
             for platform in PLATFORMS
         }

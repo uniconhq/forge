@@ -97,6 +97,10 @@ def test_every_language_offers_versions_and_only_four_sources_take_packages() ->
             {"r": {"conda": ["r-testthat"], "packages": ["testthat"]}},
             ("r", "testthat is named in both r.packages and r.conda"),
         ),
+        (
+            {"javascript": {"packages": [f"p{each}" for each in range(101)]}},
+            ("javascript.packages", "JavaScript takes at most 100 packages. Name fewer."),
+        ),
     ],
 )
 def test_invalid_entries_are_refused_at_their_paths(

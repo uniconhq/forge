@@ -3,6 +3,8 @@ and npm pieces."""
 
 import asyncio
 import hashlib
+import json
+import shutil
 import tarfile
 import zipfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
@@ -10,7 +12,7 @@ from compression.zstd import ZstdError, ZstdFile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import mkdtemp
 from typing import cast
 from urllib.parse import urlsplit
 
@@ -18,7 +20,7 @@ import httpx
 
 from forge.adapters.registries.conda import CondaRegistry
 from forge.adapters.registries.maven import MavenResolver
-from forge.adapters.registries.npm import NpmResolver
+from forge.adapters.registries.npm import Held, NpmResolver
 from forge.adapters.registries.pypi import PypiResolver
 from forge.domain.environment import (
     PLATFORMS,
@@ -36,6 +38,9 @@ from forge.domain.errors import Rejected, TooLarge, Unavailable
 from forge.domain.yaml_models import size_in_words
 from forge.port.packages import PreparedEnvironment
 from forge.port.registries import RegistryPort
+
+PACKAGE_JSON_MOST = 1024 * 1024
+"""The most of a toolchain's npm `package.json` read for its version."""
 
 
 class EnvironmentResolver:
@@ -63,7 +68,8 @@ class EnvironmentResolver:
     ) -> AsyncIterator[PreparedEnvironment]:
         platforms: dict[str, dict[str, LanguageLock]] = {platform: {} for platform in PLATFORMS}
         files: dict[str, Path] = {}
-        with TemporaryDirectory(prefix="unicon-packages-") as folder:
+        folder = mkdtemp(prefix="unicon-packages-")
+        try:
             root = Path(folder)
             async with httpx.AsyncClient(
                 timeout=60, follow_redirects=False, trust_env=False
@@ -170,6 +176,8 @@ class EnvironmentResolver:
                             fingerprint=pieces_fingerprint(records, wheels, jars, trees[platform]),
                         )
             yield PreparedEnvironment(EnvironmentLock(platforms=platforms), files)
+        finally:
+            await asyncio.to_thread(shutil.rmtree, folder, ignore_errors=True)
 
 
 def _spec(entry: str) -> str:
@@ -209,7 +217,9 @@ async def _download(client: httpx.AsyncClient, piece: CondaPiece, path: Path) ->
         raise Rejected(f"{piece.name} did not match its locked size and SHA-256.")
 
 
-def _members(path: Path, piece: CondaPiece) -> Iterator[str]:
+def _members(path: Path, piece: CondaPiece) -> Iterator[tuple[tarfile.TarFile, tarfile.TarInfo]]:
+    """Each file of a conda package, with the archive it is read from while
+    it is the one yielded."""
     if piece.file_name.endswith(".conda"):
         with zipfile.ZipFile(path) as archive:
             for name in archive.namelist():
@@ -220,38 +230,60 @@ def _members(path: Path, piece: CondaPiece) -> Iterator[str]:
                         tarfile.open(fileobj=stream, mode="r|") as content,
                     ):
                         for member in content:
-                            yield member.name
+                            yield content, member
     elif piece.file_name.endswith(".tar.bz2"):
         with tarfile.open(path) as archive:
             for member in archive:
-                yield member.name
+                yield archive, member
     else:
         raise Rejected(f"{piece.name} has an unsupported conda archive format.")
 
 
-def _node_places(records: list[CondaPiece], files: dict[str, Path]) -> dict[str, str]:
+def _node_places(records: list[CondaPiece], files: dict[str, Path]) -> dict[str, Held]:
     """Each place under `lib/` that the toolchain's conda packages install an
     npm package at, as npm's lock names a place (`node_modules/npm`), with
-    the conda package that installs it."""
-    places: dict[str, str] = {}
+    the conda package that installs it and the version its `package.json`
+    gives."""
+    places: dict[str, Held] = {}
+    versions: dict[str, str] = {}
     for piece in records:
         try:
-            for name in _members(files[piece.sha256], piece):
-                parts = name.split("/")
+            for archive, member in _members(files[piece.sha256], piece):
+                parts = member.name.split("/")
                 if parts[:2] != ["lib", "node_modules"] or len(parts) < 4:
                     continue
                 end = 4 if parts[2].startswith("@") else 3
-                if len(parts) > end:
-                    places.setdefault("/".join(parts[1:end]), piece.name)
+                if len(parts) <= end:
+                    continue
+                place = "/".join(parts[1:end])
+                places.setdefault(place, Held(piece.name, None))
+                if parts[end:] == ["package.json"] and member.isfile():
+                    version = _version_of(archive, member)
+                    if version is not None:
+                        versions.setdefault(place, version)
         except (OSError, EOFError, tarfile.TarError, zipfile.BadZipFile, ZstdError) as error:
             raise Rejected(f"{piece.name} could not be inspected as a conda package.") from error
-    return places
+    return {place: Held(held.piece, versions.get(place)) for place, held in places.items()}
+
+
+def _version_of(archive: tarfile.TarFile, member: tarfile.TarInfo) -> str | None:
+    """The `version` an npm package's `package.json` gives, or None."""
+    if member.size > PACKAGE_JSON_MOST:
+        return None
+    stream = archive.extractfile(member)
+    if stream is None:
+        return None
+    try:
+        version = json.loads(stream.read()).get("version")
+    except ValueError, AttributeError, RecursionError:
+        return None
+    return version if isinstance(version, str) else None
 
 
 def _check_scripts(path: Path, piece: CondaPiece) -> None:
     try:
-        for name in _members(path, piece):
-            if name.endswith(
+        for _, member in _members(path, piece):
+            if member.name.endswith(
                 (
                     "-pre-link.sh",
                     "-post-link.sh",
