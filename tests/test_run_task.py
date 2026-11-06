@@ -374,7 +374,6 @@ def test_islands_runs_each_tuple_once_and_shows_the_samples_early(
     assert [run.id for run in task.runs if run.early] == ["r1", "r2"]
     assert task.groups["st2_tests"] == ("r3", "r4")
     assert task.groups["all"] == ("r1", "r2", "r3", "r4")
-    assert not task.compile_early()
     assert task.self_reported == {}
     assert set(task.entrant) == {"code", "language"}
     assert task.entrant["code"].form.label == "Your solution"
@@ -658,7 +657,6 @@ def test_the_runs_file_reads_back_as_written(primitives: dict[str, PrimitiveDecl
         (("entrant", "route", "parts"), 0),
         (("entrant", "route", "parts"), True),
         (("self_reported",), {"score": [1]}),
-        (("compile_early",), 0),
     ],
 )
 def test_a_runs_file_that_no_save_writes_does_not_read(
@@ -831,7 +829,7 @@ def test_the_entrants_inputs_stay_theirs_once_anyone_has_submitted(
 def test_an_entrant_inputs_type_stays_once_anyone_has_submitted(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    before = RunsFile({}, (), {"code": (Type.FILE, None), "language": (Type.ENUM, None)}, {}, False)
+    before = RunsFile({}, (), {"code": (Type.FILE, None), "language": (Type.ENUM, None)}, {})
 
     found = islands(primitives, previous=before, submitted=True)
 
@@ -1383,7 +1381,7 @@ def test_a_value_cannot_read_itself_through_others(
     assert at(found, "scoring.values.total")
 
 
-def test_a_value_shown_always_reading_compiled_makes_the_compile_early(
+def test_a_value_shown_always_reading_compiled_makes_no_run_early(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     text = ISLANDS.replace(ISLANDS_ALWAYS, "    always:\n      values: [built]\n").replace(
@@ -1392,9 +1390,7 @@ def test_a_value_shown_always_reading_compiled_makes_the_compile_early(
 
     task = ok(islands(primitives, text))
 
-    assert task.compile_early()
     assert task.early() == frozenset()
-    assert task.runs_file().compile_early
 
 
 def test_every_result_a_leaderboard_reads_of_a_task_is_listed_in_show_by_its_name(
@@ -1410,11 +1406,9 @@ def test_every_result_a_leaderboard_reads_of_a_task_is_listed_in_show_by_its_nam
 
     task = ok(islands(primitives, text))
 
-    # compiled shown always makes the compile early, with no run, and once
-    # shown it is not hidden again.
-    assert task.compile_early()
+    # compiled shown always makes no run early, and once shown it is not
+    # hidden again.
     assert task.early() == frozenset()
-    assert task.runs_file().compile_early
     before = shown_under(_scoring(text), ISLANDS_KEYS)
     assert hidden_again(before, _scoring(text.replace("[compiled]", "[]")), ISLANDS_KEYS) == [
         {
@@ -1474,7 +1468,6 @@ def test_a_run_entry_showing_only_the_runs_inputs_makes_no_run_early(
     task = ok(islands(primitives, text))
 
     assert task.early() == frozenset()
-    assert task.runs_file().compile_early is False
 
 
 def test_first_not_passed_during_the_contest_makes_every_run_early(
@@ -1841,7 +1834,7 @@ def mean(
     return islands(primitives, task, paths=paths, manifests=manifests)
 
 
-def test_an_exec_value_names_its_program_and_runs_late_unless_shown_during_the_contest(
+def test_an_exec_value_names_its_program_its_manifest_and_its_limits(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     workflow, files = deployed("unicon/classic@v6")
@@ -1855,18 +1848,6 @@ def test_an_exec_value_names_its_program_and_runs_late_unless_shown_during_the_c
         "mean", "programs/mean/", "python", "all", 2, 256, "mean", Better.HIGHER
     )
     assert task.programs["mean"].manifest == "programs/mean/program.yaml"
-    assert task.early_programs() == frozenset()
-
-    shown = MEAN.replace(
-        "values: [sample_score, sample_time]", "values: [sample_score, sample_time, mean]"
-    ).replace("total, mean]", "total]")
-    assert ok(mean(primitives, shown)).early_programs() == {"mean"}
-
-    released = MEAN.replace(
-        "      values: [st1, st2, total, mean]\n", "      values: [st1, st2, total]\n"
-    ).replace(ISLANDS_AFTER, ISLANDS_AFTER + "    after_release:\n      values: [mean]\n")
-    assert ok(mean(primitives, released)).early_programs() == frozenset()
-    assert ok(mean(primitives, released)).early_programs(released=True) == {"mean"}
 
     limited = MEAN.replace("over: {runs: all}}", "over: {runs: all}, time_limit: 0.5}")
     assert ok(mean(primitives, limited)).programs["mean"].time_limit == Decimal("0.5")

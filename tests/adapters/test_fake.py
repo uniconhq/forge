@@ -127,7 +127,6 @@ async def test_grading_is_done_as_the_org_account_handed_in(fake: FakeForge) -> 
 def _pipeline() -> PipelineRun:
     return PipelineRun(
         grading=uuid.uuid4(),
-        pipeline="early",
         org=OrgId("acme"),
         publication_version=VersionId("0" * 40),
         submission=SubmissionId(f"acme/spring/@{U8}/sum#1"),

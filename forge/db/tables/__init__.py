@@ -17,7 +17,7 @@ from forge.db.tables.part_uploads import PartUpload
 from forge.db.tables.regrades import Regrade
 from forge.db.tables.releases import Release
 from forge.db.tables.sessions import Session
-from forge.db.tables.steps import GradingReuse, GradingStep, PublicationObjects, StepOutput
+from forge.db.tables.steps import GradingStep, PublicationObjects, StepOutput
 from forge.db.tables.uploads import Upload
 from forge.db.tables.workflow_yanks import WorkflowYank
 
@@ -27,7 +27,6 @@ __all__ = [
     "Entry",
     "EnvironmentPreparation",
     "Grading",
-    "GradingReuse",
     "GradingStep",
     "HoldEnd",
     "Invite",

@@ -1,11 +1,11 @@
 """A task's plan (SIMPLER-CORE.md 11.1 to 11.4, 15.4 and 15.5): islands
 reads step by step as written; each step is placed by what it reads; a
-grading is an early and a late pipeline, never mixed; taint follows a
-hidden file into the steps that run the entrant's code beside it, and the
-save refuses or notes what is shown during the contest over such runs; each
-container holds the files it copies; what a save changes is said; and
-each check is graded at the save by copies of the graded steps, its files
-never a change in how the task grades.
+grading is one pipeline, its shown runs first; taint follows a hidden file
+into the steps that run the entrant's code beside it, and the save refuses
+or notes what is shown during the contest over such runs; each container
+holds the files it copies; what a save changes is said; and each check is
+graded at the save by copies of the graded steps, its files never a change
+in how the task grades.
 """
 
 import hashlib
@@ -38,7 +38,6 @@ from forge.domain.run_plan import (
     order_problems,
     plan_runs,
     run_plan_changes,
-    side_by_side,
     slot_of,
     steps_run_again,
 )
@@ -217,15 +216,14 @@ def islands(
     return planned(primitives, task, workflow, files, ISLANDS_PATHS, **kw)
 
 
-def laid_out(plan: RunPlan) -> dict[str, list[tuple[str, tuple[str, ...] | None, tuple[str, ...]]]]:
-    """Each pipeline's Woodpecker steps: name, runs and what each waits for."""
+def laid_out(plan: RunPlan) -> dict[str, list[tuple[str, tuple[str, ...] | None]]]:
+    """Each pipeline's Woodpecker steps in the order they run: name and runs."""
     return {
-        kind: [(step.name, step.runs, step.depends_on) for step in steps]
-        for kind, steps in plan.pipelines.items()
+        kind: [(step.name, step.runs) for step in steps] for kind, steps in plan.pipelines.items()
     }
 
 
-def held(plan: RunPlan, name: str, kind: str = "late") -> PipelineStep:
+def held(plan: RunPlan, name: str, kind: str = "grading") -> PipelineStep:
     return next(step for step in plan.pipeline(kind) if step.name == name)  # type: ignore[arg-type]
 
 
@@ -281,14 +279,10 @@ def test_islands_reads_as_written_step_by_step(primitives: dict[str, PrimitiveDe
         "build-compare": "save_once",
     }
     assert laid_out(plan) == {
-        "save": [("build-compare", None, ())],
-        "early": [
-            ("solution", ("r1", "r2"), ()),
-            ("compare", ("r1", "r2"), ("solution",)),
-        ],
-        "late": [
-            ("solution", ("r3", "r4"), ()),
-            ("compare", ("r3", "r4"), ("solution",)),
+        "save": [("build-compare", None)],
+        "grading": [
+            ("solution", ("r1", "r2", "r3", "r4")),
+            ("compare", ("r1", "r2", "r3", "r4")),
         ],
     }
     assert plan.steps["build-compare"].inputs == {
@@ -375,8 +369,7 @@ def test_a_classic_task_builds_its_checker_at_the_save_and_grades_with_two_steps
     plan = ok(islands(primitives))
 
     assert [step.name for step in plan.pipeline("save")] == ["build-compare"]
-    for kind in ("early", "late"):
-        assert [step.name for step in plan.pipeline(kind)] == ["solution", "compare"]
+    assert [step.name for step in plan.pipeline("grading")] == ["solution", "compare"]
 
 
 def test_a_workflow_step_named_as_a_build_the_planner_adds_is_refused(
@@ -414,11 +407,12 @@ def test_a_value_named_as_a_build_of_a_workflow_step_is_refused_naming_that_buil
     ]
 
 
-def test_a_step_done_at_the_save_is_not_built_again(
+def test_a_step_reading_only_the_tasks_files_runs_in_each_grading_and_is_built_at_the_save(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    """compare reads only the task's own files here, so it runs at the
-    save, where a source of it that does not compile refuses the save."""
+    """compare reads only the task's own files here. Only the planner's own
+    steps run at the save (#655), so compare runs in each grading, and its
+    build at the save refuses a source that does not compile."""
     workflow, files = deployed("unicon/classic@v6")
     workflow = workflow.replace(
         "        output: ${{ steps.solution.output }}\n", "        output: ${{ inputs.answer }}\n"
@@ -434,7 +428,8 @@ def test_a_step_done_at_the_save_is_not_built_again(
         )
     )
 
-    assert {step.step for step in plan.pipeline("save")} == {"compare"}
+    assert plan.steps["compare"].class_ == "grading_per_run"
+    assert {step.step for step in plan.pipeline("save")} == {"build-compare"}
 
 
 def test_a_step_that_tells_its_compile_once_given_a_language_per_run_is_refused(
@@ -465,12 +460,11 @@ def test_a_step_takes_the_time_it_compiles_in_once_whatever_runs_it_holds(
     once = primitives["unicon/exec@v4"].forms["one"].limits
     assert once is not None and once.once_time_ms == 40000
 
-    # Two runs of 3 s each, 2 * (3 * 2000 + 3000) ms, and the compile once;
+    # Four runs of 3 s each, 4 * (3 * 2000 + 3000) ms, and the compile once;
     # the build at the save runs nothing but its 1 s and the compile.
-    for kind in ("early", "late"):
-        compare = held(plan, "compare", kind)
-        assert compare.limits.time_ms == 2 * (3 * 2000 + 3000) + 40000
-        assert compare.limits.cpu_ms == 2 * (3 * 2000 + 3000)
+    compare = held(plan, "compare")
+    assert compare.limits.time_ms == 4 * (3 * 2000 + 3000) + 40000
+    assert compare.limits.cpu_ms == 4 * (3 * 2000 + 3000)
     assert held(plan, "build-compare", "save").limits.time_ms == 1000 + 40000
 
 
@@ -501,19 +495,17 @@ def test_a_batch_sums_its_runs_time_and_holds_the_most_of_the_rest(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     plan = ok(islands(primitives))
-    solution = held(plan, "solution", "early")
+    solution = held(plan, "solution")
 
-    # Each run: 2 s gives 2 * 2000 + 3000 ms, and the step compiles once
-    # before them, in exec's 40 s, which its CPU time does not count. 256 MB
-    # gives 512 MB, less than the 1648 MB exec's container holds with its
-    # compile box, with the entrant's program, which it compiles into at
-    # most 32 MB, on top.
-    assert (solution.limits.time_ms, solution.limits.cpu_ms) == (14000 + 40000, 14000)
+    # Each of the four runs: 2 s gives 2 * 2000 + 3000 ms, and the step
+    # compiles once before them, in exec's 40 s, which its CPU time does not
+    # count. 256 MB gives 512 MB, less than the 1648 MB exec's container
+    # holds with its compile box, with the entrant's program, which it
+    # compiles into at most 32 MB, on top.
+    assert (solution.limits.time_ms, solution.limits.cpu_ms) == (28000 + 40000, 28000)
     assert solution.limits.memory_mb == 1648 + 32
-    assert plan.items_of(solution) == [
-        ("r1", (plan.steps["solution"].items or {})["r1"].inputs),
-        ("r2", (plan.steps["solution"].items or {})["r2"].inputs),
-    ]
+    items = plan.steps["solution"].items or {}
+    assert plan.items_of(solution) == [(run, items[run].inputs) for run in ("r1", "r2", "r3", "r4")]
     assert held(plan, "build-compare", "save").limits.memory_mb == 1648
 
 
@@ -523,10 +515,8 @@ def test_each_container_holds_the_files_it_copies(
     plan = ok(islands(primitives, sizes={"tests/3.ans": 300 * 1024 * 1024}))
 
     # Exec's 1648 MB, with the compiled diff script, up to 32 MB, the
-    # solution's output, up to 64 MB, and the 300 MB answer on top; the
-    # samples' runs copy the small answers.
+    # solution's output, up to 64 MB, and the largest answer, 300 MB, on top.
     assert held(plan, "compare").limits.memory_mb == 1648 + 32 + 64 + 300
-    assert held(plan, "compare", "early").limits.memory_mb == 1648 + 32 + 64 + 1
 
 
 def test_an_entrant_file_is_copied_at_the_most_its_input_may_hold(
@@ -544,8 +534,8 @@ def test_an_entrant_file_is_copied_at_the_most_its_input_may_hold(
     # with the compiled runner, up to 32 MB, and the weights, up to 10 MB,
     # or 500 MB, on top.
     assert plan.entrant["weights"].max_size == DEFAULT_MAX_SIZE
-    assert held(plan, "episode", "early").limits.memory_mb == 1648 + 32 + 10
-    assert held(larger, "episode", "early").limits.memory_mb == 1648 + 32 + 500
+    assert held(plan, "episode").limits.memory_mb == 1648 + 32 + 10
+    assert held(larger, "episode").limits.memory_mb == 1648 + 32 + 500
 
 
 def test_linked_programs_need_a_box_each(
@@ -599,14 +589,14 @@ def test_what_a_step_reads_is_listed_for_its_pipeline(
 
     read = plan.files_read(held(plan, "compare"))
 
-    assert read.task == {"tests/3.ans", "tests/4.ans"}
+    assert read.task == {"samples/1.ans", "samples/2.ans", "tests/3.ans", "tests/4.ans"}
     assert read.workflow == {"diff/diff.py", "diff/program.yaml"}
     assert read.outputs == {("solution", "output")}
     assert plan.files_read(held(plan, "build-compare", "save")).workflow == {
         "diff/diff.py",
         "diff/program.yaml",
     }
-    assert plan.files_read(held(plan, "solution", "early")).entrant == {
+    assert plan.files_read(held(plan, "solution")).entrant == {
         ("code", None),
         ("language", None),
     }
@@ -615,14 +605,14 @@ def test_what_a_step_reads_is_listed_for_its_pipeline(
 # The three tasks
 
 
-def test_cartpole_is_one_early_pipeline(primitives: dict[str, PrimitiveDeclaration]) -> None:
+def test_cartpole_is_one_grading_pipeline(primitives: dict[str, PrimitiveDeclaration]) -> None:
     plan = ok(
         planned(primitives, CARTPOLE_TASK, CARTPOLE, CARTPOLE_FILES, frozenset({"task.yaml"}))
     )
 
     assert laid_out(plan) == {
-        "save": [("build-episode", None, ())],
-        "early": [("episode", ("r1", "r2", "r3", "r4", "r5", "r6"), ())],
+        "save": [("build-episode", None)],
+        "grading": [("episode", ("r1", "r2", "r3", "r4", "r5", "r6"))],
     }
     episode = plan.steps["episode"]
     assert episode.self_reported is True
@@ -696,8 +686,8 @@ def test_tour_gives_each_run_its_own_part(primitives: dict[str, PrimitiveDeclara
         {"input": "parts/1.in", "route": {"part": 1}},
         {"input": "parts/2.in", "route": {"part": 2}},
     ]
-    assert set(plan.pipelines) == {"save", "early"}
-    assert plan.files_read(held(plan, "check", "early")).entrant == {("route", 1), ("route", 2)}
+    assert set(plan.pipelines) == {"save", "grading"}
+    assert plan.files_read(held(plan, "check")).entrant == {("route", 1), ("route", 2)}
 
 
 def task_manifest_tour(primitives: dict[str, PrimitiveDeclaration]) -> RunPlan:
@@ -865,17 +855,17 @@ scoring:
 """
 
 
-def test_a_generator_reading_a_repeated_input_runs_at_the_save_once_per_run(
+def test_a_generator_reading_a_repeated_input_runs_in_each_grading_once_per_run(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     plan = ok(
         planned(primitives, GENERATED_TASK, GENERATED, GENERATED_FILES, frozenset({"task.yaml"}))
     )
 
-    assert plan.steps["generate"].class_ == "save_per_run"
+    assert plan.steps["generate"].class_ == "grading_per_run"
     assert laid_out(plan) == {
-        "save": [("generate", ("r1", "r2"), ())],
-        "late": [("solution", ("r1", "r2"), ())],
+        "save": [("build-generate", None)],
+        "grading": [("generate", ("r1", "r2")), ("solution", ("r1", "r2"))],
     }
     assert (plan.steps["generate"].items or {})["r2"].inputs["args"] == {"value": "--seed 2"}
 
@@ -942,7 +932,7 @@ scoring:
 """
 
 
-def test_a_once_step_read_only_by_a_once_step_an_early_run_reads_is_early(
+def test_once_steps_run_before_the_runs_that_read_them(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     plan = ok(
@@ -956,38 +946,43 @@ def test_a_once_step_read_only_by_a_once_step_an_early_run_reads_is_early(
     )
 
     assert laid_out(plan) == {
-        "early": [
-            ("selftest", None, ()),
-            ("warmup", None, ("selftest",)),
-            ("solution", ("r1",), ("warmup",)),
+        "grading": [
+            ("selftest", None),
+            ("warmup", None),
+            ("solution", ("r1", "r2")),
         ],
-        "late": [("solution", ("r2",), ())],
     }
 
 
 # Pipelines
 
 
-def test_a_batch_never_mixes_early_and_late_runs_nor_reads_a_late_runs_file(
+def test_a_grading_runs_the_runs_shown_during_the_contest_first(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    plan = ok(islands(primitives))
-    early = {run.id for run in plan.runs if run.early}
-    late_only = {"tests/3.in", "tests/3.ans", "tests/4.in", "tests/4.ans"}
+    """The hidden test comes first in the task, but the shown sample is
+    graded first (#649)."""
+    task = SELF_TESTED_TASK.replace("[samples/1.in, tests/2.in]", "[tests/2.in, samples/1.in]")
 
-    for step in plan.pipeline("early"):
-        assert set(step.runs or ()) <= early
-        assert not plan.files_read(step).task & late_only
-    for step in plan.pipeline("late"):
-        assert not set(step.runs or ()) & early
+    plan = ok(
+        planned(
+            primitives,
+            task,
+            SELF_TESTED,
+            {"workflow.yaml": SELF_TESTED.encode()},
+            frozenset({"task.yaml", "samples/1.in", "tests/2.in"}),
+        )
+    )
+
+    assert [(run.id, run.early) for run in plan.runs] == [("r1", False), ("r2", True)]
+    assert held(plan, "solution").runs == ("r2", "r1")
 
 
-def test_compiled_shown_now_with_no_early_run_is_refused_and_with_one_is_early(
+def test_compiled_shown_now_is_refused_nothing_with_or_without_a_shown_run(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    """The entrant's code compiles in solution, once for each batch of runs,
-    so `compiled` is known as soon as the early runs are graded, and with no
-    early run, only once the hidden runs have run."""
+    """The entrant's code compiles in solution, once before its runs, so
+    `compiled` is known whatever runs are shown (#656)."""
     alone = ISLANDS.replace(ISLANDS_ALWAYS, "    always:\n      values: [built]\n").replace(
         "  values:\n", "  values:\n    built: {fact: compiled}\n"
     )
@@ -995,19 +990,12 @@ def test_compiled_shown_now_with_no_early_run_is_refused_and_with_one_is_early(
         "values: [sample_score, sample_time]", "values: [built, sample_score, sample_time]"
     ).replace("  values:\n", "  values:\n    built: {fact: compiled}\n")
 
-    assert refused(islands(primitives, alone)) == {
-        "scoring.show.always.values[0]": [
-            "built cannot be shown as soon as a grading ends: it reads `compiled`, but "
-            "`solution`, which compiles the entrant's code, does so with the runs, and no run is "
-            "graded during the contest, so `compiled` is known only once the hidden runs have "
-            "run. Show built after_deadline instead."
-        ]
-    }
+    ok(islands(primitives, alone))
     plan = ok(islands(primitives, with_samples))
     assert laid_out(plan) == laid_out(ok(islands(primitives)))
 
 
-def test_nothing_shown_during_the_contest_is_one_late_pipeline(
+def test_nothing_shown_during_the_contest_is_one_grading_pipeline(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     text = ISLANDS.replace(
@@ -1019,8 +1007,8 @@ def test_nothing_shown_during_the_contest_is_one_late_pipeline(
 
     plan = ok(islands(primitives, text))
 
-    assert set(plan.pipelines) == {"save", "late"}
-    assert [step.name for step in plan.pipeline("late")] == ["solution", "compare"]
+    assert set(plan.pipelines) == {"save", "grading"}
+    assert [step.name for step in plan.pipeline("grading")] == ["solution", "compare"]
 
 
 def test_a_report_given_once_may_be_listed_and_one_given_for_each_run_is_refused(
@@ -1191,16 +1179,16 @@ def test_a_run_entry_of_first_not_passed_showing_the_input_still_hides_it(
     ]
 
 
-def test_a_hidden_grader_with_nothing_shown_during_the_contest_saves_as_one_late_pipeline(
+def test_a_hidden_grader_with_nothing_shown_during_the_contest_saves_as_one_pipeline(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     plan = ok(linked(primitives, LINKED_LATE))
 
     assert laid_out(plan) == {
-        "late": [
-            ("compile", None, ()),
-            ("run.r1", ("r1",), ("compile",)),
-            ("run.r2", ("r2",), ("compile",)),
+        "grading": [
+            ("compile", None),
+            ("run.r1", ("r1",)),
+            ("run.r2", ("r2",)),
         ]
     }
     assert plan.steps["compile"].tainted == {"beside": {"task": "grader/"}}
@@ -1246,7 +1234,6 @@ def test_after_release_is_noted_over_runs_with_their_own_hidden_input(
     plan = ok(islands(primitives, text))
 
     assert [run.id for run in plan.runs if run.early] == ["r1", "r2"]
-    assert held(plan, "solution").runs == ("r3", "r4")
     assert plan.notes == (
         "st1 reads runs whose own steps run the entrant's code beside what entrants are not "
         "shown during the contest, such as `solution` beside `tests/3.in` in the run r3, so "
@@ -1343,7 +1330,7 @@ def test_the_entrants_code_beside_a_workflow_file_is_tainted(
     assert all(item.tainted is None for item in (tour.steps["check"].items or {}).values())
 
 
-# What `compiled` shown during the contest needs
+# `compiled` shown during the contest
 
 
 BUILT_TASK = LINKED_TASK.replace(
@@ -1380,97 +1367,39 @@ def built(
     return planned(primitives, task, workflow, {"workflow.yaml": workflow.encode()}, LINKED_PATHS)
 
 
-def test_compiled_from_a_step_done_once_saying_its_compile_error_is_once_is_early(
+def test_compiled_from_a_step_done_once_saying_its_compile_error_is_once_reads_it(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     plan = ok(built({**primitives, "acme/linkc@v1": LINKC_ONCE}))
 
     assert laid_out(plan) == {
-        "early": [("compile", None, ())],
-        "late": [("run.r1", ("r1",), ()), ("run.r2", ("r2",), ())],
+        "grading": [("compile", None), ("run.r1", ("r1",)), ("run.r2", ("r2",))],
     }
     assert plan.steps["compile"].compiled is True
 
 
-def test_compiled_from_a_compile_beside_a_hidden_file_is_refused(
+def test_compiled_shown_during_the_contest_is_refused_nothing(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    """Unlike exec@v4, whose compile box sees only the source, a primitive
-    may compile the entrant's code beside the hidden grader, so its compile
-    error could tell of it: `compiled` reads it neither during the contest
-    nor after."""
+    """Showing `compiled` is the organiser's choice (#656), whether a step
+    compiles beside the hidden grader, no step says its compile error is the
+    same for every item, or it is shown by its name or only after a release.
+    A compile beside the hidden grader is not what `compiled` reads, since
+    its compile error could tell of it."""
     once = {**primitives, "acme/linkc@v1": LINKC_ONCE}
-    task = BUILT_TASK.replace("      inputs: [grader]\n", "")
-    later = BUILT_TASK.replace("      values: [built]\n", "").replace(
-        "      inputs: [grader]\n", ""
-    )
-
-    assert refused(built(once, task)) == {
-        "scoring.show.always.values[0]": [
-            "built cannot be shown as soon as a grading ends: it reads `compiled`, from "
-            "`compile`, which runs the entrant's code beside `grader/`, which entrants are not "
-            "shown during the contest, so built could tell them about it. Show built "
-            "after_deadline instead."
-        ]
-    }
-    assert ok(built(once, later)).steps["compile"].compiled is None
-
-
-def test_compiled_with_no_step_saying_its_compile_error_is_once_is_refused(
-    primitives: dict[str, PrimitiveDeclaration],
-) -> None:
-    """A compile error a step's declaration does not say is the same for
-    every item is not what `compiled` reads, though the step is done once."""
-    for workflow in (LINKC_FLOW, LINKED):
-        assert refused(built(primitives, BUILT_TASK, workflow)) == {
-            "scoring.show.always.values[0]": [
-                "built cannot be shown as soon as a grading ends: it reads `compiled`, but no "
-                "step compiles the entrant's code, so `compiled` is known only once the whole "
-                "grading ends, its hidden runs too. Show built after_deadline instead."
-            ]
-        }
-
-
-def test_compiled_under_after_release_is_refused_as_if_shown(
-    primitives: dict[str, PrimitiveDeclaration],
-) -> None:
-    text = ISLANDS.replace(ISLANDS_ALWAYS, "    after_release:\n      values: [built]\n").replace(
-        "  values:\n", "  values:\n    built: {fact: compiled}\n"
-    )
-
-    problems = refused(islands(primitives, text))
-
-    assert list(problems) == ["scoring.show.after_release.values[0]"]
-    assert (
-        "`solution`, which compiles the entrant's code, does so with the runs, and no run is "
-        "graded during the contest" in problems["scoring.show.after_release.values[0]"][0]
-    )
-
-
-def test_compiled_shown_by_its_name_is_refused_as_a_value_reading_it_is(
-    primitives: dict[str, PrimitiveDeclaration],
-) -> None:
+    beside = BUILT_TASK.replace("      inputs: [grader]\n", "")
+    named = BUILT_TASK.replace("      values: [built]\n", "      outputs: [compiled]\n")
+    released = ISLANDS.replace(
+        ISLANDS_ALWAYS, "    after_release:\n      values: [built]\n"
+    ).replace("  values:\n", "  values:\n    built: {fact: compiled}\n")
     alone = ISLANDS.replace(ISLANDS_ALWAYS, "    always:\n      outputs: [compiled]\n")
-    listed = "      values: [sample_score, sample_time]\n"
-    with_samples = ISLANDS.replace(listed, listed + "      outputs: [compiled]\n")
 
-    assert refused(islands(primitives, alone)) == {
-        "scoring.show.always.outputs[0]": [
-            "compiled cannot be shown as soon as a grading ends: `solution`, which compiles the "
-            "entrant's code, does so with the runs, and no run is graded during the contest, so "
-            "`compiled` is known only once the hidden runs have run. Show compiled "
-            "after_deadline instead."
-        ]
-    }
-    assert laid_out(ok(islands(primitives, with_samples))) == laid_out(ok(islands(primitives)))
-    shown = BUILT_TASK.replace("      values: [built]\n", "      outputs: [compiled]\n")
-    assert refused(built(primitives, shown, LINKED)) == {
-        "scoring.show.always.outputs[0]": [
-            "compiled cannot be shown as soon as a grading ends: no step compiles the entrant's "
-            "code, so `compiled` is known only once the whole grading ends, its hidden runs too. "
-            "Show compiled after_deadline instead."
-        ]
-    }
+    assert ok(built(once, beside)).steps["compile"].compiled is None
+    for workflow in (LINKC_FLOW, LINKED):
+        assert ok(built(primitives, BUILT_TASK, workflow)).steps["compile"].compiled is None
+    assert ok(built(primitives, named, LINKED)).steps["compile"].compiled is None
+    for text in (released, alone):
+        assert ok(islands(primitives, text)).steps["solution"].compiled is True
 
 
 PER_LANGUAGE = """\
@@ -1509,25 +1438,20 @@ scoring:
 """
 
 
-def test_compiled_from_a_compile_done_per_run_is_refused(
+def test_compiled_from_a_compile_done_per_run_is_refused_nothing(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    found = planned(
-        primitives,
-        PER_LANGUAGE_TASK,
-        PER_LANGUAGE,
-        {"workflow.yaml": PER_LANGUAGE.encode()},
-        frozenset({"task.yaml", "samples/1.in", "tests/2.in"}),
+    plan = ok(
+        planned(
+            primitives,
+            PER_LANGUAGE_TASK,
+            PER_LANGUAGE,
+            {"workflow.yaml": PER_LANGUAGE.encode()},
+            frozenset({"task.yaml", "samples/1.in", "tests/2.in"}),
+        )
     )
 
-    assert refused(found) == {
-        "scoring.show.always.values[0]": [
-            "built cannot be shown as soon as a grading ends: it reads `compiled`, but "
-            "`compile`, which can give a compile error, runs once per run, so `compiled` is "
-            "known only once every run has run, the hidden ones too. Show built after_deadline "
-            "instead."
-        ]
-    }
+    assert plan.steps["compile"].compiled is None
 
 
 # What a pipeline may take
@@ -1591,24 +1515,24 @@ def test_a_pipeline_over_the_wall_is_refused_at_what_raises_its_longest_step(
     # which raises a shorter step, is not where to look.
     assert refused(found) == {
         "inputs.time_limit": [
-            "The steps of a grading's late pipeline take 30 minutes, but a pipeline may take at "
-            "most 25. The longest, solution, takes 28."
+            "The steps of a grading take 30 minutes, but a pipeline may take at most 25. The "
+            "longest, solution, takes 28."
         ]
     }
 
 
-def test_the_wall_is_checked_per_pipeline(primitives: dict[str, PrimitiveDeclaration]) -> None:
-    within = ok(islands(primitives, ISLANDS.replace("time_limit: 2", "time_limit: 300")))
-    over = refused(islands(primitives, ISLANDS.replace("time_limit: 2", "time_limit: 400")))
+def test_the_wall_is_checked_over_every_run_of_the_grading(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    within = ok(islands(primitives, ISLANDS.replace("time_limit: 2", "time_limit: 150")))
+    over = refused(islands(primitives, ISLANDS.replace("time_limit: 2", "time_limit: 200")))
 
-    # Each grading pipeline holds two runs of 300 s and a compile, within
-    # the wall, though all four runs together would not be.
-    assert held(within, "solution").limits.time_ms == 2 * (300 * 2000 + 3000) + 40000
+    # The grading holds all four runs of 150 s and a compile, within the
+    # wall; at 200 s the samples' two runs alone would be within it, but the
+    # grading is not.
+    assert held(within, "solution").limits.time_ms == 4 * (150 * 2000 + 3000) + 40000
     assert [message.split(".")[0] for message in over["inputs.time_limit"]] == [
-        "The steps of a grading's early pipeline take 30 minutes, but a pipeline may take at "
-        "most 25",
-        "The steps of a grading's late pipeline take 30 minutes, but a pipeline may take at "
-        "most 25",
+        "The steps of a grading take 31 minutes, but a pipeline may take at most 25",
     ]
 
 
@@ -1700,80 +1624,47 @@ def side_by_side_plan(
     )
 
 
-def test_steps_side_by_side_are_chained_to_fit_the_smallest_slot(
+def test_a_workflows_steps_are_listed_in_plan_order_and_none_waits_for_another(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    """Three boxed steps of 3288 MB each and a slot of 8192: the first two
-    run side by side and the third waits for both; the compile and each
-    run of the judge, which run no boxes, run beside nothing."""
+    """#630: three boxed steps of 3288 MB each run one after another in
+    the workflow's order, after the compile and before each run of the
+    judge, so a slot of 8192 holds them, the largest of them alone."""
     plan = ok(side_by_side_plan(primitives))
-    late = plan.pipeline("late")
+    grading = plan.pipeline("grading")
 
-    assert [step.limits.memory_mb for step in late[1:4]] == [3288, 3288, 3288]
+    assert [step.limits.memory_mb for step in grading[1:4]] == [3288, 3288, 3288]
     assert laid_out(plan) == {
-        "late": [
-            ("compile", None, ()),
-            ("first", ("r1", "r2"), ("compile",)),
-            ("second", ("r1", "r2"), ("compile",)),
-            ("third", ("r1", "r2"), ("first", "second")),
-            ("judge.r1", ("r1",), ("compile", "third")),
-            ("judge.r2", ("r2",), ("compile", "judge.r1")),
+        "grading": [
+            ("compile", None),
+            ("first", ("r1", "r2")),
+            ("second", ("r1", "r2")),
+            ("third", ("r1", "r2")),
+            ("judge.r1", ("r1",)),
+            ("judge.r2", ("r2",)),
         ]
     }
-    assert side_by_side(late) == 6576
-    assert slot_of(late, SLOTS.slots) == Slot("small", 2, 8192)
+    assert "depends_on" not in grading[0].model_dump()
+    assert slot_of(grading, SLOTS.slots) == Slot("small", 2, 8192)
 
 
 def test_a_step_too_big_for_the_small_slot_runs_its_pipeline_in_the_big_one(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    """The big slot holds all three boxed steps at once, so they wait for
-    nothing but the compile, and the judge's first run waits for all
-    three."""
+    """#630: one step too big for the small slot sends the whole pipeline
+    to the big one, the order staying the same."""
     plan = ok(side_by_side_plan(primitives, memory=20000))
-    late = plan.pipeline("late")
+    grading = plan.pipeline("grading")
 
-    assert [(step.name, step.depends_on) for step in late[1:5]] == [
-        ("first", ("compile",)),
-        ("second", ("compile",)),
-        ("third", ("compile",)),
-        ("judge.r1", ("compile", "first", "second", "third")),
+    assert [step.name for step in grading] == [
+        "compile",
+        "first",
+        "second",
+        "third",
+        "judge.r1",
+        "judge.r2",
     ]
-    assert side_by_side(late) == 20288 + 3288 + 3288
-    assert slot_of(late, SLOTS.slots) == Slot("big", 4, 28672)
-
-
-def test_a_stage_runs_no_more_boxes_than_its_slot_has_cores(
-    primitives: dict[str, PrimitiveDeclaration],
-) -> None:
-    """A slot of one core holds the memory of two boxed steps, but runs one
-    box at a time: each boxed step waits for the one before it."""
-    plan = ok(side_by_side_plan(primitives, machine=run_machine([Slot("small", 1, 8192)])))
-    late = plan.pipeline("late")
-
-    assert [(step.name, step.depends_on) for step in late[1:4]] == [
-        ("first", ("compile",)),
-        ("second", ("first",)),
-        ("third", ("second",)),
-    ]
-    assert side_by_side(late) == 3288
-
-
-def test_without_slots_a_pipeline_is_laid_out_as_wired(
-    primitives: dict[str, PrimitiveDeclaration],
-) -> None:
-    plan = ok(
-        planned(
-            primitives,
-            SIDE_BY_SIDE_TASK,
-            SIDE_BY_SIDE,
-            {"workflow.yaml": SIDE_BY_SIDE.encode()},
-            frozenset({"task.yaml", "tests/1.in", "tests/2.in"}),
-        )
-    )
-
-    assert all(step.depends_on in ((), ("compile",)) for step in plan.pipeline("late"))
-    assert [step.depends_on for step in plan.pipeline("late")][1:4] == [(), (), ()]
+    assert slot_of(grading, SLOTS.slots) == Slot("big", 4, 28672)
 
 
 def test_a_step_bigger_than_the_biggest_slot_is_refused(
@@ -1800,24 +1691,20 @@ def test_a_step_bigger_than_the_biggest_slot_is_refused(
     ]
 
 
-def _step(name: str, memory: int, *waits: str) -> PipelineStep:
+def _step(name: str, memory: int) -> PipelineStep:
     limits = StepLimits(time_ms=1000, cpu_ms=1000, memory_mb=memory, pids=64, output_mb=1, gpus=0)
-    return PipelineStep(name=name, step=name, depends_on=waits, limits=limits)
+    return PipelineStep(name=name, step=name, limits=limits)
 
 
-def test_side_by_side_counts_each_step_with_every_one_it_is_not_ordered_with() -> None:
-    """a and b run together and c after both: at most c alone. d, ordered
-    with none, is counted beside all three, more than can run at once,
-    which the stages the planner makes never leave."""
-    steps = [_step("a", 100), _step("b", 200), _step("c", 400, "a", "b"), _step("d", 50)]
+def test_a_pipelines_slot_is_the_smallest_holding_its_largest_step() -> None:
+    """#630: the steps run one after another, so a slot need hold only the
+    largest of them, not what they add up to."""
+    steps = [_step("a", 100), _step("b", 400), _step("c", 200)]
 
-    assert side_by_side(steps[:3]) == 400
-    assert side_by_side(steps) == 750
-    assert side_by_side([]) == 0
-    assert slot_of(steps[:3], [Slot("tiny", 1, 399), Slot("small", 1, 400)]) == Slot(
-        "small", 1, 400
+    assert slot_of(steps, [Slot("tiny", 1, 399), Slot("small", 1, 400), Slot("big", 2, 800)]) == (
+        Slot("small", 1, 400)
     )
-    assert slot_of(steps[:3], [Slot("tiny", 1, 399)]) is None
+    assert slot_of(steps, [Slot("tiny", 1, 399)]) is None
 
 
 # The schema's versions
@@ -1860,7 +1747,7 @@ def test_a_save_says_what_its_plan_changed(primitives: dict[str, PrimitiveDeclar
         "The inputs of the step solution changed.",
     )
     assert run_plan_changes(_snapshot(before), _snapshot(shown)) == (
-        "What is shown during the contest moved, so other runs are graded early.",
+        "What is shown during the contest moved, so other runs are graded first.",
     )
     assert run_plan_changes(
         _snapshot(before, {"tests/3.in": "a"}), _snapshot(before, {"tests/3.in": "b"})
@@ -1876,38 +1763,16 @@ def test_a_save_says_what_its_plan_changed(primitives: dict[str, PrimitiveDeclar
     )
 
 
-def test_a_save_says_which_steps_a_submission_runs_again(
+def test_a_save_says_a_submission_runs_every_graded_step_again(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
+    # #625: nothing is reused, so a regrade runs every step of the grading
+    # whatever changed; the build at the save is not one.
     before = ok(islands(primitives))
     longer = ok(islands(primitives, ISLANDS.replace("time_limit: 2", "time_limit: 3")))
-    shown = ok(
-        islands(
-            primitives,
-            ISLANDS.replace("values: [st1, st2, total]", "values: [st2, total]").replace(
-                "values: [sample_score,", "values: [st1, sample_score,"
-            ),
-        )
-    )
-    other = FileFact(size=1, sha256="d" * 64)
-    answer = before.model_copy(update={"task_files": {**before.task_files, "tests/3.ans": other}})
-    script = before.model_copy(
-        update={
-            "workflow": before.workflow.model_copy(
-                update={"files": {**before.workflow.files, "diff/diff.py": other}}
-            )
-        }
-    )
 
     assert steps_run_again(None, _snapshot(before)) == ()
-    assert steps_run_again(_snapshot(before), _snapshot(before)) == ()
-    # Its output read by compare, the solution runs both again.
     assert steps_run_again(_snapshot(before), _snapshot(longer)) == ("solution", "compare")
-    # Runs moved between the pipelines keep every key.
-    assert steps_run_again(_snapshot(before), _snapshot(shown)) == ()
-    assert steps_run_again(_snapshot(before), _snapshot(answer)) == ("compare",)
-    # The checker is compiled at the save; each submission runs only compare.
-    assert steps_run_again(_snapshot(before), _snapshot(script)) == ("compare",)
     assert steps_run_again(Snapshot(plans={}, data={}), _snapshot(before)) == (
         "solution",
         "compare",
@@ -1940,10 +1805,10 @@ def test_the_plan_holds_the_split_a_grading_takes_while_results_are_released(
     assert [run.early for run in released.runs] == [True, True, True, True]
     assert released.released is None
     assert laid_out(released) == {
-        "save": [("build-compare", None, ())],
-        "early": [
-            ("solution", ("r1", "r2", "r3", "r4"), ()),
-            ("compare", ("r1", "r2", "r3", "r4"), ("solution",)),
+        "save": [("build-compare", None)],
+        "grading": [
+            ("solution", ("r1", "r2", "r3", "r4")),
+            ("compare", ("r1", "r2", "r3", "r4")),
         ],
     }
     assert RunPlan.from_bytes(plan.to_bytes()) == plan
@@ -1966,7 +1831,7 @@ def test_a_save_says_when_what_a_release_shows_moved(
 
     assert run_plan_changes(_snapshot(before), _snapshot(after)) == (
         "What a release shows moved, so a grading made while results are released runs other "
-        "runs early.",
+        "runs first.",
     )
     assert run_plan_changes(_snapshot(after), _snapshot(after)) == ()
 
@@ -1983,17 +1848,16 @@ def mean(primitives: Mapping[str, PrimitiveDeclaration], task: str = MEAN) -> Ru
     )
 
 
-def test_a_values_program_compiles_at_the_save_and_runs_late_after_its_groups_runs(
+def test_a_values_program_compiles_at_the_save_and_runs_after_the_workflows_steps(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     plan = ok(mean(primitives))
 
     assert laid_out(plan)["save"] == [
-        ("build-compare", None, ()),
-        ("build-mean", None, ("build-compare",)),
+        ("build-compare", None),
+        ("build-mean", None),
     ]
-    assert laid_out(plan)["late"][-1] == ("exec-mean", None, ("compare",))
-    assert "exec-mean" not in [step.name for step in plan.pipeline("early")]
+    assert laid_out(plan)["grading"][-1] == ("exec-mean", None)
     built, ran = plan.steps["build-mean"], plan.steps["exec-mean"]
     assert (built.class_, built.primitive, built.folders, built.boxes) == (
         "save_once",
@@ -2032,7 +1896,7 @@ def test_a_values_program_compiles_at_the_save_and_runs_late_after_its_groups_ru
     assert held(plan, "exec-mean").limits.time_ms == 2 * 2000 + 3000 + 40000
 
 
-def test_a_values_program_runs_early_when_its_value_is_shown_during_the_contest(
+def test_a_values_program_runs_last_when_its_value_is_shown_during_the_contest(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     shown = MEAN.replace(
@@ -2041,11 +1905,10 @@ def test_a_values_program_runs_early_when_its_value_is_shown_during_the_contest(
 
     plan = ok(mean(primitives, shown))
 
-    assert laid_out(plan)["early"][-1] == ("exec-mean", None, ("compare",))
-    assert "late" not in plan.pipelines
+    assert laid_out(plan)["grading"][-1] == ("exec-mean", None)
 
 
-def test_a_values_program_under_after_release_runs_early_only_once_released(
+def test_a_values_program_under_after_release_runs_last_once_released_too(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     released = MEAN.replace(
@@ -2054,9 +1917,9 @@ def test_a_values_program_under_after_release_runs_early_only_once_released(
 
     plan = ok(mean(primitives, released))
 
-    assert laid_out(plan)["late"][-1][0] == "exec-mean"
+    assert laid_out(plan)["grading"][-1][0] == "exec-mean"
     assert plan.released is not None
-    assert plan.released.pipelines["early"][-1].name == "exec-mean"
+    assert plan.released.grading[-1].name == "exec-mean"
 
 
 def test_a_workflow_step_named_as_a_values_program_step_is_refused(
@@ -2121,13 +1984,10 @@ def test_each_check_is_graded_at_the_save_by_copies_of_the_graded_steps(
     # The diff script is built once for the publication and the checks; each
     # check's copy of solution compiles the check's code with its runs.
     assert laid_out(plan)["save"] == [
-        ("build-compare", None, ()),
-        *[
-            (name, every, (before,))
-            for name, before in zip(copies, ["build-compare", *copies[:-1]], strict=True)
-        ],
+        ("build-compare", None),
+        *[(name, every) for name in copies],
     ]
-    assert laid_out(plan)["early"] == laid_out(ok(islands(primitives)))["early"]
+    assert laid_out(plan)["grading"] == laid_out(ok(islands(primitives)))["grading"]
     assert {name: plan.steps[name].class_ for name in copies[:2]} == {
         "c1-solution": "save_per_run",
         "c1-compare": "save_per_run",
@@ -2180,8 +2040,6 @@ def test_a_file_only_a_check_reads_is_copied_but_never_a_grading_change(
     assert plan.task_paths() == plain.task_paths()
     assert run_plan_changes(_snapshot(plain), _snapshot(plan)) == ()
     assert run_plan_changes(_snapshot(plan), _snapshot(fewer)) == ()
-    assert steps_run_again(_snapshot(plain), _snapshot(plan)) == ()
-    assert steps_run_again(_snapshot(plan), _snapshot(fewer)) == ()
 
 
 def test_a_check_giving_more_than_the_entrant_may_is_refused(

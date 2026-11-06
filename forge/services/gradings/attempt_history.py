@@ -1,6 +1,5 @@
 import uuid
 from collections.abc import Collection, Iterable, Sequence
-from typing import cast
 
 from sqlalchemy import func, select
 
@@ -8,7 +7,7 @@ from forge.db.tables import Grading
 from forge.domain.grading import GradingStatus
 from forge.domain.ids import PublicationId, TaskId, WorkspaceId
 from forge.runtime.context import Context
-from forge.services.gradings.records import GradingRecord, Listed
+from forge.services.gradings.records import GradingRecord
 from forge.services.gradings.row_state import HAS_RESULT, has_result, overdue_of
 from forge.services.gradings.starting import new_row
 
@@ -54,8 +53,6 @@ def record(
         limit=row.submission_limit if status is GradingStatus.OVER_LIMIT else None,
         retry_limit=retry_limit if latest else None,
         regrade=row.regrade_id,
-        pipeline=cast(Listed, row.pipeline),
-        early=row.early_id,
     )
 
 
@@ -114,7 +111,6 @@ def _next_attempt(
     regrade: uuid.UUID | None = None,
     over_limit: int | None = None,
     released_split: bool | None = None,
-    from_scratch: bool = False,
 ) -> Grading:
     """The next attempt on `row`'s line against `publication`, in the
     regrade `regrade` when given and otherwise in the one `row` belongs to,
@@ -138,7 +134,6 @@ def _next_attempt(
         regrade=regrade or row.regrade_id,
         over_limit=over_limit,
         pipeline=row.pipeline,
-        early=row.early_id,
         released_split=row.released_split if released_split is None else released_split,
-        from_scratch=from_scratch,
+        restarts=row.run_id,
     )

@@ -87,41 +87,10 @@ def cache_problems(checked: RunWorkflowCheck) -> list[Problem]:
     ]
 
 
-def side_by_side(steps: Sequence[PipelineStep]) -> int:
-    """The most memory, in MB, the Woodpecker steps of one pipeline can use
-    at once, at most: for each step, its own and that of every step it
-    neither waits for nor is waited for by, through `depends_on`, and the
-    largest of those. Each step waits only for steps before it.
-    """
-    place = {step.name: number for number, step in enumerate(steps)}
-    before: list[int] = []
-    for step in steps:
-        mask = 0
-        for name in step.depends_on:
-            if name in place:
-                mask |= before[place[name]] | 1 << place[name]
-        before.append(mask)
-    after = [0] * len(steps)
-    for number in reversed(range(len(steps))):
-        for name in steps[number].depends_on:
-            if name in place:
-                after[place[name]] |= after[number] | 1 << number
-    by_memory: dict[int, int] = {}
-    for number, step in enumerate(steps):
-        by_memory[step.limits.memory_mb] = by_memory.get(step.limits.memory_mb, 0) | 1 << number
-    everyone = (1 << len(steps)) - 1
-    most = 0
-    for number, step in enumerate(steps):
-        apart = everyone & ~(before[number] | after[number] | 1 << number)
-        beside = sum(memory * (apart & mask).bit_count() for memory, mask in by_memory.items())
-        most = max(most, step.limits.memory_mb + beside)
-    return most
-
-
 def slot_of(steps: Sequence[PipelineStep], slots: Iterable[Slot]) -> Slot | None:
-    """The smallest slot that holds the most the steps can use at once,
-    none when no slot does."""
-    needed = side_by_side(steps)
+    """The smallest slot that holds the largest of the steps, which run one
+    after another (#630), none when no slot does."""
+    needed = max((step.limits.memory_mb for step in steps), default=0)
     return min(
         (slot for slot in slots if slot.memory_mb >= needed),
         key=lambda slot: slot.memory_mb,

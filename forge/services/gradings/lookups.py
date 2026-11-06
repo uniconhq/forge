@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import select
 
 from forge.db.tables import Grading
-from forge.db.tables.gradings import EARLY, SAVE
+from forge.db.tables.gradings import SAVE
 from forge.domain.errors import NotFound
 from forge.domain.grading import GradingStatus
 from forge.domain.ids import OrgId, TaskId, WorkspaceId
@@ -62,13 +62,12 @@ def changed(ctx: Context, row: Grading) -> None:
     organisers who observe its task. Every write of a grading's status
     calls this, which is what moves a contestant's submissions while they
     watch; a grading is the platform's own and no push from the forge will
-    ever name one. Every move of a late or save row goes to the organisers
-    alone, since no entrant is told of one (11.8), but for a late row's end
-    once its task has revealed (`told_late`).
+    ever name one. Every move of a save row goes to the organisers alone,
+    since it grades no entrant's submission.
     """
     owner = (
         None
-        if row.pipeline != EARLY
+        if row.pipeline == SAVE
         else ctx.forge.workspaces.owner_of(WorkspaceId(row.workspace_id))
     )
     ctx.nudge(
@@ -77,28 +76,6 @@ def changed(ctx: Context, row: Grading) -> None:
             str(row.id),
             entrant=str(owner.entrant_id) if owner is not None else None,
             scope=task_scope(TaskId(row.task_id)),
-        )
-    )
-
-
-def told_late(ctx: Context, late: Grading) -> None:
-    """Nudge the members of the entrant whose submission a late row grades
-    that their grading moved, by its early row, the grading they know, once
-    the unit of work commits. Only once the task has revealed, or while
-    its results are released for a grading made before the release, which
-    the caller checks: their result then reads the late row
-    (`submissions`), and otherwise no entrant hears of one (`changed`). A
-    grading made while released ran what a release shows early, so its
-    late row's end shows nothing new, and a nudge would only tell when the
-    hidden runs ended (stage 5 section 6 item 37).
-    """
-    owner = ctx.forge.workspaces.owner_of(WorkspaceId(late.workspace_id))
-    ctx.nudge(
-        Nudge(
-            NudgeKind.GRADING,
-            str(late.early_id),
-            entrant=str(owner.entrant_id),
-            scope=task_scope(TaskId(late.task_id)),
         )
     )
 

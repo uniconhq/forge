@@ -57,7 +57,6 @@ TABLES = {
     "grading_steps",
     "step_outputs",
     "publication_objects",
-    "grading_reuses",
     "releases",
     "entries",
     "hold_ends",
@@ -281,19 +280,20 @@ def test_a_submission_has_one_grading_per_attempt(migrated_database_url: str) ->
     engine.dispose()
 
 
-def test_each_pipeline_of_a_submission_counts_its_own_attempts_and_only_a_save_has_none(
+def test_a_grading_row_is_a_submissions_and_only_a_save_has_none(
     migrated_database_url: str,
 ) -> None:
     engine = create_engine(migrated_database_url)
     with engine.begin() as connection:
         _grading(connection, "done", None, None, 1, stage=None)
-        _row(connection, pipeline="'late'", **SUBMISSION)
         _row(connection, pipeline="'save'")
     for given in (
-        {"pipeline": "'late'", **SUBMISSION},
+        {"pipeline": "'grading'", **SUBMISSION},
+        {"pipeline": "'grading'"},
         {"pipeline": "'save'"},
-        {"pipeline": "'early'"},
         {"pipeline": "'save'", **SUBMISSION},
+        {"pipeline": "'early'", **SUBMISSION, "submission_number": "2"},
+        {"pipeline": "'late'", **SUBMISSION, "submission_number": "2"},
     ):
         with pytest.raises(IntegrityError), engine.begin() as connection:
             _row(connection, **given)
@@ -321,6 +321,7 @@ def test_going_back_from_pipelines_deletes_what_was_a_late_or_save_rows(
 ) -> None:
     early, save = "'00000000-0000-0000-0000-000000000001'", "'00000000-0000-0000-0000-000000000002'"
     made, kept = "'00000000-0000-0000-0000-0000000000a1'", "'00000000-0000-0000-0000-0000000000a2'"
+    command.downgrade(alembic_config(migrated_database_url), "0035")
     engine = create_engine(migrated_database_url)
     with engine.begin() as connection:
         _row(connection, id=early, **SUBMISSION)
@@ -1031,7 +1032,7 @@ def test_submission_reuse_migration_copies_another_submissions_pinned_measuremen
             ),
             {"grading": second, "output": output},
         )
-    command.upgrade(config, "head")
+    command.upgrade(config, "0035")
     with engine.connect() as connection:
         rows = connection.execute(
             text(
@@ -1054,3 +1055,114 @@ def test_submission_reuse_migration_copies_another_submissions_pinned_measuremen
             == output
         )
     engine.dispose()
+
+
+def test_no_reuse_keeps_each_output_and_drops_the_keys_and_the_pins(
+    migrated_database_url: str,
+) -> None:
+    # #625: what a step did stays its grading's, and nothing is left to
+    # reuse it by.
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0035")
+    engine = create_engine(migrated_database_url)
+    grading = "00000000-0000-0000-0000-000000000001"
+    output = "00000000-0000-0000-0000-000000000003"
+    with engine.begin() as connection:
+        _row(connection, id=f"'{grading}'", **SUBMISSION)
+        connection.execute(
+            text("""
+            INSERT INTO step_outputs
+              (id, org_id, submission_id, key, pipeline, reusable, grading_id, step,
+               outputs, files, measured_at)
+            VALUES (:id, 'acme', 'acme/spring/@u7/sum#1', 'k', 'early', true, :grading,
+                    'solution', '{"time_ms": "17"}', '{}', now())
+        """),
+            {"id": output, "grading": grading},
+        )
+    command.upgrade(config, "head")
+    found = inspect(engine)
+    columns = {column["name"] for column in found.get_columns("step_outputs")}
+    tables = set(found.get_table_names())
+    with engine.connect() as connection:
+        kept = connection.execute(text("SELECT id::text, outputs FROM step_outputs")).all()
+    engine.dispose()
+    assert kept == [(output, {"time_ms": "17"})]
+    assert not columns & {"org_id", "submission_id", "key", "reusable"}
+    assert "grading_reuses" not in tables
+
+
+def test_a_grading_keeps_one_output_per_item(migrated_database_url: str) -> None:
+    # #625: a second output for the same step and run of a grading is
+    # refused, a step done once, with no run, among them.
+    engine = create_engine(migrated_database_url)
+    grading = "00000000-0000-0000-0000-000000000001"
+    insert = text("""
+        INSERT INTO step_outputs (id, pipeline, grading_id, step, run, outputs, files, measured_at)
+        VALUES (gen_random_uuid(), 'grading', :grading, :step, :run, '{}', '{}', now())
+    """)
+    with engine.begin() as connection:
+        _row(connection, id=f"'{grading}'", **SUBMISSION)
+        for step, run in (("solution", "r1"), ("solution", "r2"), ("compile", None)):
+            connection.execute(insert, {"grading": grading, "step": step, "run": run})
+    for step, run in (("solution", "r1"), ("compile", None)):
+        with pytest.raises(IntegrityError), engine.begin() as connection:
+            connection.execute(insert, {"grading": grading, "step": step, "run": run})
+    engine.dispose()
+
+
+def test_one_row_per_grading_keeps_each_early_row_as_its_gradings_and_drops_each_late_one(
+    migrated_database_url: str,
+) -> None:
+    # #647: a late row goes with its steps and their outputs; going back
+    # makes each grading's row an early row again.
+    config = alembic_config(migrated_database_url)
+    command.downgrade(config, "0037")
+    engine = create_engine(migrated_database_url)
+    early = "00000000-0000-0000-0000-000000000001"
+    late = "00000000-0000-0000-0000-000000000002"
+    with engine.begin() as connection:
+        _row(connection, id=f"'{early}'", **SUBMISSION)
+        _row(connection, id=f"'{late}'", pipeline="'late'", early_id=f"'{early}'", **SUBMISSION)
+        for grading, pipeline in ((early, "early"), (late, "late")):
+            given = {"grading": grading, "pipeline": pipeline}
+            connection.execute(
+                text(
+                    "INSERT INTO grading_steps (grading_id, step, pipeline, token_hash, "
+                    "expires_at) VALUES (:grading, 'solution', :pipeline, '\\x00', now())"
+                ),
+                given,
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO step_outputs (id, pipeline, grading_id, step, run, outputs, "
+                    "files, measured_at) VALUES (gen_random_uuid(), :pipeline, :grading, "
+                    "'solution', 'r1', '{}', '{}', now())"
+                ),
+                given,
+            )
+
+    def rows() -> dict[str, list[tuple[str, str]]]:
+        with engine.connect() as connection:
+            return {
+                table: [
+                    (row[0], row[1])
+                    for row in connection.execute(text(f"SELECT {column}, pipeline FROM {table}"))
+                ]
+                for table, column in (
+                    ("gradings", "id::text"),
+                    ("grading_steps", "grading_id::text"),
+                    ("step_outputs", "grading_id::text"),
+                )
+            }
+
+    command.upgrade(config, "0038")
+    assert rows() == {
+        table: [(early, "grading")] for table in ("gradings", "grading_steps", "step_outputs")
+    }
+    assert "early_id" not in {column["name"] for column in inspect(engine).get_columns("gradings")}
+    command.downgrade(config, "0037")
+    assert rows() == {
+        table: [(early, "early")] for table in ("gradings", "grading_steps", "step_outputs")
+    }
+    engine.dispose()
+    upgrade_to_head(migrated_database_url)

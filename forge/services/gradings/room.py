@@ -4,7 +4,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from sqlalchemy import select
 
 from forge.db.tables import Grading
-from forge.db.tables.gradings import EARLY, FRONT
+from forge.db.tables.gradings import FRONT, GRADING
 from forge.domain.grading import UNFINISHED, GradingStatus, Place, room
 from forge.domain.ids import TaskId
 from forge.runtime.context import Context
@@ -71,11 +71,11 @@ async def _over_limit(
     """The task's `submissions.max` when grading `row`'s submission again now,
     `attempts` being all of its attempts, would end it over the limit: it
     waits for room (`waits_for_room`) and its entrant has none left for it
-    (`room`); none otherwise, and always for a task's late row, which
-    holds no place of its own. Read under the task's hold, so no submit or
+    (`room`); none otherwise, and always for a save row, which holds no
+    place. Read under the task's hold, so no submit or
     other retry takes a place meanwhile.
     """
-    if row.pipeline != EARLY or not waits_for_room(ctx, attempts, lost):
+    if row.pipeline != GRADING or not waits_for_room(ctx, attempts, lost):
         return None
     limit = await task_limit(ctx, TaskId(row.task_id))
     if limit is None:
@@ -94,7 +94,7 @@ async def retry_limits(
     """
     waiting: dict[tuple[str, str], list[Grading]] = {}
     for row in rows:
-        if row.pipeline == EARLY and GradingStatus(row.status) is not GradingStatus.DONE:
+        if row.pipeline == GRADING and GradingStatus(row.status) is not GradingStatus.DONE:
             waiting.setdefault((row.task_id, row.workspace_id), []).append(row)
     if not waiting:
         return {}

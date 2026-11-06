@@ -13,7 +13,8 @@ creation time, a newline and the body, and `X-Fake-Created` that time; a
 request whose signature is wrong, or made more than five minutes from now,
 is refused like one the CI did not sign. `refuse_starts` makes that many
 starts answer without a run, as the real CI does when the platform's
-extension refuses to say what the run is, and `lose_start_answer` starts
+extension refuses to say what the run is, `refuse_restarts` refuses that
+many restarts, and `lose_start_answer` starts
 the next run and then fails as if its answer were lost. A CI credential in
 `revoked_ci_tokens` is refused, as the CI refuses one it no longer holds,
 and a pipeline of a dispatch repository not in `activated` is not found,
@@ -81,6 +82,7 @@ class StartedRun:
     at: datetime
     cancelled: bool = False
     ci_state: RunState = RunState.QUEUED
+    parent: RunId | None = None
 
 
 class FakeCi:
@@ -99,6 +101,7 @@ class FakeCi:
         self.runs: dict[RunId, StartedRun] = {}
         self.ci_key = secrets.token_bytes(32)
         self.refuse_starts = 0
+        self.refuse_restarts = 0
         self.lose_start_answer = False
         self.agents: dict[AgentId, tuple[str | None, str, str]] = {}
         self.ci_users: dict[str, int] = {}
@@ -124,7 +127,6 @@ def pipeline_variables(run: PipelineRun) -> dict[str, str]:
     """The variables the fake CI starts a task's pipeline with."""
     variables = {
         GRADING_VARIABLE: str(run.grading),
-        "UNICON_PIPELINE": run.pipeline,
         "UNICON_PUBLICATION_COMMIT": str(run.publication_version),
         "UNICON_COMPUTE": run.compute,
     }
@@ -257,6 +259,22 @@ class FakeGrading:
             raise Unavailable("the CI's answer to the start was lost")
         return made
 
+    async def restart_pipeline(self, as_: AsOrgAccount, org: OrgId, run: RunId) -> RunId:
+        self._world.record("restart_pipeline", as_, org=org, run=run)
+        self._world.check_up()
+        _acting_for_org(self._ci, as_, org)
+        old = self._ci.runs.get(run)
+        if old is None:
+            raise NotFound(f"the CI holds no run {run}")
+        if self._ci.refuse_restarts > 0:
+            self._ci.refuse_restarts -= 1
+            raise Rejected("the CI refused to run it again")
+        made = RunId(f"{old.task}/{len(self._ci.runs) + 1}")
+        self._ci.runs[made] = StartedRun(
+            old.task, dict(old.variables), self._world.clock.now(), parent=run
+        )
+        return made
+
     async def run_state(self, run: RunId) -> RunState:
         self._world.record("run_state", PLATFORM, run=run)
         found = self._ci.runs.get(run)
@@ -363,7 +381,6 @@ def _pipeline_answer(run: PipelineRun, ask: _Ask, spec: PipelineSpec) -> Inbound
                 "name": step.name,
                 "image": step.image,
                 "settings": dict(step.settings),
-                "depends_on": list(step.depends_on),
                 "cache": step.cache,
                 "user": step.user,
                 "always": step.always,

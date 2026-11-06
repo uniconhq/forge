@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from forge.domain.content import FileSet, WrittenEdit
 from forge.domain.definitions import TaskDefinition
@@ -48,7 +48,7 @@ async def _save_effect(
     regrades: int,
     read: ReadChanges,
     *,
-    steps: tuple[str, ...] | None = None,
+    steps: Sequence[str] = (),
     checked_first: bool = False,
     programs: tuple[str, ...] = (),
 ) -> SaveEffect:
@@ -77,7 +77,7 @@ async def _save_effect(
     )
 
 
-def _programs_again(checked: Checked, steps: tuple[str, ...] | None) -> tuple[str, ...]:
+def _programs_again(checked: Checked, steps: Sequence[str]) -> tuple[str, ...]:
     """The values whose `exec` program a submission runs again, each in a
     container of its own, of the steps that run again."""
     plan = checked.run_plan

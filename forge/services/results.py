@@ -4,7 +4,7 @@
 A release shows every entrant what the task's `show` lists under
 `after_release`, from then on: its values, inputs, outputs and runs.
 Gradings made while it stands take the plan's released split, which runs
-what a release shows early (`RunPlan.for_split`). A take-back puts the task
+what a release shows first (`RunPlan.for_split`). A take-back puts the task
 back as if it had never been released: `after_release` is hidden again from
 every serving path at once, gradings from then on take the other split, and
 an extension is allowed again. A grading already made keeps the split it
@@ -184,7 +184,7 @@ def _release_words(found: PublishedTask) -> str:
             f"lists under after_release: {', '.join(listed)}."
         )
     return (
-        f"{shows} Gradings from now on run those runs early. You can hide the results again "
+        f"{shows} Gradings from now on run those runs first. You can hide the results again "
         "later, though entrants may have seen them by then."
     )
 

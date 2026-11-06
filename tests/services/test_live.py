@@ -93,8 +93,8 @@ async def test_each_status_change_of_a_grading_publishes_its_id_once(
     grading = await _submit(setup, acme, entered)
     queued_and_dispatched = await _heard(listening)
 
-    [(first, _), *_] = await _to_run(setup, grading, "early")
-    await _job(setup, grading, first, await _mint(setup, grading, "early", first))
+    [first, *_] = await _to_run(setup, grading, "grading")
+    await _job(setup, grading, first, await _mint(setup, grading, "grading", first))
     running = await _heard(listening)
     # Staff cancel only a grading in system_error: this one is past its
     # deadline, which writes nothing and so nudges nobody.

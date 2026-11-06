@@ -104,7 +104,7 @@ async def _rows(setup: Setup) -> list[Grading]:
 def _started(acme: Acme) -> int:
     """How many submissions' pipelines were started, saves' left out."""
     return sum(
-        call.arguments["variables"]["UNICON_PIPELINE"] != "save"
+        "UNICON_SUBMISSION_COMMIT" in call.arguments["variables"]
         for call in acme.fake.calls_to("start_pipeline")
     )
 

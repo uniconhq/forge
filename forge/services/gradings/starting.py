@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy import ColumnElement, and_, select
 
 from forge.db.tables import Grading
-from forge.db.tables.gradings import EARLY, SAVE
+from forge.db.tables.gradings import GRADING, SAVE
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -51,23 +51,19 @@ def new_row(
     automatic: bool = False,
     regrade: uuid.UUID | None = None,
     over_limit: int | None = None,
-    pipeline: str = EARLY,
-    early: uuid.UUID | None = None,
-    unwaited: bool = False,
+    pipeline: str = GRADING,
     released_split: bool = False,
-    from_scratch: bool = False,
+    restarts: str | None = None,
 ) -> Grading:
     """A new `queued` grading, added to the unit of work, whose run starts once the unit of work
-    commits, in the background when it is `unwaited`, since nobody asking
-    waits on it; a start that never runs leaves the row `queued`, which a
+    commits; a start that never runs leaves the row `queued`, which a
     read finds overdue and retries (`notice`). `automatic` when the platform
-    makes it by itself, retrying the
-    attempt before it, and `regrade` naming the regrade of many it belongs
-    to. With `over_limit`, the task's `submissions.max` its entrant has no
-    room left under, it is ended `over_limit` at once instead, and nothing
-    runs. A task's late row names the `early` row it follows, and a
-    save row has no submission. `released_split` when the grading takes
-    its plan's released split, fixed for the row (`RunPlan.for_split`).
+    makes it by itself, retrying the attempt before it, and `regrade` naming
+    the regrade of many it belongs to. With `over_limit`, the task's
+    `submissions.max` its entrant has no room left under, it is ended
+    `over_limit` at once instead, and nothing runs. A save row has no
+    submission. `released_split` when the grading takes its plan's released
+    split, fixed for the row (`RunPlan.for_split`).
     """
     row = Grading(
         id=new_id(),
@@ -86,9 +82,8 @@ def new_row(
         automatic=automatic,
         regrade_id=regrade,
         pipeline=pipeline,
-        early_id=early,
         released_split=released_split,
-        from_scratch=from_scratch,
+        restarts=restarts,
     )
     ctx.db.add(row)
     if over_limit is not None:
@@ -101,10 +96,7 @@ def new_row(
     async def start_it(later: Context) -> None:
         await start(later, grading)
 
-    if unwaited:
-        ctx.in_background(start_it)
-    else:
-        ctx.after_commit(start_it)
+    ctx.after_commit(start_it)
     return row
 
 
@@ -152,6 +144,13 @@ async def _superseded(ctx: Context, row: Grading) -> bool:
     return later is not None
 
 
+async def newest_on_line(ctx: Context, row: Grading) -> Grading:
+    newest = await ctx.db.scalar(
+        select(Grading).where(_on_line(row)).order_by(Grading.attempt.desc()).limit(1)
+    )
+    return newest if newest is not None else row
+
+
 def _on_line(row: Grading) -> ColumnElement[bool]:
     """The rows on `row`'s line: its submission's of its pipeline, or a save
     row's publication's."""
@@ -166,9 +165,10 @@ async def _start_pipeline(
     """`start` once the org's account is read: the row's steps' settings
     minted, a user taken for it and committed, then its pipeline started on
     the org's dispatch repository, which is made and activated the first time a
-    start finds it missing. A pipeline with nothing left to run is not
-    started: the row is concluded at once from what the store holds, the
-    platform's images needed or not.
+    start finds it missing. A row that `restarts` a run restarts it instead
+    (#631), or starts a new one when the CI refuses (#635). A pipeline with
+    nothing left to run is not started: the row is concluded at once from
+    what its steps hold, the platform's images needed or not.
     """
     try:
         run = await pipelines.prepare(ctx, row)
@@ -188,7 +188,9 @@ async def _start_pipeline(
         return
     await ctx.db.commit()
     try:
-        found = await _start_on_dispatch(ctx, account, run)
+        found = await _restarted(ctx, account, run, row.restarts)
+        if found is None:
+            found = await _start_on_dispatch(ctx, account, run)
     except (PortError, CannotDecrypt) as exc:
         reason = _start_failure(exc) if isinstance(exc, PortError) else ACCOUNT_NOT_READY
         await _not_started(ctx, grading, exc, reason)
@@ -202,7 +204,33 @@ async def _start_pipeline(
     held.run_id = found
     held.dispatched_at = ctx.now
     changed(ctx, held)
-    log.info("gradings.dispatched", grading=str(held.id), run=found, pipeline=held.pipeline)
+    log.info(
+        "gradings.dispatched",
+        grading=str(held.id),
+        run=found,
+        restarts=held.restarts,
+        pipeline=held.pipeline,
+    )
+
+
+async def _restarted(
+    ctx: Context, account: AsOrgAccount, run: PipelineRun, restarts: str | None
+) -> RunId | None:
+    """None when there is nothing to restart or the CI refuses (#635), so
+    the caller starts a new run."""
+    if restarts is None:
+        return None
+    old = RunId(restarts)
+    try:
+        try:
+            return await ctx.forge.grading.restart_pipeline(account, run.org, old)
+        except Forbidden:
+            account = await org_accounts.renew(ctx, account)
+            await ctx.db.commit()
+            return await ctx.forge.grading.restart_pipeline(account, run.org, old)
+    except (NotFound, Rejected) as exc:
+        log.warning("gradings.restart_refused", grading=str(run.grading), run=old, error=str(exc))
+        return None
 
 
 async def _start_on_dispatch(ctx: Context, account: AsOrgAccount, run: PipelineRun) -> RunId:

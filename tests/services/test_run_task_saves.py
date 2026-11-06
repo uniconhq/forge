@@ -548,7 +548,7 @@ async def test_a_contest_gives_a_run_task_a_due_and_a_leaderboard_but_no_worth_o
     assert await files.write(setup, acme.ada, SPRING, "contest.yaml", due.encode(), current.token)
 
 
-async def test_an_entrant_submits_to_a_run_task_and_its_early_row_is_queued(
+async def test_an_entrant_submits_to_a_run_task_and_its_grading_is_queued(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     await _published(setup, acme, sum_task, "tour", RUNNING.format(visibility="everyone"))
@@ -579,7 +579,7 @@ async def test_an_entrant_submits_to_a_run_task_and_its_early_row_is_queued(
     async with setup.unit_of_work() as ctx:
         rows = (await ctx.db.scalars(select(Grading).where(Grading.task_id == sum_task))).all()
     assert [(row.pipeline, row.submission_number) for row in rows if row.pipeline != "save"] == [
-        ("early", made.number)
+        ("grading", made.number)
     ]
 
 

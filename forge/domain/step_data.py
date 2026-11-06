@@ -1,16 +1,16 @@
 """What a task's Woodpecker step is handed and hands back through its
 door (SIMPLER-CORE.md 11.6, 11.9, runner's `job.schema.json`), in the words
 the services build it with: the names and limits a job keeps to, where a
-step's uploads go, an item's key, what an `outputs.json` must be, the
-pipeline left once stored steps are taken out, and result version 6.
+step's uploads go, what an `outputs.json` must be, the pipeline left once
+steps with nothing to do are taken out, and result version 6.
 
-**An item's key** is the SHA-256 of `{"image", "inputs"}` as canonical
-JSON, sorted keys and no spaces, the inputs as the plan binds them with
-every file by its content: a file is `{"file": <sha256>}`, a folder
-`{"folder": {<path in it>: <sha256>}}`, an earlier step's output by what it
-wrote, a template written out. A run's id and where a file lies are not
-in it, so two runs, or two gradings, that would do the same work share a
-key. The step's limits are not in it either: they come from its inputs.
+**A step's kept outputs** (#623): a boxed step whose file or folder a
+later step of its own pipeline reads keeps its outputs in the workspace,
+under `.unicon/<its Woodpecker name>` (`keep_of`), once they are uploaded,
+and that later step reads them from there, each by the SHA-256 and size
+stored when it was uploaded. The entrant's checkout is in `submission/`
+beside it (#646). Anything else, a step that is not boxed, which runs as the
+grading's user and cannot write the workspace, is read by link.
 
 **A step's uploads** are `outputs.json` and files under `out/`, each path's
 segments never empty, `.` or `..` and holding no control character, kept
@@ -27,13 +27,12 @@ job may place (`NAME`), and no text holding a NUL, which the database
 keeps in no text. Anything else, an `error` included, is a fault of the
 step: nothing it wrote is kept.
 
-**Result version 6** is built when a pipeline has ended. Each run of the
-grading's pipeline goes through every step it reads, in the plan's order,
-from the save's steps to its own pipeline's, done once or for that run;
-its verdict is the outcome of the first that was not `accepted`, `skipped`
-when a part it is made from was not given, and `system_error` when a step
-faulted or gave nothing for it with no earlier step stopping it, which
-names the first such in `error`. Its number reports sit in the result;
+**Result version 6** is built when a pipeline has ended. Each run goes
+through every step of the pipeline it reads, in the plan's order, done
+once or for that run; its verdict is the outcome of the first that was
+not `accepted`, `skipped` when a part it is made from was not given, and
+`system_error` when a step faulted or gave nothing for it with no earlier
+step stopping it, which names the first such in `error`. Its number reports sit in the result;
 every text, a text report, `label`, `message`, `staff_message`, and the
 `extras` folder, is named by the stored output that holds it and its
 name, `{"output": <id>, "name": <name>}`, so a 64 KB text on each of a
@@ -63,7 +62,6 @@ report is a fault of the grading, named in `error`, never a run's
 verdict.
 """
 
-import hashlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -75,18 +73,17 @@ from forge.domain import exact_json
 from forge.domain.contracts import violation
 from forge.domain.errors import InvalidCallback
 from forge.domain.run_plan import (
-    PIPELINES,
+    BOXED,
     RUN_ENTRY_KB,
     PipelineKind,
     PipelineStep,
-    RunEntry,
     RunPlan,
     RunStep,
 )
 from forge.domain.run_workflow import STAFF_OUTPUTS
 from forge.domain.workflow_definition import TEXT_OUTPUTS
 
-JOB_VERSION = 1
+JOB_VERSION = 2
 """The job shape the door answers, runner's `job.schema.json`."""
 CONTRACT_VERSION = 6
 """The primitive contract every task's step speaks."""
@@ -123,6 +120,8 @@ OUTCOMES = frozenset(
         "compile_error",
     }
 )
+KEEP_ROOT = ".unicon"
+"""The workspace folder a step keeps its outputs under (`keep_of`)."""
 REPORT_STEP = "report"
 """The step Unicon adds to every grading's pipeline, which tells the door
 the pipeline has ended (`workflow_definition.PIPELINE_STEPS`)."""
@@ -148,13 +147,6 @@ def is_batch(held: PipelineStep) -> bool:
     return held.runs is not None and held.name == held.step
 
 
-def item_key(image: str, inputs: Mapping[str, Any]) -> str:
-    """An item's key from its image and its inputs with every file by its
-    content."""
-    text = exact_json.dumps({"image": image, "inputs": inputs}, sort_keys=True)
-    return hashlib.sha256(text.encode()).hexdigest()
-
-
 def skipped_runs(plan: RunPlan, inputs: Mapping[str, Any]) -> frozenset[str]:
     """The runs a version 6 submission's `inputs` skips: each made from a
     part of an entrant input that was not given."""
@@ -171,13 +163,10 @@ def skipped_runs(plan: RunPlan, inputs: Mapping[str, Any]) -> frozenset[str]:
 
 
 def step_order(plan: RunPlan, kind: PipelineKind) -> tuple[str, ...]:
-    """The steps a `kind` pipeline reads, in order: every pipeline's up to
-    and including `kind`'s, a value's program's among them."""
-    found: dict[str, None] = {}
-    for each in PIPELINES[: PIPELINES.index(kind) + 1]:
-        for held in plan.pipeline(each):
-            found.setdefault(held.step, None)
-    return tuple(found)
+    """The steps a `kind` pipeline reads, in order, a value's program's
+    among them: its own alone. A grading reads nothing of the save's, which
+    holds only the planner's builds and the checks' copies (#655)."""
+    return tuple(dict.fromkeys(held.step for held in plan.pipeline(kind)))
 
 
 def chain_of(plan: RunPlan, order: Sequence[str], run: str, check: int | None = None) -> list[Item]:
@@ -215,33 +204,30 @@ def holds(plan: RunPlan, kind: PipelineKind, step: str, run: str | None) -> bool
     )
 
 
-def reads_from(kind: PipelineKind) -> tuple[PipelineKind, ...]:
-    """The pipelines whose stored outputs a `kind` pipeline may reuse: an
-    early one never reads a late one's, so the order rule holds after
-    `show` moves (11.3)."""
-    return PIPELINES[: PIPELINES.index(kind) + 1]
+def keep_of(plan: RunPlan, kind: PipelineKind, held: PipelineStep) -> str | None:
+    """Where in the workspace `held` keeps its outputs for the later steps
+    of its `kind` pipeline (#623), `.unicon/<its Woodpecker name>`: only a
+    boxed step's, which runs as root in its container and so may write the
+    workspace the clone left root's, and only when a later step of the
+    pipeline reads a file or folder it outputs. None for any other step."""
+    step = plan.steps[held.step]
+    if step.primitive.partition("@")[0] not in BOXED:
+        return None
+    steps = plan.pipeline(kind)
+    later = steps[steps.index(held) + 1 :]
+    read = any(
+        name == held.step and (output_type(step, output) or ("",))[0] in ("file", "folder")
+        for each in later
+        for name, output in plan.files_read(each).outputs
+    )
+    return f"{KEEP_ROOT}/{plan.woodpecker_name(held.name)}" if read else None
 
 
 def without(steps: Sequence[PipelineStep], left_out: Iterable[str]) -> tuple[PipelineStep, ...]:
-    """The pipeline with the steps named in `left_out` taken out, every step
-    that waited for one waiting instead for what it waited for, so the order
-    holds. The names are the plan's, the path or `<path>.<run>`."""
+    """The pipeline with the steps named in `left_out` taken out, the rest in
+    their order. The names are the plan's, the path or `<path>.<run>`."""
     gone = set(left_out)
-    waits = {held.name: held.depends_on for held in steps}
-
-    def kept(names: Iterable[str]) -> list[str]:
-        found: list[str] = []
-        for name in names:
-            for each in kept(waits.get(name, ())) if name in gone else [name]:
-                if each not in found:
-                    found.append(each)
-        return found
-
-    return tuple(
-        held.model_copy(update={"depends_on": tuple(kept(held.depends_on))})
-        for held in steps
-        if held.name not in gone
-    )
+    return tuple(held for held in steps if held.name not in gone)
 
 
 def output_type(step: RunStep, name: str) -> tuple[str, bool] | None:
@@ -511,7 +497,7 @@ def _graded(
     staff: list[dict[str, Any]] = []
     staffed: set[Item] = set()
     error: str | None = None
-    for run in runs_of(plan, kind):
+    for run in plan.runs:
         chain = chain_of(plan, order, run.id, check)
         entry: dict[str, Any] = {"id": run.id, "key": run.key}
         if run.id in skipped:
@@ -717,14 +703,6 @@ def all_accepted(result: Mapping[str, Any] | None) -> bool:
         and all(outcome == "accepted" for outcome in outcomes.values())
         and all(check.get("passed") is True for check in result.get("checks", ()))
     )
-
-
-def runs_of(plan: RunPlan, kind: PipelineKind) -> list[RunEntry]:
-    """The runs a `kind` pipeline grades: every run for the save's, else
-    the early ones or the late ones."""
-    if kind == "save":
-        return list(plan.runs)
-    return [run for run in plan.runs if run.early == (kind == "early")]
 
 
 def _nothing(item: Item) -> str:

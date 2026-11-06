@@ -8,8 +8,8 @@ a rejudge are new rows; nothing about one row is written into another.
 """
 
 from forge.services.gradings.attempt_history import _next_attempt, last_goods, latest_of, record
-from forge.services.gradings.controls import cancel, free_user, regrade_from_scratch, rejudge, retry
-from forge.services.gradings.following import behind, follow, stop
+from forge.services.gradings.controls import cancel, free_user, rejudge, retry
+from forge.services.gradings.following import behind, stop
 from forge.services.gradings.listing import (
     _is_latest,
     _settings,
@@ -30,7 +30,6 @@ from forge.services.gradings.lookups import (
     org_of,
     publication_of,
     staff_cancelled,
-    told_late,
 )
 from forge.services.gradings.records import (
     ACCOUNT_NOT_READY,
@@ -47,7 +46,6 @@ from forge.services.gradings.records import (
     START_RETRY_WAIT,
     FeedEntry,
     GradingRecord,
-    Listed,
     QueueDepth,
     Rejudged,
     Submitter,
@@ -93,14 +91,13 @@ from forge.services.gradings.starting import (
     _start_signed_in,
     _superseded,
     new_row,
+    newest_on_line,
     queue_submission,
     start,
 )
 from forge.services.gradings.watchdog import (
     _first_to_notice,
-    _follows_an_earlier_attempt,
     notice,
-    notice_late,
     retry_by_itself,
     start_waits,
 )
@@ -121,14 +118,12 @@ __all__ = [
     "START_RETRY_WAIT",
     "FeedEntry",
     "GradingRecord",
-    "Listed",
     "QueueDepth",
     "Rejudged",
     "Submitter",
     "_cancel_after_commit",
     "_cancel_quietly",
     "_first_to_notice",
-    "_follows_an_earlier_attempt",
     "_is_latest",
     "_line",
     "_managed",
@@ -159,7 +154,6 @@ __all__ = [
     "feed",
     "find",
     "finish",
-    "follow",
     "free_user",
     "has_result",
     "in_contest",
@@ -170,8 +164,8 @@ __all__ = [
     "lost",
     "narrowed",
     "new_row",
+    "newest_on_line",
     "notice",
-    "notice_late",
     "observed_tasks",
     "org_of",
     "overdue_of",
@@ -182,7 +176,6 @@ __all__ = [
     "queue_submission",
     "record",
     "regrade",
-    "regrade_from_scratch",
     "rejudge",
     "retry",
     "retry_by_itself",
@@ -195,6 +188,5 @@ __all__ = [
     "task_limit",
     "task_of",
     "to_regrade",
-    "told_late",
     "waits_for_room",
 ]

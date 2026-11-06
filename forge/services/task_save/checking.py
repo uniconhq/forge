@@ -113,7 +113,7 @@ async def _ask(
     latest: Publication | None,
     question: str | None,
     changed: tuple[str, ...],
-    again: tuple[str, ...] | None,
+    again: tuple[str, ...],
     read: ReadChanges,
     basis: str,
     *,

@@ -1138,8 +1138,7 @@ graded per run (`once_outputs`, `once_outcomes`), and the result reads
 them from the first item the step gave in a pipeline, so a compile error
 is every run's verdict and the log is kept once. A step whose `source` the
 entrant's code reaches is marked `compiled`, which the `compiled` fact
-reads; a late row whose early row's step gave `compile_error` is concluded
-with no pipeline. Every exec step whose `source`, `language` and `entry`
+reads. Every exec step whose `source`, `language` and `entry`
 are the workflow's or the task's own gets a `build-<step>` at the save
 (`build-<step>-<program>` for a program of its programs port), in the
 `build` form, so a checker that does not compile refuses the save; a
@@ -1716,10 +1715,12 @@ passes over a grading that is not `queued`, readies the start
 (`pipelines.prepare`) and commits that much, so the call to the CI holds no
 connection and no lock, and as the org's own account
 (`org_accounts.identity`) starts a manual pipeline on the org's dispatch
-place with the variables `UNICON_GRADING_ID`, `UNICON_PIPELINE`,
+place with the variables `UNICON_GRADING_ID`,
 `UNICON_PUBLICATION_COMMIT`, `UNICON_COMPUTE`, which is `pool:platform`, so
 only a machine the platform controls takes it, and, for a submission's,
-`UNICON_SUBMISSION_REPO` and `UNICON_SUBMISSION_COMMIT`. A CI that does not
+`UNICON_SUBMISSION_REPO` and `UNICON_SUBMISSION_COMMIT`. A retry or
+regrade restarts the attempt before's pipeline instead, and starts a new
+one when the CI refuses or no longer holds it. A CI that does not
 know the dispatch place has it made and activated first, and one that
 refuses the org's account has it signed in again once. Then it takes the
 row under `FOR UPDATE`: the pipeline's id and when it was started go on
@@ -1751,7 +1752,8 @@ administrator's token, kept, and read again once when a request does not
 verify; a signature that says it expires is refused after that. The key is
 asked for at most once a minute, whether the last read worked or not. The
 answer is the same every time for the same pipeline: the submission
-checked out by `UNICON_PLUGIN_GIT_IMAGE` unless it is a save's, then each
+checked out by `UNICON_PLUGIN_GIT_IMAGE` into `submission/` unless it is a
+save's, then each
 step with its image by digest and its settings, its door and token among
 them, and the report step last, on a machine carrying the pipeline's
 labels (`pipelines.lookup` says which). Anything else is

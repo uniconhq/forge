@@ -97,7 +97,7 @@ def effect_of(
     read: ReadChanges,
     submitted: bool = False,
     unread: bool = False,
-    steps: Sequence[str] | None = None,
+    steps: Sequence[str] = (),
     checked_first: bool = False,
     programs: Sequence[str] = (),
 ) -> SaveEffect:
@@ -131,7 +131,7 @@ def _runs_again(
     changes: Sequence[str],
     regrades: int,
     submitted: bool,
-    steps: Sequence[str] | None,
+    steps: Sequence[str],
     checked_first: bool,
 ) -> tuple[str, ...]:
     if first:
@@ -145,12 +145,8 @@ def _runs_again(
         if regrades == 1
         else f"{regrades} submissions are graded again"
     )
-    if steps is not None:
-        counted += (
-            f", running {joined(steps)} again"
-            if steps
-            else ", from what is stored, running no step again"
-        )
+    if steps:
+        counted += f", running {joined(steps)} again"
     if checked_first:
         counted = f"Once the save's check passes, {counted[0].lower()}{counted[1:]}"
     if len(changes) == 1:

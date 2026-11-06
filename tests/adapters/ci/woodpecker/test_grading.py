@@ -239,7 +239,6 @@ async def test_a_refresh_of_a_state_that_names_no_account_is_refused(
 
 PIPELINE = PipelineRun(
     grading=GRADING,
-    pipeline="early",
     org=OrgId("acme"),
     publication_version=VersionId(TASK_COMMIT),
     submission=SubmissionId(f"acme/spring/@{U8}/sum#2"),
@@ -248,7 +247,6 @@ PIPELINE = PipelineRun(
 )
 PIPELINE_VARIABLES = {
     "UNICON_GRADING_ID": str(GRADING),
-    "UNICON_PIPELINE": "early",
     "UNICON_PUBLICATION_COMMIT": TASK_COMMIT,
     "UNICON_COMPUTE": "pool:platform",
     "UNICON_SUBMISSION_REPO": f"acme/spring.sum.{U8}.sub",
@@ -261,14 +259,11 @@ PIPELINE_SPEC = PipelineSpec(
     clone_image=CLONE,
     steps=(
         PipelineStepSpec("compile", LINK, {"data_url": "u1", "data_token": "t1"}, user=10007),
-        PipelineStepSpec(
-            "solution", EXEC, {"data_url": "u2", "data_token": "t2"}, ("compile",), cache=True
-        ),
+        PipelineStepSpec("solution", EXEC, {"data_url": "u2", "data_token": "t2"}, cache=True),
         PipelineStepSpec(
             "report",
             BASE,
             {"mode": "report", "data_url": "u3", "data_token": "t3"},
-            ("compile", "solution"),
             user=10007,
             always=True,
         ),
@@ -513,6 +508,7 @@ async def test_the_dispatch_repository_is_activated_trusted_for_volumes_alone(
 async def test_a_pipeline_is_answered_with_its_checkout_and_each_step_a_plugin(
     woodpecker: WoodpeckerCi, recorder: Recorder
 ) -> None:
+    """#630: no step carries `depends_on`, so they run in their order."""
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
     seen: list[tuple[str | None, OrgId]] = []
@@ -541,6 +537,7 @@ async def test_a_pipeline_is_answered_with_its_checkout_and_each_step_a_plugin(
                     "sha": SUBMISSION_COMMIT,
                     "ref": "refs/tags/submission/2",
                     "lfs": False,
+                    "path": "submission",
                 },
             }
         ],
@@ -550,21 +547,18 @@ async def test_a_pipeline_is_answered_with_its_checkout_and_each_step_a_plugin(
                 "image": LINK,
                 "settings": {"data_url": "u1", "data_token": "t1"},
                 "backend_options": {"docker": {"user": "10007:10007"}},
-                "depends_on": [],
             },
             {
                 "name": "solution",
                 "image": EXEC,
                 "settings": {"data_url": "u2", "data_token": "t2"},
                 "volumes": ["/var/lib/unicon/cache/acme:/cache"],
-                "depends_on": ["compile"],
             },
             {
                 "name": "report",
                 "image": BASE,
                 "settings": {"mode": "report", "data_url": "u3", "data_token": "t3"},
                 "backend_options": {"docker": {"user": "10007:10007"}},
-                "depends_on": ["compile", "solution"],
                 "when": [{"status": ["success", "failure"]}],
             },
         ],
@@ -590,7 +584,7 @@ async def test_a_save_pipeline_checks_nothing_out(
 ) -> None:
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
-    save = replace(PIPELINE, pipeline="save", submission=None, submission_version=None)
+    save = replace(PIPELINE, submission=None, submission_version=None)
 
     answer = await woodpecker.grading.answer(
         _signed(key, _dispatch_body(grading.pipeline_variables(save))),
@@ -621,7 +615,7 @@ async def test_a_pipeline_whose_steps_read_no_entrant_input_checks_nothing_out(
 @pytest.mark.parametrize(
     "variables",
     [
-        pytest.param({**PIPELINE_VARIABLES, "UNICON_PIPELINE": "late"}, id="another-pipeline"),
+        pytest.param({**PIPELINE_VARIABLES, "UNICON_COMPUTE": "pool:other"}, id="another-value"),
         pytest.param({**PIPELINE_VARIABLES, "CI_DEBUG": "1"}, id="one-added"),
         pytest.param(
             {k: v for k, v in PIPELINE_VARIABLES.items() if k != "UNICON_COMPUTE"},

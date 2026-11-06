@@ -1107,8 +1107,8 @@ async def read_organised_text(
 
 async def _text(ctx: Context, output: str, name: str) -> str:
     """The text of the name `name` that the stored output `output` holds,
-    and nothing else of it, since it may be another entrant's of the same
-    org (stage 4 open 114).
+    and nothing else of it, since it may be a step's whose other outputs
+    the entrant is not shown (stage 4 open 114).
     """
     try:
         held = await ctx.db.get(StepOutput, uuid.UUID(output))
@@ -1161,7 +1161,6 @@ async def _read(
     latest = [_latest(found) for found in grouped.values()]
     gone = await gradings.lost(ctx, latest)
     await gradings.notice(ctx, latest, gone)
-    await gradings.notice_late(ctx, latest)
     chosen = None if everything or not grouped else await _chosen_by_leaderboards(ctx, reading)
     return [
         await _submission(
@@ -1301,25 +1300,22 @@ async def _runs(
     everything: bool,
     view: View | None = None,
 ) -> Result:
-    """A grading as its reader sees it now, from both its rows
-    (11.3): its values worked out on read (`scores.run_scored`) and shown
-    by what the task's latest publication shows now, `after_release` while
-    its results are released (`run_showing.shown`, 9.4), so a group moved
-    to `always` shows its runs even where they ran late. Its values are
+    """A grading as its reader sees it now, from its row (11.3): its
+    values worked out on read (`scores.run_scored`) and shown by what the
+    task's latest publication shows now, `after_release` while its results
+    are released (`run_showing.shown`, 9.4), so a group moved to `always`
+    shows its runs even where its plan did not show them. Its values are
     worked out as if no mark were entered until a leaderboard cell shown to the
     entrant counted the submission, of those `chosen` gives, and never when
     none did (14), so a mark held back tells nothing a submission with none
-    does not. Before the reveal,
-    and with no release, the late row is told to no entrant; after it,
-    while that attempt has no result, the grading is told as where it
-    stands, `grading` or `delayed`; and a task with
-    nothing shown during the contest is told as `submitted` until the
-    reveal. Organisers read every value and every run of both rows at
-    once, and where each row stands in the gradings routes. With `view`,
+    does not. Before the reveal, and with no release, a grading that failed
+    only on what the entrant is not shown is told as `graded` (#657); and a
+    task with nothing shown during the contest is told as `submitted` until
+    the reveal. Organisers read every value and every run at once, and
+    where the row stands in the gradings routes. With `view`,
     it is read as its entrant would at that moment, and `hidden` counts
     the runs the organisers' reading holds that it does not show.
     """
-    late = await scores.late_of(ctx, row)
     revealed = reveal_at is not None and ctx.now >= reveal_at
     if view is not None:
         revealed, reveal_at = view.revealed, None
@@ -1330,7 +1326,7 @@ async def _runs(
         if not entries_open(number, counted.shown):
             # Worked out with no mark, so it reads as a submission with none.
             marks = {}
-    scored = await scores.run_scored(ctx, current, settings, extension, row, late, marks)
+    scored = await scores.run_scored(ctx, current, settings, extension, row, marks)
     released = (
         view.released
         if view is not None
@@ -1347,7 +1343,7 @@ async def _runs(
             revealed=revealed,
             released=released,
             everything=everything,
-            late=scored.late,
+            hidden=scored.hidden,
             titles=scored.held.titles,
             axes=scored.held.axes,
             meanings=scored.held.meanings,
@@ -1362,12 +1358,10 @@ async def _runs(
     if not everything:
         texts_at = run_showing.addresses(runs, once)
         runs, once = run_showing.bare(runs, once)
+        if seen.settled and state is SubmissionState.DELAYED:
+            state = SubmissionState.GRADED
         if seen.later and state is SubmissionState.GRADED:
             state = SubmissionState.SUBMITTED
-        if late is not None and revealed and state is SubmissionState.GRADED:
-            status = gradings.status_of(ctx, late)
-            if status is not GradingStatus.DONE:
-                state = told(status)
     coming = reveal_at if reveal_at is not None and not revealed and not everything else None
     return Result(
         row.id,

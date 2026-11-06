@@ -297,7 +297,7 @@ def read_later(
     entry, since showing it would give away what is shown later (stage 5
     section 6 items 39 and 124). A value shown before the deadline may sum up
     runs a group shows after it, as `reward` does over `all`
-    (SIMPLER-CORE.md 9), which is why its runs run early. A name `show`
+    (SIMPLER-CORE.md 9), which is why its runs are early. A name `show`
     does not list is free to read. `columns` are the task's repeated
     inputs, a run entry showing only those showing no result.
     """

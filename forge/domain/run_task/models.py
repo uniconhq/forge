@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from forge.domain import exact_json
-from forge.domain.blocks.catalogue import ALL, EXEC, FIRST_NOT_PASSED, SHOWN_FACTS
+from forge.domain.blocks.catalogue import ALL, EXEC, FIRST_NOT_PASSED
 from forge.domain.blocks.check import ValuesCheck
 from forge.domain.blocks.numbers import Better
 from forge.domain.checks import TaskCheck
@@ -66,8 +66,7 @@ class EntrantInput:
 class RunsFile:
     """`plans/runs.json`: the id of every key the task has had, its runs as
     the version saved them, its entrant inputs' types and parts, the
-    columns self-reported with the entrant inputs that make them so,
-    whether `compiled`, or a value reading it, is shown `always`, and the
+    columns self-reported with the entrant inputs that make them so, the
     values that read a self-reported column, directly or through others,
     as the save checked them (`RunTask.self_reported_values`), which a
     result marks;
@@ -84,7 +83,6 @@ class RunsFile:
     runs: tuple[Run, ...]
     entrant: Mapping[str, tuple[Type, int | None]]
     self_reported: Mapping[str, frozenset[str]]
-    compile_early: bool
     self_reported_values: frozenset[str] = frozenset()
     reads: Mapping[str, frozenset[str]] = field(default_factory=dict)
     self_reported_shown: frozenset[str] = frozenset()
@@ -102,7 +100,6 @@ class RunsFile:
             "self_reported": {
                 name: sorted(inputs) for name, inputs in sorted(self.self_reported.items())
             },
-            "compile_early": self.compile_early,
             "self_reported_values": sorted(self.self_reported_values),
             "reads": {name: sorted(runs) for name, runs in sorted(self.reads.items())},
             "self_reported_shown": sorted(self.self_reported_shown),
@@ -132,7 +129,6 @@ class RunsFile:
                     str(name): frozenset(_text(each) for each in inputs)
                     for name, inputs in document["self_reported"].items()
                 },
-                _flag(document["compile_early"]),
                 frozenset(_text(each) for each in document.get("self_reported_values", ())),
                 {
                     str(name): frozenset(_run_id(each) for each in runs)
@@ -227,35 +223,6 @@ class RunTask:
                 groups |= self.values.through(name).groups
         return frozenset(run for group in groups for run in self.groups.get(group, ()))
 
-    def compile_early(self, *, released: bool = False) -> bool:
-        """Whether `compiled` is shown during the contest, or a value shown
-        then reads it, which makes the compile early even when no run is.
-        """
-        moments = self.during(released=released)
-        return any(name in SHOWN_FACTS for name in listed(self.show, "outputs", moments)) or any(
-            self.reads_compiled(name) for name in listed(self.show, "values", moments)
-        )
-
-    def reads_compiled(self, entry: str) -> bool:
-        """Whether the `show` entry `entry` is `compiled`, or a value that
-        reads it, directly or through others."""
-        return entry in SHOWN_FACTS or (
-            entry in self.values.reads and "compiled" in self.values.through(entry).facts
-        )
-
-    def early_programs(self, *, released: bool = False) -> frozenset[str]:
-        """The values whose `exec` program runs in the early pipeline: each
-        shown during the contest, or read by a value shown then, directly or
-        through others.
-        """
-        read = {
-            name
-            for entry in listed(self.show, "values", self.during(released=released))
-            if entry in self.values.reads
-            for name in self.values.through(entry).values
-        }
-        return frozenset(name for name in self.programs if name in read)
-
     def self_reported_values(self) -> frozenset[str]:
         """The values that read a self-reported column, directly or through
         other values, a program reading their runs whole among them.
@@ -327,7 +294,6 @@ class RunTask:
             tuple(Run(run.id, run.key, run.id in early) for run in self.runs),
             {name: (each.type, each.parts) for name, each in self.entrant.items()},
             self.self_reported,
-            self.compile_early(),
             self.self_reported_values(),
             self.runs_read(),
             self.self_reported_shown(),

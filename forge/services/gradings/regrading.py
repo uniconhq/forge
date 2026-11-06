@@ -1,7 +1,7 @@
 from sqlalchemy import select
 
 from forge.db.tables import Grading, Regrade
-from forge.db.tables.gradings import FRONT, LATE
+from forge.db.tables.gradings import FRONT
 from forge.domain.grading import UNFINISHED, GradingStatus
 from forge.domain.ids import PublicationId, RunId, TaskId, new_id
 from forge.domain.regrades import RegradeCause
@@ -76,13 +76,8 @@ async def regrade(
     over the limit with none is left as it is. Every attempt made belongs to
     one regrade of many recorded for it, none when it makes none.
 
-    A task is graded again on its early rows alone: each new early row
-    makes its late row when it ends `done`, and the store runs again only
-    what changed (11.6, 11.8). A late row still unfinished is stopped when
-    its submission is graded again or it grades against another
-    publication, so no late row of an old grading runs on. Each new early
-    row takes the split of the task's results as they stand now
-    (`published.results_released`), and its late row the same.
+    Each new attempt runs every step again (#625) and takes the split of
+    the task's results as they stand now (`published.results_released`).
     """
     # Which runs the CI has lost is asked before any row is locked, since
     # asking takes the CI's time; the task itself is held by the caller.
@@ -105,25 +100,6 @@ async def regrade(
         .scalars()
         .all()
     )
-    # A task's late rows are held after its early rows, as `follow` holds
-    # them after the early row it follows.
-    lates = (
-        (
-            await ctx.db.execute(
-                select(Grading)
-                .where(
-                    Grading.task_id == task,
-                    Grading.pipeline == LATE,
-                    Grading.status.in_([status.value for status in UNFINISHED]),
-                )
-                .order_by(Grading.submission_id, Grading.attempt)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-        )
-        .scalars()
-        .all()
-    )
     attempts: dict[str, list[Grading]] = {}
     for row in rows:
         attempts.setdefault(row.submission_id, []).append(row)
@@ -138,10 +114,6 @@ async def regrade(
             left_running += 1
         elif not (submission in refused and status is GradingStatus.OVER_LIMIT):
             made.append((submission, row))
-    again = {submission for submission, _ in made}
-    for late in lates:
-        if late.submission_id in again or late.publication_id != publication:
-            stop(ctx, late)
     if not made:
         log.info("gradings.rejudged", task=task, publication=publication, queued=0)
         return Rejudged(task, publication, 0, 0, left_running)
