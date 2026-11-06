@@ -13,6 +13,7 @@ from tempfile import mkdtemp
 
 from forge.domain.environment import MavenJar
 from forge.domain.errors import Rejected, TooLarge, Unavailable
+from forge.domain.yaml_models import size_in_words
 from forge.log import get_logger
 
 CENTRAL = ("https", "repo1.maven.org", "maven2")
@@ -73,7 +74,7 @@ class MavenResolver:
             size, digest = await asyncio.to_thread(_hashed, file)
             total += size
             if total > cap:
-                raise TooLarge(f"The Maven packages exceed the {cap} byte limit.")
+                raise TooLarge(f"The Maven packages come to more than {size_in_words(cap)}.")
             jar = MavenJar(
                 coord=str(dependency["coord"]),
                 file_name=parts[-1],
@@ -123,7 +124,7 @@ class MavenResolver:
             while not finished.done():
                 await asyncio.wait({finished}, timeout=WATCHED)
                 if not finished.done() and await asyncio.to_thread(_held, cache) > cap:
-                    raise TooLarge(f"The Maven packages exceed the {cap} byte limit.")
+                    raise TooLarge(f"The Maven packages come to more than {size_in_words(cap)}.")
             _, said = finished.result()
         except BaseException:
             if process.returncode is None:

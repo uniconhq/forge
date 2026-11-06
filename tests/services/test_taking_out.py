@@ -56,7 +56,10 @@ from tests.services.conftest import (
 
 PRODUCT = TaskId("acme/spring/product")
 MAX = TaskId("acme/spring/max")
-STANDINGS = "leaderboards:\n  standings: {title: Standings, audience: {who: everyone}}\n"
+STANDINGS = (
+    "leaderboards:\n"
+    "  standings: {title: Standings, audience: {who: everyone}, columns: {points: 1}}\n"
+)
 PASSED: dict[str, Any] = {
     "schema_version": 6,
     "runs": [
@@ -214,8 +217,8 @@ async def test_a_place_holding_a_submission_the_platform_has_no_row_for_refuses_
         await take_out(setup, manager, PRODUCT, TakeOut.REMOVE)
 
     assert refused.value.detail == (
-        "product has a submission the platform has not recorded yet, so it cannot be removed. "
-        "Ask the platform's operator to reconcile, then withdraw it."
+        "product holds a submission Unicon has no record of, so it cannot be removed. "
+        "Withdraw it instead, and tell whoever runs Unicon."
     )
     assert await _settings(acme) == settings
     assert ("acme", "spring.product.task") in acme.fake.state.repos
@@ -275,25 +278,6 @@ async def test_a_task_with_a_submission_is_withdrawn_and_hidden_from_entrants_un
     assert b"withdrawn" not in await _settings(acme)
     assert await seen() == ["A", "B", "C"]
     assert len(await submissions.mine(setup, entered.session, entered.task)) == 1
-
-
-async def test_a_task_is_put_back_in_a_contest_stored_with_old_leaderboards(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    """A read ignores leaderboards in the old list form, which a save refuses, so
-    withdrawing and putting back each leave them as they are."""
-    old = "leaderboards:\n  - {title: Standings, who: everyone}\n"
-    await three(setup, acme, old)
-    manager = await _manager(setup, acme)
-    await _submit(setup, acme, entered.session, entered.task, "key-0001-aaaa")
-    await take_out(setup, manager, entered.task, TakeOut.WITHDRAW)
-
-    returned = await put_back(setup, manager, entered.task)
-
-    assert returned.notes == ()
-    settings = await _settings(acme)
-    assert b"withdrawn" not in settings
-    assert settings.endswith(old.encode())
 
 
 async def test_a_task_is_put_back_while_a_hold_saved_before_its_from_holds(

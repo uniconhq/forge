@@ -320,14 +320,16 @@ async def test_a_slot_needs_a_file_input_a_plain_name_a_digest_and_a_contestant_
         await uploads.slot(
             setup, session, task, input="code", filename="a/../b.py", size=1, sha256=digest
         )
-    with pytest.raises(InvalidInputs):
+    with pytest.raises(InvalidInputs) as sized:
         await uploads.slot(
             setup, session, task, input="code", filename="a.py", size=-1, sha256=digest
         )
-    with pytest.raises(InvalidInputs):
+    assert sized.value.detail == rules.UNREADABLE_FILE
+    with pytest.raises(InvalidInputs) as hashed:
         await uploads.slot(
             setup, session, task, input="code", filename="a.py", size=1, sha256="nope"
         )
+    assert hashed.value.detail == rules.UNREADABLE_FILE
     with pytest.raises(InvalidInputs):
         await uploads.slot(
             setup, session, task, input="code", filename="a.py", size=1, sha256=digest.upper()

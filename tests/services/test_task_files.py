@@ -17,7 +17,7 @@ from forge.domain.content import Edit, EntryKind, Uploaded, UploadInfo
 from forge.domain.errors import Forbidden, InvalidInputs, UploadLimit, UploadNotReady
 from forge.domain.ids import TaskId
 from forge.domain.roles import Role, Scope
-from forge.domain.uploads import UploadStatus, pointer_text
+from forge.domain.uploads import EMPTY_FILE, UploadStatus, pointer_text
 from forge.port.uploads import TaskPlace
 from forge.runtime.setup import Setup
 from forge.services import files, roles, task_save, uploads
@@ -64,6 +64,18 @@ async def test_an_organisers_file_reaches_the_task_as_a_pointer(
     assert await acme.fake.uploads.holds(
         TaskPlace(entered.task), as_=acme.ada.identity, digest=_digest(DATA), size=len(DATA)
     )
+
+
+async def test_an_empty_file_is_refused_in_words_the_organiser_can_act_on(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    with pytest.raises(InvalidInputs) as refused:
+        await uploads.task_file_slot(
+            setup, acme.ada, entered.task, path=PATH, size=0, sha256=_digest(b"")
+        )
+
+    assert refused.value.detail == EMPTY_FILE
+    assert refused.value.extra["errors"] == [{"input": PATH, "message": EMPTY_FILE}]
 
 
 async def test_an_uploaded_file_is_listed_and_read_as_an_upload_and_a_typed_one_is_not(

@@ -30,10 +30,11 @@ from forge.domain.environment import LOCK_PATH
 from forge.domain.errors import NotFound
 from forge.domain.grading import GradingStatus
 from forge.domain.ids import ContestId, OrgId, TaskId
-from forge.domain.names import EntrantOwner, Named
+from forge.domain.names import EntrantOwner
 from forge.domain.registration import Status
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
+from forge.domain.yaml_models import path_text
 from forge.runtime.setup import Setup
 from forge.services import (
     access,
@@ -157,7 +158,9 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     contest = ContestId(f"{org}/spring")
     await tasks.create(live_setup, organiser, contest, "sum", title="Sum of Two")
     task = TaskId(f"{org}/spring/sum")
-    assert await tasks.list_tasks(live_setup, organiser, contest) == (Named(task, "sum"),)
+    assert await tasks.list_tasks(live_setup, organiser, contest) == (
+        tasks.ListedTask(task, "sum", may_manage=True),
+    )
 
     starter = await files.read(live_setup, organiser, task, "task.yaml")
     statement = await files.read(live_setup, organiser, task, "statement.md")
@@ -212,7 +215,7 @@ async def test_an_organiser_makes_an_org_a_contest_and_a_task_and_a_save_publish
     )
 
     assert isinstance(broken, Draft)
-    assert [error["path"] for error in broken.errors] == ["workflow"]
+    assert [path_text(error["path"]) for error in broken.errors] == ["workflow"]
     assert {tag["name"] for tag in admin.get(f"{repo}/tags").json()} == {"published/1"}
     state = await tasks.state(live_setup, organiser, task)
     assert (state.draft, state.errors) == (True, broken.errors)

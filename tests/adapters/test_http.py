@@ -5,7 +5,8 @@ identity its own way. Over a real connection pool it keeps eight calls in
 flight, the ninth waiting its turn and `Unavailable` once the pool timeout
 passes, and every response, a stream's included, gives its connection back.
 A prefix read asks for a range and stops at it, whether the server answers
-the range or the whole body.
+the range or the whole body. What an adapter's refusal says is for the log:
+a person is told its code's fixed sentence.
 """
 
 import asyncio
@@ -19,8 +20,16 @@ import pytest
 from forge.adapters.ci.woodpecker.ci_state import WoodpeckerState, written
 from forge.adapters.ci.woodpecker.http import CI_ADMIN, WoodpeckerAuth
 from forge.adapters.git.forgejo.http import ForgejoAuth, Http, new_client
-from forge.adapters.http import CONCURRENT_CALLS
-from forge.domain.errors import Conflict, Forbidden, NotFound, Rejected, Unavailable
+from forge.adapters.http import CONCURRENT_CALLS, segment
+from forge.domain.errors import (
+    ADAPTER_SAID,
+    Conflict,
+    Forbidden,
+    NotFound,
+    Rejected,
+    Unavailable,
+    said,
+)
 from forge.domain.identity import PLATFORM, AsOrgAccount, AsUser, Credential
 
 ACME = AsOrgAccount(
@@ -329,3 +338,17 @@ async def test_a_prefix_read_gives_its_connection_back_when_it_stops_short(
     server.release.set()
     assert (await http.call(PLATFORM, "GET", "/held")).text == "ok"
     await http.aclose()
+
+
+def test_a_person_is_told_an_adapters_refusal_in_its_codes_fixed_words() -> None:
+    with pytest.raises(NotFound) as raised:
+        segment("..")
+    assert "'..'" in raised.value.detail
+    assert said(raised.value) == ADAPTER_SAID["not_found"]
+
+
+def test_a_refusal_raised_outside_an_adapter_is_told_as_it_was_written() -> None:
+    with pytest.raises(NotFound) as raised:
+        raise NotFound("There is no such file.")
+    assert said(raised.value) == "There is no such file."
+    assert said(Conflict("The name 'x' is taken.")) == "The name 'x' is taken."

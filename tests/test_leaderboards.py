@@ -28,7 +28,6 @@ from forge.domain.blocks.leaderboard_shape_check import (
 )
 from forge.domain.blocks.numbers import Better
 from forge.domain.definitions import (
-    AFTER_DEADLINE,
     ALWAYS,
     ContestDefinition,
     Hold,
@@ -64,12 +63,11 @@ from forge.domain.leaderboards import (
     listed_now,
     read_leaderboards,
     results_seen,
-    seen_bounds,
     still_grading,
 )
 from forge.domain.names import EntrantOwner
 from forge.domain.run_showing import ValueShown
-from forge.domain.yaml_models import one_line
+from forge.domain.yaml_models import one_line, path_text
 from tests.test_run_task import ISLANDS as ISLANDS_TASK
 from tests.test_run_task import ISLANDS_ALWAYS
 
@@ -222,7 +220,7 @@ ISLANDS_VALUES = {
 
 
 def contest(text: str) -> ContestDefinition:
-    return parse_contest(HEAD + text, saved=True)
+    return parse_contest(HEAD + text)
 
 
 def checked(settings: ContestDefinition) -> LeaderboardsCheck:
@@ -1437,13 +1435,15 @@ def test_own_rows_for_everyone_and_old_leaderboards_are_refused_at_parse() -> No
     with pytest.raises(InvalidDefinition) as task:
         contest("tasks: [{id: s}]\nleaderboards:\n  s: {}\n")
 
-    assert [error["path"] for error in own.value.errors] == ["leaderboards.s.audience.rows"]
-    assert [error["path"] for error in old.value.errors] == ["leaderboards"]
-    assert {error["path"] for error in keyed.value.errors} == {
+    assert [path_text(error["path"]) for error in own.value.errors] == [
+        "leaderboards.s.audience.rows"
+    ]
+    assert [path_text(error["path"]) for error in old.value.errors] == ["leaderboards"]
+    assert {path_text(error["path"]) for error in keyed.value.errors} == {
         "leaderboards.s.name",
         "leaderboards.s.select",
     }
-    assert [error["path"] for error in task.value.errors] == ["leaderboards.s"]
+    assert [path_text(error["path"]) for error in task.value.errors] == ["leaderboards.s"]
 
 
 def leaderboard(columns: Mapping[str, object], **more: object) -> str:
@@ -1516,6 +1516,80 @@ def test_each_refusal_of_the_leaderboard_check(
     columns: dict[str, object], more: dict[str, object], path: str
 ) -> None:
     assert path in [each for each, _ in problems(leaderboard(columns, **more))]
+
+
+def _deep(depth: int) -> object:
+    tree: object = 1
+    for _ in range(depth):
+        tree = {"block": "add", "of": [tree, 1]}
+    return tree
+
+
+TEXT_BODY = "tasks: [{id: a}]\nleaderboards:\n  s:\n    columns:\n      medal: {text: gold}\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "path", "sentence"),
+    [
+        (
+            'tasks: [{id: a}]\nleaderboards:\n  "not": {columns: {c: 1}}\n',
+            "leaderboards.not",
+            "not is a word a formula reads as an operator, so it can't name a value. "
+            "Choose another name.",
+        ),
+        (
+            "tasks: [{id: b-c}]\nleaderboards:\n  b_c: {columns: {c: 1}}\n",
+            "leaderboards.b_c",
+            "b_c reads as b-c in a formula, where each - is written _. "
+            "Name the leaderboard otherwise.",
+        ),
+        (
+            "tasks: [{id: a}]\nleaderboards:\n  x-y: {columns: {c: 1}}\n  x_y: {columns: {d: 1}}\n",
+            "leaderboards.x_y",
+            "x_y reads as x-y in a formula, where each - is written _. "
+            "Name the leaderboard otherwise.",
+        ),
+        (
+            leaderboard({"or": 1}),
+            "leaderboards.s.columns.or",
+            "or is a word a formula reads as an operator, so it can't name a value. "
+            "Choose another name.",
+        ),
+        (
+            TEXT_BODY + "    sort: [{medal: desc}]\n    display: [medal]\n",
+            "leaderboards.s.sort.0",
+            "medal is text, and a leaderboard sorts on numbers. Display it.",
+        ),
+        (
+            TEXT_BODY + "    display: [{medal: {decimals: 2}}]\n",
+            "leaderboards.s.display.0",
+            "medal is text, so it has no decimals.",
+        ),
+    ],
+)
+def test_a_leaderboards_name_or_text_column_refused_names_its_path(
+    text: str, path: str, sentence: str
+) -> None:
+    assert problems(text) == [(path, sentence)]
+
+
+def test_a_leaderboard_with_no_columns_is_refused_at_its_columns() -> None:
+    text = "tasks: [{id: a}]\nleaderboards:\n  s: {audience: {who: everyone}}\n"
+
+    assert problems(text) == [
+        ("leaderboards.s.columns", "Give the leaderboard at least one column.")
+    ]
+
+
+@pytest.mark.parametrize("tree", [{"block": "add", "of": [1] * 1000}, _deep(65)])
+def test_a_column_too_large_to_work_out_quickly_is_refused_at_the_column(tree: object) -> None:
+    [(path, sentence)] = problems(leaderboard({"c": tree}))
+
+    assert path == "leaderboards.s.columns.c"
+    assert sentence.startswith("This column has ")
+    assert sentence.endswith(
+        "A column has at most 1000 parts and is at most 64 deep, so working it out stays quick."
+    )
 
 
 def test_a_loop_across_leaderboards_and_a_column_another_leaderboard_lacks_are_refused() -> None:
@@ -1636,39 +1710,6 @@ def test_a_tasks_values_carry_their_bounds_where_every_part_has_one() -> None:
 
     assert found["total"] == (0, 100)
     assert found["slow"] is None
-
-
-def test_anyone_but_staff_knows_a_values_bounds_only_from_what_they_are_shown() -> None:
-    # Item 126: a value listed always that counts the runs of st2_tests, a
-    # group no run entry shows until the deadline, would tell its size, 2.
-    text = ISLANDS_TASK.replace(
-        "    total:\n", "    hard: {block: count, over: {runs: st2_tests}}\n    total:\n"
-    ).replace("values: [sample_score,", "values: [hard, sample_score,")
-    scoring = parse_task(text).scoring
-    assert scoring is not None
-    runs = [
-        RunResult(f"r{n}", "", {"input": path})
-        for n, path in enumerate(["samples/1.in", "samples/2.in", "tests/3.in", "tests/4.in"], 1)
-    ]
-    groups = {
-        "all": runs,
-        "sample_tests": runs[:2],
-        "st1_tests": runs[2:3],
-        "st2_tests": runs[2:],
-    }
-    columns = {"score": Column(Better.HIGHER, Fraction(0), Fraction(1))}
-
-    staff = value_bounds(scoring.values, groups, columns)
-    during = seen_bounds(scoring, groups, columns, (ALWAYS,))
-    after = seen_bounds(scoring, groups, columns, (ALWAYS, AFTER_DEADLINE))
-
-    two, hundred = (Fraction(2), Fraction(2)), (Fraction(0), Fraction(100))
-    assert (staff["hard"], staff["total"]) == (two, hundred)
-    # During the contest: sample_score's bounds read only sample_tests,
-    # shown always; hard's read a hidden group, and total is not listed yet.
-    assert during == {"hard": None, "sample_score": (Fraction(0), Fraction(1)), "sample_time": None}
-    # From the deadline `all` shows every run, so every group is known.
-    assert (after["hard"], after["total"]) == (two, hundred)
 
 
 def test_the_gradebooks_total_carries_its_bounds_and_seconds_late_none() -> None:

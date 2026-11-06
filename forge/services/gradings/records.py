@@ -107,13 +107,15 @@ class FeedEntry:
     label, the letter of its place in the contest's `tasks`. The label is
     none once the contest no longer lists the task, or when its settings do
     not read or the forge does not say, and the name none for a task the
-    platform has no name for.
+    platform has no name for. `may_manage` says whether the reader manages
+    its task, who may cancel, retry and rejudge it.
     """
 
     grading: GradingRecord
     by: Submitter
     task_name: str | None
     label: str | None
+    may_manage: bool
 
 
 @dataclass(frozen=True, slots=True)

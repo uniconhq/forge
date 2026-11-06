@@ -243,6 +243,14 @@ async def test_who_may_invite_and_to_what(setup: Setup, people: Acme) -> None:
         await invites.create(setup, manager, CONTEST, Grant.OBSERVER, email="not an address")
     with pytest.raises(InvalidInvite):
         await invites.create(
+            setup, manager, CONTEST, Grant.OBSERVER, email="a" * 242 + "@example.test"
+        )
+    longest = "a" * 241 + "@example.test"
+    assert len(longest) == 254
+    made = await invites.create(setup, manager, CONTEST, Grant.OBSERVER, email=longest)
+    assert made.email == longest
+    with pytest.raises(InvalidInvite):
+        await invites.create(
             setup, manager, CONTEST, Grant.OBSERVER, username="carol", email="c@example.test"
         )
     with pytest.raises(InvalidInvite):

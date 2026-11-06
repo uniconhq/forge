@@ -59,11 +59,7 @@ leaderboard's audience, never stored.
 - **A header** says what a listed column is, the same for every row: its
   name, the decimals it is shown to, the least and most it can give
   where both are known (stage 5 section 6, item 5), and the self-reported
-  values it reads, each by task (item 7). For anyone but staff the bounds
-  are known only from what the viewer is shown now (`seen_bounds`): a
-  task released to them, its values `show` lists at a time that has come
-  and the groups whose runs are all shown then, so "0 to 7" never tells
-  the size of a hidden group (item 126).
+  values it reads, each by task (item 7). Only staff are told the bounds.
 """
 
 from collections.abc import Callable, Collection, Mapping, Sequence
@@ -71,16 +67,14 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from fractions import Fraction
 
-from forge.domain.blocks.bounds import Bounds, value_bounds
+from forge.domain.blocks.bounds import Bounds
 from forge.domain.blocks.catalogue import MARKED, SHOWN_FACTS
-from forge.domain.blocks.evaluate import Column, RunResult
 from forge.domain.blocks.leaderboard_evaluate import Cell, Submitted
 from forge.domain.blocks.leaderboard_shape_check import ColumnRef, LeaderboardsCheck
 from forge.domain.definitions import Hold, Leaderboard, LeaderboardAudience, Scoring
 from forge.domain.names import WorkspaceOwner
 from forge.domain.run_showing import ValueShown
 from forge.domain.run_task import listed as listed_at
-from forge.domain.run_task import picks
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,8 +139,9 @@ class LeaderboardViewRow:
 class LeaderboardView:
     """A leaderboard as one viewer reads it: its key, its title, who it is
     for, its listed columns' headers, the keys it was sorted by for them,
-    the sort keys dropped for them, its rows in order, and the moment the
-    hold holds other rows from, none when it holds nothing for them."""
+    the sort keys dropped for them, its rows in order, the moment the
+    hold holds other rows from, none when it holds nothing for them, and
+    whether they read it as staff."""
 
     key: str
     title: str
@@ -156,6 +151,7 @@ class LeaderboardView:
     rows: tuple[LeaderboardViewRow, ...]
     dropped: tuple[str, ...] = ()
     held_from: datetime | None = None
+    staff: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,29 +244,6 @@ def listed_now(scoring: Scoring, times: Collection[str]) -> tuple[frozenset[str]
     return frozenset(name for name in scoring.values if name in values), any(
         name in SHOWN_FACTS for name in outputs
     )
-
-
-def seen_bounds(
-    scoring: Scoring,
-    groups: Mapping[str, Sequence[RunResult]],
-    columns: Mapping[str, Column],
-    times: Collection[str],
-) -> dict[str, Bounds]:
-    """Each value of a task `show` lists at the `times` that have come,
-    with its bounds as anyone but staff may know them (item 126): worked
-    out over the values listed then and the groups, of `groups`, whose
-    runs the run entries listed then all show, so a value reading anything
-    else has none, and a header never tells what a hidden group or value
-    holds, such as how many runs a group has. `first_not_passed` shows no
-    run here, since which it picks is a submission's. `columns` are each
-    report's column as the plan gives it."""
-    listed_values = listed_at(scoring.show, "values", times)
-    shown = {
-        run.id for name in picks(scoring.show, times) if name in groups for run in groups[name]
-    }
-    seen = {name: runs for name, runs in groups.items() if {run.id for run in runs} <= shown}
-    values = {name: tree for name, tree in scoring.values.items() if name in listed_values}
-    return value_bounds(values, seen, columns)
 
 
 def counted_in(
@@ -498,6 +471,7 @@ class _Read:
             shown,
             dropped,
             held_from if not viewer.staff else None,
+            viewer.staff,
         )
 
     def _header(self, header: Header) -> Header:
@@ -642,7 +616,6 @@ __all__ = [
     "listed_now",
     "read_leaderboards",
     "results_seen",
-    "seen_bounds",
     "sees",
     "still_grading",
 ]

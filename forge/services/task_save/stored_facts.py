@@ -10,7 +10,7 @@ from forge.domain.run_task import RUNS_PATH, RunTask
 from forge.domain.run_workflow import WorkflowFiles
 from forge.domain.uploads import upload_info
 from forge.domain.workflow_definition import WorkflowRef
-from forge.domain.yaml_models import Problem
+from forge.domain.yaml_models import Problem, path_text
 from forge.runtime.context import Context
 from forge.services.task_save.sources import _content
 
@@ -128,8 +128,9 @@ def _hiding_digest(lines: tuple[str, ...]) -> str:
 
 
 def _workflow_problem(ref: WorkflowRef, problem: Problem) -> Problem:
+    where = f" ({path_text(problem['path'])})" if problem["path"] else ""
     return Problem(
-        path="workflow",
-        message=f"The workflow {ref} has a problem ({problem['path']}): {problem['message']} "
+        path=("workflow",),
+        message=f"The workflow {ref} has a problem{where}: {problem['message']} "
         "Choose another version of it, or ask its owner to fix it.",
     )

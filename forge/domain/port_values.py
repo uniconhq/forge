@@ -7,7 +7,7 @@ from typing import Literal
 
 from forge.domain.plan_basics import PLANS_FOLDER
 from forge.domain.primitives import Port
-from forge.domain.types import SCALARS, Type
+from forge.domain.types import SCALARS, VALUE_TYPES, Type
 from forge.domain.workflow_definition import (
     BadReference,
     Reference,
@@ -15,7 +15,7 @@ from forge.domain.workflow_definition import (
     references,
     whole_reference,
 )
-from forge.domain.yaml_models import Problem, exact_number, is_number, path_text
+from forge.domain.yaml_models import Problem, exact_number, is_number
 
 
 def is_reserved(path: str) -> bool:
@@ -79,7 +79,7 @@ def stray_units(workflow: RunWorkflow) -> list[Problem]:
             kind = "one of a list" if declared.type is Type.ENUM else type_in_words(declared.type)
             problems.append(
                 Problem(
-                    path=path_text(("inputs", key, "unit")),
+                    path=("inputs", key, "unit"),
                     message=f"Only a number takes a unit, and {key} is {kind}. Remove the "
                     f"unit, or make {key} a number.",
                 )
@@ -160,6 +160,21 @@ def check_value_fits_port(kind: Kind, port: Port, raw: object) -> None:
         raise Refused(f"This takes one of {', '.join(port.options or ())}.")
     if kind.type is not wanted:
         raise Refused(f"This takes {type_in_words(wanted)}, not {type_in_words(kind.type)}.")
+
+
+def accepted_types(port: Port) -> tuple[Type, ...]:
+    """The types a whole wire into `port` may carry, by `check_value_fits_port`:
+    an enum given here must also take only the port's options.
+    """
+    accepted: list[Type] = []
+    for each in VALUE_TYPES:
+        options = frozenset(port.options or ()) if each is Type.ENUM else None
+        try:
+            check_value_fits_port(Kind(each, options, "input"), port, None)
+        except Refused:
+            continue
+        accepted.append(each)
+    return tuple(accepted)
 
 
 def type_in_words(kind: Type) -> str:

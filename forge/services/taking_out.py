@@ -61,7 +61,7 @@ from forge.domain.invites import InviteStatus
 from forge.domain.leaderboard_task_check import leaderboards_of
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, contest_id_of, contest_scope, task_scope
-from forge.domain.yaml_models import InvalidDefinition, Problem
+from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -151,10 +151,7 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
     """Put a withdrawn task back in its contest, as a save of the contest's
     settings taking `withdrawn` out of its entry would, checked the same
     way: `InvalidDefinition` naming `contest.yaml` with what a leaderboard
-    or a timeline refuses. Only what the edit brings is refused, so a file
-    stored with what a save now refuses but a read ignores, old
-    leaderboards among them (stage 5 section 6, item 73), takes it as
-    withdrawing did. Needs the manager role at the contest.
+    or a timeline refuses. Needs the manager role at the contest.
     `TakeOutRefused` when the entry cannot be edited line by line. A task
     not withdrawn changes nothing.
     """
@@ -167,13 +164,8 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
     if updated is None:
         return PutBack(())
     before, after = parse_contest(found.content), parse_contest(updated)
-    problems = [
-        problem
-        for problem in _saved_problems(updated)
-        if problem not in _saved_problems(found.content)
-    ]
     timeline = await timelines.check_contest(ctx, contest, before, after)
-    problems += timeline.problems
+    problems = list(timeline.problems)
     checked = await leaderboards.check_contest(ctx, contest, before, after)
     problems += checked.problems
     if problems:
@@ -182,16 +174,6 @@ async def put_back(ctx: Context, organiser: Organiser, task: TaskId) -> PutBack:
     places.ahead_at(ctx, task)
     log.info("tasks.put_back", task=task, user_id=organiser.user.id)
     return PutBack(tuple(checked.notes))
-
-
-def _saved_problems(text: bytes | str) -> list[Problem]:
-    """What a save of the contest's settings in `text` is refused for at
-    the parse (`parse_contest`'s `saved`)."""
-    try:
-        parse_contest(text, saved=True)
-    except InvalidDefinition as refused:
-        return refused.errors
-    return []
 
 
 async def _name(ctx: Context, task: TaskId) -> str:
@@ -314,8 +296,8 @@ async def _drop_places(ctx: Context, contest: ContestId, task: TaskId, name: str
             await ctx.forge.workspaces.delete_submission_place(workspace, task)
         except Conflict:
             raise TakeOutRefused(
-                f"{name} has a submission the platform has not recorded yet, so it cannot be "
-                "removed. Ask the platform's operator to reconcile, then withdraw it."
+                f"{name} holds a submission Unicon has no record of, so it cannot be removed. "
+                "Withdraw it instead, and tell whoever runs Unicon."
             ) from None
     await ctx.db.execute(delete(Upload).where(Upload.task_id == task))
 

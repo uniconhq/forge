@@ -95,7 +95,8 @@ class Summary:
     lists it, what started it, the publication it grades against, when and
     by whom, the organiser's username none when the forge does not say;
     how many submissions it took, how many of them it graded, finishing with
-    a result, whether any is still running, and how many each change counts.
+    a result, whether any is still running, how many each change counts,
+    and whether the reader manages its task, who may dismiss it.
     """
 
     id: uuid.UUID
@@ -111,6 +112,7 @@ class Summary:
     graded: int
     running: bool
     counts: Mapping[ChangeKind, int]
+    may_manage: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +212,7 @@ async def latest(ctx: Context, organiser: Organiser, contest: ContestId) -> tupl
                 graded=sum(1 for change in changes if change in GRADED),
                 running=ChangeKind.RUNNING in changes,
                 counts=counted(changes),
+                may_manage=holds(organiser.grants, task_scope(TaskId(row.task_id)), Role.MANAGER),
             )
         )
     return tuple(found)
@@ -295,7 +298,7 @@ async def gradings_of(
         )
         for each in read
     ]
-    return await gradings.entries(ctx, contest, records)
+    return await gradings.entries(ctx, organiser, contest, records)
 
 
 @action

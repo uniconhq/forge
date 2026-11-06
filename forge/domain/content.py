@@ -24,7 +24,7 @@ from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from forge.domain.errors import InvalidPath
 from forge.domain.ids import VersionId
@@ -167,6 +167,12 @@ class TreeEntry:
     start: str | None = None
 
 
+UNTOKENED_REMOVAL = (
+    "To remove a file, the save must say which version of it was read. Reload the files and "
+    "try again."
+)
+UNTOKENED_FILE = "Reload the files, then remove this one again."
+
 SMALL_FILE = 1024
 """The most bytes a file has for a listing to give its start: a row shows one
 line or about 40 characters of it, and a larger file shows its size."""
@@ -218,15 +224,26 @@ class Uploaded:
     upload: uuid.UUID
 
 
+VALUES_ONLY = "Only a task's task.yaml and a contest's contest.yaml take values."
+
+
+@dataclass(frozen=True, slots=True)
+class Values:
+    """A settings file's new values, as a form sends them: the save writes
+    them into the file as it is, keeping what they leave alone."""
+
+    values: Mapping[str, Any]
+
+
 @dataclass(frozen=True, slots=True)
 class Edit:
     """One file as a save writes it: its new content, either typed text the
-    save carries or an upload the forge already holds, or none to remove the
-    file, and the token it was read with, or none for a file the save
-    creates. A removal always carries its token.
+    save carries, an upload the forge already holds or a form's values, or
+    none to remove the file, and the token it was read with, or none for a
+    file the save creates. A removal always carries its token.
     """
 
-    content: bytes | Uploaded | None
+    content: bytes | Uploaded | Values | None
     token: ConflictToken | None = None
 
 

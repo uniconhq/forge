@@ -29,7 +29,7 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.roles import Role, Scope
 from forge.domain.submissions import SubmittedInput
-from forge.domain.yaml_models import InvalidDefinition
+from forge.domain.yaml_models import InvalidDefinition, path_text
 from forge.runtime.setup import Setup
 from forge.services import files, submissions, taking_out, task_save, tasks, timelines, uploads
 from forge.services.access import Organiser
@@ -216,7 +216,10 @@ async def test_an_invalid_contest_yaml_is_refused_whole_naming_each_path(
     with pytest.raises(InvalidDefinition) as refused:
         await files.write(setup, acme.ada, spring, "contest.yaml", broken, before.token)
 
-    assert {problem["path"] for problem in refused.value.errors} == {"state", "team_size"}
+    assert {path_text(problem["path"]) for problem in refused.value.errors} == {
+        "state",
+        "team_size",
+    }
     assert acme.fake.calls_to("write_file") == []
 
 
@@ -347,7 +350,7 @@ async def _refused(setup: Setup, acme: Acme, content: bytes) -> list[tuple[str, 
     with pytest.raises(InvalidDefinition) as refused:
         await _write_contest(setup, acme, content)
     assert acme.fake.calls_to("write_file") == []
-    return [(problem["path"], problem["message"]) for problem in refused.value.errors]
+    return [(path_text(problem["path"]), problem["message"]) for problem in refused.value.errors]
 
 
 async def _submitted(setup: Setup, acme: Acme, entered: Entered) -> None:
@@ -959,7 +962,7 @@ async def test_a_scheduled_task_cannot_publish_an_unwritten_statement(
     result = await prepared(setup, acme.ada, sum_task, result)
     assert isinstance(result, task_save.Draft)
     assert result.errors == (
-        {"path": "statement.md", "message": "A · sum: its statement is not written yet."},
+        {"path": ("statement.md",), "message": "A · sum: its statement is not written yet."},
     )
 
 

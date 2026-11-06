@@ -40,7 +40,7 @@ from forge.domain.definitions import Check, Form, TaskDefinition
 from forge.domain.plan_basics import RESULT_MAX
 from forge.domain.primitives import STEP_OUTCOMES
 from forge.domain.types import FILES, Type
-from forge.domain.yaml_models import Path, Problem, is_number, joined, path_text
+from forge.domain.yaml_models import Path, Problem, is_number, joined
 
 VERDICT = "verdict"
 """The key of `expect` that names the verdict every run must get."""
@@ -125,7 +125,7 @@ def check_checks(
         for name in sorted(set(check.submit) - set(entrant)):
             problems.append(
                 Problem(
-                    path=path_text((*at, "submit", name)),
+                    path=(*at, "submit", name),
                     message=f"The entrant gives no {name}, so a check cannot. A check gives "
                     f"what the entrant does: {joined(sorted(entrant))}.",
                 )
@@ -136,7 +136,7 @@ def check_checks(
                 if wanted.type in FILES or wanted.parts is not None or default is None:
                     problems.append(
                         Problem(
-                            path=path_text((*at, "submit")),
+                            path=(*at, "submit"),
                             message=f"This check gives no {name}, which the entrant must give. "
                             "Give it.",
                         )
@@ -146,7 +146,7 @@ def check_checks(
                 continue
             read = _given(check.submit[name], wanted, paths)
             if isinstance(read, str):
-                problems.append(Problem(path=path_text((*at, "submit", name)), message=read))
+                problems.append(Problem(path=(*at, "submit", name), message=read))
             else:
                 given[name] = read
         verdict, numbers = _expected(check.expect, values, marked, at, problems, kinds or {})
@@ -225,7 +225,7 @@ def _expected(
     verdict: str | None = None
     numbers: dict[str, Fraction | str] = {}
     for name, raw in expect.items():
-        where = path_text((*at, "expect", name))
+        where: Path = (*at, "expect", name)
         if name == VERDICT:
             if not isinstance(raw, str) or raw not in STEP_OUTCOMES:
                 problems.append(

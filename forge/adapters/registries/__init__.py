@@ -33,6 +33,7 @@ from forge.domain.environment import (
 )
 from forge.domain.environment.tools import COMPANIONS, SOURCES, TOOLS, VERSIONS
 from forge.domain.errors import Rejected, TooLarge, Unavailable
+from forge.domain.yaml_models import size_in_words
 from forge.port.packages import PreparedEnvironment
 from forge.port.registries import RegistryPort
 
@@ -101,8 +102,8 @@ class EnvironmentResolver:
                     }
                     if (largest := max(sizes.values())) > cap:
                         raise TooLarge(
-                            f"The {language} toolchain and packages total {largest} bytes, "
-                            f"more than {cap}."
+                            f"The {language} toolchain and packages come to "
+                            f"{size_in_words(largest)}, more than {size_in_words(cap)}."
                         )
                     for records in solved.values():
                         for piece in records:
@@ -144,8 +145,8 @@ class EnvironmentResolver:
                         )
                         if total > cap:
                             raise TooLarge(
-                                f"The {language} toolchain and packages total {total} bytes, "
-                                f"more than {cap}."
+                                f"The {language} toolchain and packages come to "
+                                f"{size_in_words(total)}, more than {size_in_words(cap)}."
                             )
                         picked = next(piece.version for piece in records if piece.name == tool)
                         wheels: list[Wheel] = []

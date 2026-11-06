@@ -28,7 +28,7 @@ from forge.domain.errors import (
 )
 from forge.domain.ids import OrgId
 from forge.domain.keys import key_from_name
-from forge.domain.names import Named, OrgProfile
+from forge.domain.names import Named
 from forge.domain.roles import Role, Scope
 from forge.domain.sessions import Session
 from forge.log import JsonFormatter
@@ -390,6 +390,18 @@ async def test_an_admin_updates_the_org_and_a_manager_is_refused(
     assert fake.state.orgs["acme"].description == "Acme Corp"
 
 
+async def test_a_display_name_over_100_characters_is_refused(ctx: Context, fake: FakeForge) -> None:
+    await fake.orgs.create_org(ACME, description="Acme")
+    await fake.orgs.grant_role(7, Scope("acme"), Role.ADMIN)
+    admin = await _organiser(ctx, fake, 7, Scope("acme"), Role.ADMIN)
+
+    await orgs.update(ctx, admin, ACME, description="Acme", display_name="A" * 100)
+    assert fake.state.orgs["acme"].display_name == "A" * 100
+    with pytest.raises(InvalidName, match="at most 100 characters"):
+        await orgs.update(ctx, admin, ACME, description="Acme", display_name="A" * 101)
+    assert fake.state.orgs["acme"].display_name == "A" * 100
+
+
 async def test_any_organiser_in_the_org_reads_its_own_fields_and_no_one_else(
     ctx: Context, fake: FakeForge
 ) -> None:
@@ -399,11 +411,12 @@ async def test_any_organiser_in_the_org_reads_its_own_fields_and_no_one_else(
     admin = await _organiser(ctx, fake, 7, Scope("acme"), Role.ADMIN)
     of_one_task = await _organiser(ctx, fake, 8, Scope("acme", "spring", "sum"), Role.OBSERVER)
 
-    assert await orgs.read(ctx, admin, ACME) == OrgProfile(display_name=None, description="Acme")
+    read = await orgs.read(ctx, admin, ACME)
+    assert (read.display_name, read.description) == (None, "Acme")
     await orgs.update(ctx, admin, ACME, description="Acme Corp", display_name="ACME")
 
-    expected = OrgProfile(display_name="ACME", description="Acme Corp")
-    assert await orgs.read(ctx, of_one_task, ACME) == expected
+    read = await orgs.read(ctx, of_one_task, ACME)
+    assert (read.display_name, read.description) == ("ACME", "Acme Corp")
     with pytest.raises(Forbidden):
         await orgs.read(ctx, admin, OrgId("globex"))
 

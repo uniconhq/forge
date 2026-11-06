@@ -75,6 +75,7 @@ from forge.domain.errors import (
     UploadNotYours,
     WrongInviteCode,
     WrongStatus,
+    said,
 )
 from forge.domain.yaml_models import InvalidDefinition
 
@@ -154,4 +155,5 @@ __all__ = [
     "UploadNotYours",
     "WrongInviteCode",
     "WrongStatus",
+    "said",
 ]

@@ -25,7 +25,7 @@ from forge.domain.workflow_definition import (
     WorkflowRef,
     parse_run_workflow,
 )
-from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
+from forge.domain.yaml_models import InvalidDefinition, Path, Problem
 from forge.runtime.context import Context
 from forge.services import names, primitives
 
@@ -181,7 +181,7 @@ async def expand(
             use = str(step.use)
             fresh = use not in seen
             opened = await open_use(step.use)
-            at = path_text(("steps", outer_index, "use"))
+            at: Path = ("steps", outer_index, "use")
             if opened.kind == "workflow" and opened.key in on_path:
                 problems.append(
                     Problem(

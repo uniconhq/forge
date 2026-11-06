@@ -12,6 +12,7 @@ import uv
 
 from forge.domain.environment import Wheel
 from forge.domain.errors import Rejected, TooLarge, Unavailable
+from forge.domain.yaml_models import size_in_words
 
 TARGETS = {"linux-64": "x86_64-manylinux_2_28", "linux-aarch64": "aarch64-manylinux_2_28"}
 
@@ -63,7 +64,7 @@ class PypiResolver:
             )
             total += wheel.size
             if total > cap:
-                raise TooLarge(f"The Python packages exceed the {cap} byte limit.")
+                raise TooLarge(f"The Python packages come to more than {size_in_words(cap)}.")
             wheels.append(wheel)
             path = root / wheel.sha256
             if not path.exists():

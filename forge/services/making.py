@@ -21,7 +21,15 @@ at.
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from forge.domain.errors import Conflict, Forbidden, Misconfigured, NotFound, PortError, Rejected
+from forge.domain.errors import (
+    REFUSED,
+    Conflict,
+    Forbidden,
+    Misconfigured,
+    NotFound,
+    PortError,
+    Rejected,
+)
 from forge.log import get_logger
 from forge.runtime.context import Context
 
@@ -31,8 +39,8 @@ SAID: dict[type[PortError], str] = {
     Misconfigured: "Unicon is not set up right, so this cannot be done. Tell whoever runs it.",
     Conflict: "Something by that name already exists. Try again.",
     NotFound: "Something this needs could not be found. Try again.",
-    Forbidden: "This was refused. Try again, or tell whoever runs Unicon.",
-    Rejected: "This was refused. Try again, or tell whoever runs Unicon.",
+    Forbidden: REFUSED,
+    Rejected: REFUSED,
 }
 NO_ANSWER = "A server Unicon relies on did not answer. Try again in a moment."
 

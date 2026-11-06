@@ -197,12 +197,31 @@ def refuse_pointer(path: str, content: bytes) -> None:
     raise InvalidInputs(problem, errors=[{"input": path, "message": problem}])
 
 
+UNREADABLE_FILE = "The file's details did not come through right. Choose the file again."
+"""For what the page sends about a file, such as its SHA-256 or size, being
+malformed: the person can only choose it again."""
+EMPTY_FILE = "The file is empty. Choose a file with something in it."
+
+
 def digest_problem(digest: str) -> str | None:
     """What is wrong with `digest` as a file's SHA-256, if anything."""
-    if not isinstance(digest, str) or len(digest) != DIGEST_LENGTH:
-        return f"A file's SHA-256 must be {DIGEST_LENGTH} characters of lower case hex."
-    if any(character not in DIGEST_CHARACTERS for character in digest):
-        return "A file's SHA-256 must use only 0 to 9 and a to f."
+    if (
+        not isinstance(digest, str)
+        or len(digest) != DIGEST_LENGTH
+        or any(character not in DIGEST_CHARACTERS for character in digest)
+    ):
+        return UNREADABLE_FILE
+    return None
+
+
+def size_problem(size: object, *, empty: bool = False) -> str | None:
+    """What is wrong with `size` as a file's size in bytes, if anything; an
+    empty file is refused unless `empty`.
+    """
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        return UNREADABLE_FILE
+    if size == 0 and not empty:
+        return EMPTY_FILE
     return None
 
 

@@ -1,12 +1,13 @@
 """Workflows for a signed-in person: making one, the ones they may read,
-one as its page shows it, its definition at a version, saving its draft,
-making a version, checking a definition on its own, who reads it, copying
-one, a version's inputs and outputs for drawing it as a box, and the files
-a version was frozen with, listed and downloaded; the
-platform's primitives at each version for the palette; and the types they
-come back as.
+one as its page shows it, its definition at a version, its draft read and
+saved as values or as text, making a version, checking a definition on its
+own, who reads it, copying one, a version's inputs and outputs for drawing
+it as a box, the types a wire into a port may carry, and the files a
+version was frozen with, listed and downloaded; the platform's primitives at
+each version for the palette; and the types they come back as.
 """
 
+from forge.domain.port_values import accepted_types
 from forge.domain.primitives import (
     FromInput,
     FromMax,
@@ -27,10 +28,12 @@ from forge.services.workflows import (
     Draft,
     NewWorkflow,
     SearchPage,
+    VersionDefinition,
     WorkflowSummary,
     WorkflowView,
     box,
     check,
+    check_values,
     complete_file,
     copy,
     create,
@@ -39,9 +42,11 @@ from forge.services.workflows import (
     file_slot,
     files,
     listing,
+    read_draft,
     read_file,
     read_version,
     save,
+    save_values,
     search,
     set_visibility,
     share,
@@ -71,12 +76,15 @@ __all__ = [
     "PrimitiveVersion",
     "Problem",
     "SearchPage",
+    "VersionDefinition",
     "Visibility",
     "WorkflowSummary",
     "WorkflowView",
     "Yanked",
+    "accepted_types",
     "box",
     "check",
+    "check_values",
     "complete_file",
     "copy",
     "create",
@@ -86,9 +94,11 @@ __all__ = [
     "files",
     "listing",
     "primitives",
+    "read_draft",
     "read_file",
     "read_version",
     "save",
+    "save_values",
     "search",
     "set_visibility",
     "share",

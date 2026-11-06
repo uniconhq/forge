@@ -1,12 +1,12 @@
-"""Making a contest and listing an org's contests. A contest is one place at
-the forge holding `contest.yaml`, with three roles of its own. `create`
-checks the name and makes it before it answers: the place with a starter
-`contest.yaml` that is valid as written, then its roles and protection,
-which `content.secure` attaches. A step that fails fails the request, which
-writes nothing here, and the contest the try made is removed again with its
-roles before the person is told; that is best effort, and a contest that
-could not be removed is logged (`forge.services.making`). The person asks
-again.
+"""Making a contest, listing an org's contests and reading one. A contest
+is one place at the forge holding `contest.yaml`, with three roles of its
+own. `create` checks the name and makes it before it answers: the place
+with a starter `contest.yaml` that is valid as written, then its roles and
+protection, which `content.secure` attaches. A step that fails fails the
+request, which writes nothing here, and the contest the try made is removed
+again with its roles before the person is told; that is best effort, and a
+contest that could not be removed is logged (`forge.services.making`). The
+person asks again.
 
 A contest needs the manager role at its org, which is also what shows the
 org is there: roles are held at the forge, in the org. Its name is reserved
@@ -27,7 +27,7 @@ from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import making, names
+from forge.services import making, may, names
 from forge.services.access import Organiser, require
 
 log = get_logger(__name__)
@@ -64,9 +64,11 @@ async def create(
 
 @dataclass(frozen=True, slots=True)
 class Listed:
-    """A contest in its org's list: its id and name, and its state, start and
-    end as its `contest.yaml` says them, all three none when the file cannot
-    be read or does not validate.
+    """A contest as its org's list or its own read tells it: its id and name,
+    and its state, start and end as its `contest.yaml` says them, all three
+    none when the file cannot be read or does not validate. `may` is what
+    the reader may do there, told here since it holds even while the file
+    does not read.
     """
 
     id: str
@@ -74,6 +76,7 @@ class Listed:
     state: State | None
     start: datetime | None
     end: datetime | None
+    may: may.PlaceMay
 
 
 @action
@@ -86,10 +89,33 @@ async def list_contests(ctx: Context, organiser: Organiser, org: OrgId) -> tuple
     require(organiser, Scope(org), Role.OBSERVER)
     found = await names.named(ctx, await ctx.forge.content.list_contests(organiser.identity, org))
     await ctx.let_go()
-    return tuple([await _listed(ctx, organiser.identity, each) for each in found])
+    return tuple(
+        [
+            await _listed(
+                ctx,
+                organiser.identity,
+                each,
+                may.at_place(organiser.grants, contest_scope(ContestId(each.id))),
+            )
+            for each in found
+        ]
+    )
 
 
-async def _listed(ctx: Context, as_: Identity, contest: Named) -> Listed:
+@action
+async def read(ctx: Context, organiser: Organiser, contest: ContestId) -> Listed:
+    """The contest as the org's list tells it, read as the organiser. Needs
+    the observer role at the contest.
+    """
+    require(organiser, contest_scope(contest), Role.OBSERVER)
+    found = Named(contest, await names.name_of(ctx, contest))
+    await ctx.let_go()
+    return await _listed(
+        ctx, organiser.identity, found, may.at_place(organiser.grants, contest_scope(contest))
+    )
+
+
+async def _listed(ctx: Context, as_: Identity, contest: Named, allowed: may.PlaceMay) -> Listed:
     """The contest with its state, start and end, or none of them when its
     settings cannot be read or do not validate.
     """
@@ -97,5 +123,5 @@ async def _listed(ctx: Context, as_: Identity, contest: Named) -> Listed:
         found = await ctx.forge.content.read_file(as_, ContestId(contest.id), CONTEST_FILE)
         settings = parse_contest(found.content)
     except PortError, InvalidDefinition:
-        return Listed(contest.id, contest.name, None, None, None)
-    return Listed(contest.id, contest.name, settings.state, settings.start, settings.end)
+        return Listed(contest.id, contest.name, None, None, None, allowed)
+    return Listed(contest.id, contest.name, settings.state, settings.start, settings.end, allowed)

@@ -51,14 +51,17 @@ async def test_a_new_workflow_is_an_empty_draft_that_cannot_be_versioned(
     bob = await signed_in(setup, acme.fake, 8)
     await workflows.create(setup, bob, "bob", "tuned")
     page = await workflows.view(setup, bob, "bob", "tuned")
-    assert page.draft is not None
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
     assert page.summary.versions == ()
     assert acme.fake.state.repos[("bob", "tuned.workflow")].files == {
-        WORKFLOW_FILE: page.draft.text.encode()
+        WORKFLOW_FILE: draft.text.encode()
     }
-    checked = await workflows.check(setup, bob, page.draft.text)
+    checked = await workflows.check(setup, bob, draft.text)
     assert list(checked) == [
-        {"path": "steps", "message": "A workflow needs at least one step. Add one from the tray."}
+        {
+            "path": ("steps",),
+            "message": "A workflow needs at least one step. Add one from the tray.",
+        }
     ]
     with pytest.raises(InvalidDefinition) as raised:
         await workflows.create_version(setup, bob, "bob", "tuned", "v1")

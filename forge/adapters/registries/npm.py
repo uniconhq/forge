@@ -20,6 +20,7 @@ import httpx
 
 from forge.domain.environment import NPM_ENTRY, NPM_NAME, PLATFORMS, NpmPackage
 from forge.domain.errors import Rejected, TooLarge, Unavailable
+from forge.domain.yaml_models import size_in_words
 from forge.log import get_logger
 
 REGISTRY = "https://registry.npmjs.org/"
@@ -345,7 +346,7 @@ async def _download(
                 async for chunk in response.aiter_bytes(1024 * 1024):
                     size += len(chunk)
                     if used + size > cap:
-                        raise TooLarge(f"The npm packages exceed the {cap} byte limit.")
+                        raise TooLarge(f"The npm packages come to more than {size_in_words(cap)}.")
                     sha256.update(chunk)
                     sha512.update(chunk)
                     output.write(chunk)

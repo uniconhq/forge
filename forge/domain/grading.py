@@ -186,6 +186,17 @@ class GradingStatus(StrEnum):
     OVER_LIMIT = "over_limit"
 
 
+STATUS_WORDS = {
+    GradingStatus.QUEUED: "is waiting to start",
+    GradingStatus.DISPATCHED: "is starting",
+    GradingStatus.RUNNING: "is being graded",
+    GradingStatus.DONE: "has finished",
+    GradingStatus.CANCELLED: "is already cancelled",
+    GradingStatus.SYSTEM_ERROR: "failed with a system error",
+    GradingStatus.OVER_LIMIT: "was over the submission limit",
+}
+
+
 UNFINISHED = (GradingStatus.QUEUED, GradingStatus.DISPATCHED, GradingStatus.RUNNING)
 AT_THE_CI = (GradingStatus.DISPATCHED, GradingStatus.RUNNING)
 """The statuses of a grading whose run the CI holds."""

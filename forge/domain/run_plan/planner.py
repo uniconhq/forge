@@ -73,7 +73,7 @@ from forge.domain.run_task import (
 from forge.domain.run_workflow import ResolvedStep, RunWorkflowCheck
 from forge.domain.types import FILES, Type
 from forge.domain.workflow_definition import SELF_REPORTED, RunWorkflow, references, whole_reference
-from forge.domain.yaml_models import Path, Problem, is_number, path_text
+from forge.domain.yaml_models import Path, Problem, is_number
 
 
 @dataclass(frozen=True, slots=True)
@@ -558,7 +558,7 @@ class _Planner:
                     )
                     problems.append(
                         Problem(
-                            path="workflow",
+                            path=("workflow",),
                             message=f"{taken}, the name the check that {step.id}'s source "
                             "compiles takes. Rename that step.",
                         )
@@ -622,7 +622,7 @@ class _Planner:
             ):
                 problems.append(
                     Problem(
-                        path="workflow",
+                        path=("workflow",),
                         message=f"{step.id} is given a source, language or entry that differs by "
                         "run, but tells its compile once for every run. Give it one the same for "
                         "every run.",
@@ -692,7 +692,7 @@ class _Planner:
                 )
                 problems.append(
                     Problem(
-                        path=path_text(("scoring", "values", name)),
+                        path=("scoring", "values", name),
                         message=f"{has}, the name {name}'s program step takes. Rename the value "
                         "or the step.",
                     )
@@ -841,7 +841,7 @@ class _Planner:
             raised = [name for step in (longest, *steps) for name in self.raising[step.step]]
             problems.append(
                 Problem(
-                    path=path_text(self._where(raised[0])) if raised else "workflow",
+                    path=self._where(raised[0]) if raised else ("workflow",),
                     message=f"{PIPELINE_WORDS[kind]} take {math.ceil(total / 60)} minutes, but a "
                     f"pipeline may take at most {int(ceiling // 60)}. The longest, "
                     f"{longest.name}, takes {math.ceil(longest.limits.time_ms / 60_000)}.",
@@ -867,9 +867,9 @@ class _Planner:
                 )
                 problems.append(
                     Problem(
-                        path=path_text(self._where(largest.input))
+                        path=self._where(largest.input)
                         if largest is not None and largest.input is not None
-                        else "workflow",
+                        else ("workflow",),
                         message=f"The step {step.step} needs {wanted} MB of memory, with the "
                         f"files it copies in beside its programs{such} but no machine this task "
                         f"may run on has more than {self.machine.memory_mb}.",
@@ -914,7 +914,7 @@ class _Planner:
             why += _UNSHOWN.format(entry=entry)
             problems.append(
                 Problem(
-                    path=path_text(("scoring", "show", time, *at)),
+                    path=("scoring", "show", time, *at),
                     message=f"{entry} cannot be shown {SHOWN_WORDS[time]}: {why}. Show "
                     f"{entry} after_deadline instead.",
                 )
@@ -980,7 +980,7 @@ class _Planner:
             or (report.port is not None and report.port.once is True)
         }
         return [
-            Problem(path=path_text(("scoring", "show", *at)), message=message)
+            Problem(path=("scoring", "show", *at), message=message)
             for at, message in once_problems(self.scoring.show, self.checked.reports, once)
         ]
 

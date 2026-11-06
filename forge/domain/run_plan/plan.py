@@ -31,7 +31,7 @@ from forge.domain.run_task import RunTask, key_json
 from forge.domain.run_workflow import RunWorkflowCheck
 from forge.domain.types import FILES
 from forge.domain.workflow_definition import RunWorkflow
-from forge.domain.yaml_models import Path, Problem, path_text
+from forge.domain.yaml_models import Path, Problem
 
 
 def _named(steps: dict[str, RunStep]) -> dict[str, RunStep]:
@@ -155,7 +155,7 @@ def plan_runs(
         return RunPlanCheck(
             [
                 Problem(
-                    path="workflow",
+                    path=("workflow",),
                     message=f"Unicon cannot grade this task with {definition.workflow}: the "
                     f"plan it makes breaks one of the runner's rules ({broken}).",
                 )
@@ -194,7 +194,7 @@ def _check_copies(
         if taken is not None:
             problems.append(
                 Problem(
-                    path=path_text(at),
+                    path=at,
                     message=f"Unicon names this check's copy of a step {taken}, which the "
                     "workflow's step of that name already takes. Remove the check, or rename "
                     "that step.",
@@ -217,7 +217,7 @@ def _check_copies(
     if total > ceiling:
         problems.append(
             Problem(
-                path="checks",
+                path=("checks",),
                 message=f"The save's steps and its checks take {math.ceil(total / 60)} "
                 f"minutes, but a pipeline may take at most {int(ceiling // 60)}. Give fewer "
                 "checks.",
@@ -230,7 +230,7 @@ def _check_copies(
     if room > CHECKS_ROOM:
         problems.append(
             Problem(
-                path="checks",
+                path=("checks",),
                 message=f"A failed check keeps up to {RUNS_KEPT} of its runs in the save's "
                 f"result, so these {len(task.checks)} checks could keep {room} bytes, more than "
                 f"the {CHECKS_ROOM} they may. Give fewer checks.",
@@ -253,7 +253,7 @@ def _too_large(
             if size > most:
                 found.append(
                     Problem(
-                        path=path_text((*at, "submit", name)),
+                        path=(*at, "submit", name),
                         message=f"{path} holds {size} bytes, more than the {most} the entrant "
                         f"may give as {name}.",
                     )

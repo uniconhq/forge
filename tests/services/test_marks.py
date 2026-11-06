@@ -34,7 +34,7 @@ from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.sessions import Session
 from forge.domain.submission_state import SubmissionState
 from forge.domain.submissions import SubmittedInput
-from forge.domain.yaml_models import InvalidDefinition
+from forge.domain.yaml_models import InvalidDefinition, path_text
 from forge.runtime.setup import Setup
 from forge.services import (
     contest_home,
@@ -184,19 +184,6 @@ async def ranked(setup: Setup, acme: Acme, entered: Entered, clock: FakeClock) -
     return entered
 
 
-async def test_a_contest_stored_with_the_retired_on_system_error_still_reads_everywhere(
-    setup: Setup, acme: Acme, ranked: Entered
-) -> None:
-    # A form of an earlier release wrote it; nothing took its place.
-    await write_contest(acme.fake, contest(LEADERBOARDS) + "on_system_error: grading\n")
-
-    (task,) = (await contest_home.home(setup, ranked.session, SPRING)).tasks
-
-    assert task.name == "sum"
-    assert (await contest_home.task(setup, ranked.session, ranked.task)).marks == 1
-    assert (await marks.held(setup, ranked.session, ranked.task)).most == 1
-
-
 async def _contestant(setup: Setup, acme: Acme, user_id: int, name: str) -> Session:
     acme.fake.add_user(user_id, name)
     session = await signed_in(setup, acme.fake, user_id)
@@ -277,7 +264,7 @@ async def _write(setup: Setup, acme: Acme, content: str) -> files.Written:
 async def _refused(setup: Setup, acme: Acme, content: str) -> list[tuple[str, str]]:
     with pytest.raises(InvalidDefinition) as refused:
         await _write(setup, acme, content)
-    return [(problem["path"], problem["message"]) for problem in refused.value.errors]
+    return [(path_text(problem["path"]), problem["message"]) for problem in refused.value.errors]
 
 
 async def test_a_tasks_marks_are_not_lowered_below_what_a_row_holds(

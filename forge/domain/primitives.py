@@ -373,12 +373,7 @@ def _limit_from(value: object) -> FromInput | FromSum | FromMax:
     try:
         return _SOURCES[given[0]].model_validate(value)
     except ValidationError as error:
-        fail(
-            [
-                (tuple(problem["path"].split(".")) if problem["path"] else (), problem["message"])
-                for problem in problems_of(error)
-            ]
-        )
+        fail([(problem["path"], problem["message"]) for problem in problems_of(error)])
 
 
 LimitFrom = Annotated[FromInput | FromSum | FromMax, PlainValidator(_limit_from)]
@@ -587,8 +582,7 @@ class PrimitiveDeclaration(Model):
             PrimitiveDeclaration.model_validate(payload)
         except ValidationError as error:
             for problem in problems_of(error):
-                tail = tuple(part for part in problem["path"].split(".") if part)
-                problems.add(("forms", name, *tail), problem["message"])
+                problems.add(("forms", name, *problem["path"]), problem["message"])
 
     def _fitting_both(self, problems: Problems) -> None:
         """Each two forms some step's inputs fit both of, as `for_step`

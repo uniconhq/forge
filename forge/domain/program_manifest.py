@@ -33,10 +33,10 @@ from forge.domain.yaml_models import (
     InvalidDefinition,
     Model,
     Number,
+    Path,
     Problem,
     Problems,
     load_mapping,
-    path_text,
     validate,
 )
 
@@ -162,7 +162,7 @@ def _name_problems(reports: object, own_names: Collection[str]) -> list[Problem]
     """Each report whose name breaks `REPORT_NAME` or is one of `own_names`."""
     problems: list[Problem] = []
     for name in reports if isinstance(reports, dict) else {}:
-        where = path_text(("reports", _written(name)))
+        where: Path = ("reports", _written(name))
         if not isinstance(name, str) or not REPORT_NAME.fullmatch(name):
             problems.append(
                 Problem(
@@ -192,7 +192,7 @@ def parse_program(text: bytes | str, path: str, *, own_names: Collection[str]) -
     checked once it has one. One over `MAX_MANIFEST` is refused unread.
     """
     if len(text.encode() if isinstance(text, str) else text) > MAX_MANIFEST:
-        raise InvalidDefinition(path, [Problem(path="", message=TOO_LARGE)])
+        raise InvalidDefinition(path, [Problem(path=(), message=TOO_LARGE)])
     document = load_mapping(path, text)
     reports = document.get("reports")
     named = _name_problems(reports, own_names)

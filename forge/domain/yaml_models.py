@@ -8,9 +8,10 @@ no digit of a bound is lost on its way to a score. The loader refuses a key
 given twice, and an anchor or an alias (`&`, `*`), and the document is
 then validated by a pydantic model that refuses any key it does not know,
 so a typo is an error rather than a setting silently left out. Every
-problem is reported as a path into the YAML and a sentence a person reads:
-`leaderboards[0].order[1].direction`, `This must be one of asc or desc.` A form
-shows the sentence beside the field the path names.
+problem is reported as a path into the YAML, its keys and list indices, and
+a sentence a person reads: `("tasks", 1, "due")`, `Give the time zone with
+the time, such as 2026-06-01T09:00:00Z.` A form shows the sentence beside
+the field the path names.
 """
 
 import io
@@ -47,12 +48,13 @@ def joined(items: Sequence[str]) -> str:
 
 
 class Problem(TypedDict):
-    """One thing wrong with a definition file: where, and what. `step` is the
-    flat step a problem inside a box belongs to, when the path can only name
-    the box.
+    """One thing wrong with a definition file: where, as its keys and list
+    indices (empty for the file as a whole), and what. `step` is the flat
+    step a problem inside a box belongs to, when the path can only name the
+    box.
     """
 
-    path: str
+    path: Path
     message: str
     step: NotRequired[str]
 
@@ -60,23 +62,21 @@ class Problem(TypedDict):
 class InvalidDefinition(ServiceError):
     """A definition file that does not validate. `extra["errors"]` lists every
     problem found as a `Problem`, each with its YAML path; a problem with the
-    file as a whole has the path "".
+    file as a whole has an empty path.
     """
 
     code = "invalid_definition"
 
     def __init__(self, what: str, errors: Sequence[Problem]) -> None:
         listed = list(errors)
-        first = listed[0] if listed else Problem(path="", message="Check them and save again.")
+        first = listed[0] if listed else Problem(path=(), message="Check them and save again.")
         named = settings_words(what)
-        where = f", at {first['path']}," if first["path"] else ""
         if len(listed) > 1:
             detail = (
-                f"There are {len(listed)} problems with {named}. The first{where} is: "
-                f"{first['message']}"
+                f"There are {len(listed)} problems with {named}. The first is: {first['message']}"
             )
         else:
-            detail = f"There is a problem with {named}{where.rstrip(',')}: {first['message']}"
+            detail = f"There is a problem with {named}: {first['message']}"
         super().__init__(detail, errors=listed)
 
     @property
@@ -102,7 +102,7 @@ def settings_words(what: str) -> str:
 
 
 def path_text(path: Iterable[str | int]) -> str:
-    """A path as it is shown: keys joined by dots, list indices in brackets."""
+    """A path as a sentence writes it: keys joined by dots, list indices in brackets."""
     text = ""
     for part in path:
         if isinstance(part, int):
@@ -112,7 +112,7 @@ def path_text(path: Iterable[str | int]) -> str:
     return text
 
 
-_TAG = "tag:yaml.org,2002:"
+TAG = "tag:yaml.org,2002:"
 _DIGITS = list("0123456789")
 _CORE: tuple[tuple[str, str, list[str]], ...] = (
     ("null", r"^(?:~|null|Null|NULL|)$", ["~", "n", "N", ""]),
@@ -127,7 +127,7 @@ _CORE: tuple[tuple[str, str, list[str]], ...] = (
 )
 
 
-class _CoreResolver(BaseResolver):
+class CoreResolver(BaseResolver):
     """YAML 1.2's core schema and nothing else, whatever version a file
     names: no timestamps, no merge key, no `yes`, no `1_000`. Every
     resolver is filed under the characters it can start with, since the
@@ -146,8 +146,8 @@ class _CoreResolver(BaseResolver):
 
 for _name, _pattern, _first in _CORE:
     for _char in _first:
-        _CoreResolver.yaml_implicit_resolvers.setdefault(_char, []).append(
-            (_TAG + _name, re.compile(_pattern))
+        CoreResolver.yaml_implicit_resolvers.setdefault(_char, []).append(
+            (TAG + _name, re.compile(_pattern))
         )
 
 
@@ -192,10 +192,10 @@ class _ExactConstructor(SafeConstructor):
         return int(Decimal(text))
 
 
-_ExactConstructor.add_constructor(_TAG + "float", _ExactConstructor.construct_exact_float)
-_ExactConstructor.add_constructor(_TAG + "int", _ExactConstructor.construct_core_int)
+_ExactConstructor.add_constructor(TAG + "float", _ExactConstructor.construct_exact_float)
+_ExactConstructor.add_constructor(TAG + "int", _ExactConstructor.construct_core_int)
 for _other in ("timestamp", "binary", "set", "omap", "pairs", "merge", "value"):
-    _ExactConstructor.add_constructor(_TAG + _other, _ExactConstructor.construct_not_core)
+    _ExactConstructor.add_constructor(TAG + _other, _ExactConstructor.construct_not_core)
 
 
 class _PlainComposer(Composer):
@@ -219,7 +219,7 @@ class _PlainComposer(Composer):
 
 def _reader() -> YAML:
     reader = YAML(typ="safe", pure=True)
-    reader.Resolver = _CoreResolver
+    reader.Resolver = CoreResolver
     reader.Constructor = _ExactConstructor
     reader.Composer = _PlainComposer
     return reader
@@ -247,7 +247,7 @@ class _ExactRepresenter(SafeRepresenter):
         """
         text = str(data)
         whole = re.fullmatch(r"-?[0-9]+", text) is not None
-        node: ScalarNode = self.represent_scalar(_TAG + ("int" if whole else "float"), text)
+        node: ScalarNode = self.represent_scalar(TAG + ("int" if whole else "float"), text)
         return node
 
 
@@ -260,7 +260,7 @@ def one_line(value: object, *, double_quoted: bool = False) -> str:
     written as its digits, and a mapping keeps its order, in flow style.
     """
     writer = YAML(typ="safe", pure=True)
-    writer.Resolver = _CoreResolver
+    writer.Resolver = CoreResolver
     writer.Representer = _ExactRepresenter
     writer.default_flow_style = True
     writer.default_style = '"' if double_quoted else None  # type: ignore[assignment]
@@ -277,14 +277,14 @@ def load_mapping(what: str, text: bytes | str) -> dict[str, Any]:
         document = load_yaml(text)
     except YAMLError as error:
         raise InvalidDefinition(
-            what, [Problem(path="", message=_yaml_message(what, error))]
+            what, [Problem(path=(), message=_yaml_message(what, error))]
         ) from None
     if not isinstance(document, dict):
         message = (
             f"Unicon could not read {settings_words(what)}: write them as named settings, "
             "one to a line, such as `name: ...`."
         )
-        raise InvalidDefinition(what, [Problem(path="", message=message)])
+        raise InvalidDefinition(what, [Problem(path=(), message=message)])
     return document
 
 
@@ -379,8 +379,7 @@ def validate[M: Model](
     nothing else is said about it or anything under it.
     """
     old = [
-        Problem(path=path_text(path), message=message)
-        for path, message in retired_problems(document, retired)
+        Problem(path=path, message=message) for path, message in retired_problems(document, retired)
     ]
     try:
         found = model.model_validate(document)
@@ -396,8 +395,8 @@ def validate[M: Model](
     return found
 
 
-def _under(path: str, top: str) -> bool:
-    return path == top or path.startswith((f"{top}.", f"{top}["))
+def _under(path: Path, top: Path) -> bool:
+    return path[: len(top)] == top
 
 
 def problems_of(error: ValidationError) -> list[Problem]:
@@ -419,9 +418,9 @@ def problems_of(error: ValidationError) -> list[Problem]:
             continue
         if detail["type"] == "at_paths":
             for sub, message in detail.get("ctx", {})["problems"]:
-                problems.append(Problem(path=path_text(loc + tuple(sub)), message=message))
+                problems.append(Problem(path=loc + tuple(sub), message=message))
         else:
-            problems.append(Problem(path=path_text(loc), message=_message(detail)))
+            problems.append(Problem(path=loc, message=_message(detail)))
     return problems
 
 
@@ -664,15 +663,15 @@ def parse_size(value: object) -> int:
     return size
 
 
-def format_size(size: int) -> str:
-    """A size in bytes written the way `parse_size` reads it, in the largest
-    unit that divides it.
+def size_in_words(size: int) -> str:
+    """A size in bytes as a person reads it: "512 B" below a kilobyte, then
+    KB, MB or GB to one decimal, a trailing ".0" left off.
     """
     for unit in ("GB", "MB", "KB"):
         factor = _SIZE_UNITS[unit.lower()]
-        if size % factor == 0:
-            return f"{size // factor}{unit}"
-    return f"{size}B"
+        if size >= factor:
+            return f"{size / factor:.1f}".removesuffix(".0") + f" {unit}"
+    return f"{size} B"
 
 
 Size = Annotated[int, PlainValidator(parse_size)]

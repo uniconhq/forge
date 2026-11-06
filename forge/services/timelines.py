@@ -64,7 +64,7 @@ from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
 from forge.domain.release import Extension, close_of, due_of, in_words, reached, reveal_of
 from forge.domain.roles import contest_id_of, task_scope
-from forge.domain.yaml_models import Problem
+from forge.domain.yaml_models import Path, Problem
 from forge.runtime.context import Context
 from forge.services import entrant_view, names
 
@@ -271,7 +271,7 @@ async def check_contest(
     tasks = {each.name: TaskId(each.id) for each in listed}
     problems = [
         Problem(
-            path=f"tasks[{index}].id",
+            path=("tasks", index, "id"),
             message=f"{entry.id} is not one of this contest's tasks. Remove it here, or make a "
             f"task called {entry.id} first.",
         )
@@ -280,25 +280,27 @@ async def check_contest(
     ]
     if after.state is State.PUBLISHED and (before is None or before.state is State.DRAFT):
         problems += await _not_ready(
-            ctx, [(index, entry, "state") for index, entry in enumerate(after.tasks)], tasks
+            ctx, [(index, entry, ("state",)) for index, entry in enumerate(after.tasks)], tasks
         )
     elif before is not None and before.state is not State.DRAFT:
-        scheduled = []
+        scheduled: list[tuple[int, ContestTask, Path]] = []
         for index, entry in enumerate(after.tasks):
             old = before.entry(entry.id)
             if entry.withdrawn or after.release_of(entry) >= after.end:
                 continue
             if old is None or old.withdrawn:
-                scheduled.append((index, entry, f"tasks[{index}]"))
+                scheduled.append((index, entry, ("tasks", index)))
             elif before.release_of(old) >= before.end:
                 moved = old.release_at != entry.release_at
-                scheduled.append((index, entry, f"tasks[{index}].release_at" if moved else "end"))
+                scheduled.append(
+                    (index, entry, ("tasks", index, "release_at") if moved else ("end",))
+                )
         problems += await _not_ready(ctx, scheduled, tasks)
     hiding: list[str] = []
     if before is None:
         return ContestCheck(problems)
     if _drafted_after_start(before, after, ctx.now):
-        problems.append(Problem(path="state", message=STARTED_STAYS_OPEN))
+        problems.append(Problem(path=("state",), message=STARTED_STAYS_OPEN))
     problems += _sizes_moved(before, after, ctx.now)
     made = await submissions(ctx, contest, tasks)
     extensions = await every_extension(ctx, contest)
@@ -306,13 +308,13 @@ async def check_contest(
         if after.entry(entry.id) is None:
             message = _dropped(before, entry, made.get(entry.id, []), entry.id in tasks, ctx.now)
             if message is not None:
-                problems.append(Problem(path="tasks", message=message))
+                problems.append(Problem(path=("tasks",), message=message))
     for index, entry in enumerate(after.tasks):
         old = before.entry(entry.id)
         if entry.withdrawn and not (old is not None and old.withdrawn) and not made.get(entry.id):
             problems.append(
                 Problem(
-                    path=f"tasks[{index}].withdrawn",
+                    path=("tasks", index, "withdrawn"),
                     message=f"Nobody has submitted to {entry.id}, so it is removed, not "
                     "withdrawn. Remove it from the contest's Tasks card instead.",
                 )
@@ -320,10 +322,10 @@ async def check_contest(
         for path, message in _moved(
             before, old, after, entry, made.get(entry.id, []), extensions, ctx.now, hiding
         ):
-            at = path if path in ("start", "end") else f"tasks[{index}].{path}"
+            at: Path = (path,) if path in ("start", "end") else ("tasks", index, path)
             problems.append(Problem(path=at, message=message))
         task = tasks.get(entry.id)
-        closes = f"tasks[{index}].closes" if entry.closes is not None else "end"
+        closes: Path = ("tasks", index, "closes") if entry.closes is not None else ("end",)
         if (
             old is not None
             and task is not None
@@ -340,7 +342,7 @@ async def check_contest(
 
 
 async def _not_ready(
-    ctx: Context, entries: Sequence[tuple[int, ContestTask, str]], tasks: Mapping[str, TaskId]
+    ctx: Context, entries: Sequence[tuple[int, ContestTask, Path]], tasks: Mapping[str, TaskId]
 ) -> list[Problem]:
     """C5: each selected task, but a
     withdrawn one, that has no publication it is graded on, one still
@@ -399,7 +401,7 @@ def _sizes_moved(
     if (old.most == 1) != (new.most == 1):
         problems.append(
             Problem(
-                path="entrants.most",
+                path=("entrants", "most"),
                 message="The contest has started, so it can no longer change between everyone "
                 "entering alone and entering in teams.",
             )
@@ -407,7 +409,7 @@ def _sizes_moved(
     elif new.most < old.most:
         problems.append(
             Problem(
-                path="entrants.most",
+                path=("entrants", "most"),
                 message=f"The contest has started, so a team can no longer be made smaller than "
                 f"{old.most} people: teams that have more would be shut out.",
             )
@@ -415,7 +417,7 @@ def _sizes_moved(
     if new.fewest > old.fewest:
         problems.append(
             Problem(
-                path="entrants.fewest",
+                path=("entrants", "fewest"),
                 message=f"The contest has started, so a team can no longer need more than "
                 f"{old.fewest} {'person' if old.fewest == 1 else 'people'}: teams that have "
                 "fewer could not submit, and can no longer add anyone.",

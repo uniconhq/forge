@@ -2,7 +2,14 @@ import builtins
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
-from forge.domain.content import Edit, FileSet, WrittenEdit, check_path
+from forge.domain.content import (
+    UNTOKENED_FILE,
+    UNTOKENED_REMOVAL,
+    Edit,
+    FileSet,
+    WrittenEdit,
+    check_path,
+)
 from forge.domain.definitions import (
     ADMIN_ONLY_FILES,
     TASK_FILE,
@@ -27,7 +34,7 @@ from forge.domain.run_task import (
     shown_under,
     unreleased,
 )
-from forge.domain.yaml_models import Problem
+from forge.domain.yaml_models import Path, Problem
 from forge.log import get_logger
 from forge.runtime.context import Context
 from forge.services import entrant_view, names, timelines
@@ -154,7 +161,9 @@ async def _leaderboard_reads(
     values = definition.scoring.values
     problems: list[Problem] = []
     for each in across(contest, leaderboards_of(contest), {name: Scored(values)}):
-        path = f"scoring.values.{each.value}" if each.value in values else "scoring.values"
+        path: Path = (
+            ("scoring", "values", each.value) if each.value in values else ("scoring", "values")
+        )
         problem = Problem(path=path, message=each.saved)
         if problem not in problems:
             problems.append(problem)
@@ -210,12 +219,8 @@ def _refuse_untokened_removals(changes: Mapping[str, Edit]) -> None:
     )
     if untokened:
         raise InvalidInputs(
-            "To remove a file, the save must say which version of it was read. Reload the "
-            "files and try again.",
-            errors=[
-                {"input": path, "message": "Reload the files, then remove this one again."}
-                for path in untokened
-            ],
+            UNTOKENED_REMOVAL,
+            errors=[{"input": path, "message": UNTOKENED_FILE} for path in untokened],
         )
 
 

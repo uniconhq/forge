@@ -67,6 +67,7 @@ from forge.domain.roles import Role, task_scope
 from forge.domain.sessions import Session
 from forge.domain.submissions import Field, path_problem
 from forge.domain.uploads import Door, UploadPurpose, UploadStatus
+from forge.domain.yaml_models import size_in_words
 from forge.log import get_logger
 from forge.port.uploads import SubmissionPlace, TaskPlace, UploadPlace, WorkflowPlace
 from forge.runtime.actions import action
@@ -150,7 +151,7 @@ async def slot(
     limit = min(_part_limit(entry, part), FILE_CEILING)
     if size > limit:
         raise TooLarge(
-            f"The file is larger than the {limit} bytes allowed. Choose a smaller file.",
+            f"The file is larger than the {size_in_words(limit)} allowed. Choose a smaller file.",
             limit=limit,
             input=entry.id,
             part=part,
@@ -209,11 +210,11 @@ async def task_file_slot(
     require(organiser, task_scope(task), Role.MANAGER)
     checked = check_path(path)
     name = checked.rsplit("/", 1)[-1]
-    problem = rules.filename_problem(name) or rules.digest_problem(sha256)
-    if problem is None and (isinstance(size, bool) or not isinstance(size, int) or size < 1):
-        problem = "A size is a whole number of bytes."
+    problem = (
+        rules.filename_problem(name) or rules.digest_problem(sha256) or rules.size_problem(size)
+    )
     if problem is None and size > FILE_CEILING:
-        problem = f"A file is at most {FILE_CEILING} bytes."
+        problem = f"A file is at most {size_in_words(FILE_CEILING)}."
     if problem is not None:
         raise InvalidInputs(problem, errors=[{"input": path, "message": problem}])
     as_ = organiser.identity
@@ -629,8 +630,8 @@ async def _refuse_open(
         )
         raise UploadLimit(
             "You have as many uploads waiting for this task as you can have before submitting "
-            f"them: {rules.OPEN_MAX} files, or {most_bytes} bytes in all. Submit them, or wait: "
-            "each is cleared two days after it was made.",
+            f"them: {rules.OPEN_MAX} files, or {size_in_words(most_bytes)} in all. Submit "
+            "them, or wait: each is cleared two days after it was made.",
             limit=rules.OPEN_MAX,
             bytes=most_bytes,
         )
@@ -675,12 +676,9 @@ def _refuse_file(
     content_type: str | None,
 ) -> None:
     problem = path_problem(entry, filename)
-    if problem is None and (isinstance(size, bool) or not isinstance(size, int) or size < 0):
-        problem = "A size is a whole number of bytes."
-    if problem is None:
-        problem = rules.digest_problem(digest)
+    problem = problem or rules.size_problem(size, empty=True) or rules.digest_problem(digest)
     if problem is None and content_type is not None and len(content_type) > rules.CONTENT_TYPE_MAX:
-        problem = "A content type is at most 255 characters."
+        problem = rules.UNREADABLE_FILE
     if problem is not None:
         raise InvalidInputs(problem, errors=[{"input": entry.id, "message": problem}])
 
@@ -699,11 +697,9 @@ async def workflow_file_slot(
     problem = next(
         (found for part in checked.split("/") if (found := rules.filename_problem(part))), None
     )
-    problem = problem or rules.digest_problem(sha256)
-    if problem is None and (
-        isinstance(size, bool) or not isinstance(size, int) or size < 1 or size > FILE_CEILING
-    ):
-        problem = f"A file is from 1 to {FILE_CEILING} bytes."
+    problem = problem or rules.digest_problem(sha256) or rules.size_problem(size)
+    if problem is None and size > FILE_CEILING:
+        problem = f"A file is at most {size_in_words(FILE_CEILING)}."
     if problem is not None:
         raise InvalidInputs(problem, errors=[{"input": path, "message": problem}])
     await _clear_lapsed(ctx, as_.user_id, UploadPurpose.WORKFLOW_FILE)

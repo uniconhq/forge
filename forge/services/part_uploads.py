@@ -28,6 +28,7 @@ from forge.domain.ids import TaskId, WorkflowId, new_id
 from forge.domain.roles import Role, task_scope
 from forge.domain.sessions import Session
 from forge.domain.uploads import PartUploadStatus, UploadPurpose, UploadStatus
+from forge.domain.yaml_models import size_in_words
 from forge.port.objects import Part
 from forge.port.uploads import TaskPlace, WorkflowPlace
 from forge.runtime.actions import action
@@ -113,14 +114,12 @@ async def start(
     size: int,
 ) -> Transfer:
     path = check_path(path)
-    problem = rules.digest_problem(digest)
+    problem = rules.digest_problem(digest) or rules.size_problem(size)
     if problem:
         raise InvalidInputs(problem)
-    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
-        raise InvalidInputs("A size is a positive whole number of bytes.")
     if size > ctx.settings.organiser_file_max:
         raise TooLarge(
-            f"A file is at most {ctx.settings.organiser_file_max} bytes.",
+            f"A file is at most {size_in_words(ctx.settings.organiser_file_max)}.",
             limit=ctx.settings.organiser_file_max,
         )
     await _permission(ctx, as_, place)
@@ -307,7 +306,7 @@ async def sign(
         or len(numbers) > 1000
         or any(isinstance(number, bool) or not 1 <= number <= count for number in numbers)
     ):
-        raise InvalidInputs("Ask only for part numbers within this file's declared size.")
+        raise InvalidInputs(rules.UNREADABLE_FILE)
     return {
         number: ctx.forge.objects.part_url(
             str(row.id), row.upload_id, number, expires_in=SIGN_LIFETIME

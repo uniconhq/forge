@@ -115,7 +115,7 @@ class _Binder:
         self.ids: dict[str, str] = {}
 
     def refuse(self, at: Path, message: str) -> None:
-        self.problems.append(Problem(path=path_text(at), message=message))
+        self.problems.append(Problem(path=at, message=message))
 
     # 8.1: inputs
 
@@ -548,13 +548,14 @@ class _Binder:
                         self.refuse(
                             at,
                             f"{name} is a secret, and the workflow writes it into text at "
-                            f"{use.path}. Give a secret whole, to a port of its own.",
+                            f"{path_text(use.path)}. Give a secret whole, to a port of its own.",
                         )
                     elif not use.port.secret or use.port.type is not Type.TEXT:
                         self.refuse(
                             at,
-                            f"{name} is a secret, and the workflow gives it at {use.path}, to a "
-                            "port that could pass it on to the entrant's program.",
+                            f"{name} is a secret, and the workflow gives it at "
+                            f"{path_text(use.path)}, to a port that could pass it on to the "
+                            "entrant's program.",
                         )
         if self.problems:
             return
@@ -711,7 +712,7 @@ class _Binder:
                     self.refuse(
                         at,
                         f"{path} reports no {deferred.report}, which the workflow reads at "
-                        f"{deferred.path}.",
+                        f"{path_text(deferred.path)}.",
                     )
                     continue
                 optional = report.optional or deferred.program is not None
@@ -720,7 +721,8 @@ class _Binder:
                         self.refuse(
                             at,
                             f"{path} reports {deferred.report} as text, and the workflow "
-                            f"gives it a unit at {deferred.path}, which only a number takes.",
+                            f"gives it a unit at {path_text(deferred.path)}, which only a "
+                            "number takes.",
                         )
                     continue
                 wanted = deferred.port.type
@@ -728,14 +730,14 @@ class _Binder:
                     self.refuse(
                         at,
                         f"{path} reports {deferred.report} as text, and the workflow gives it at "
-                        f"{deferred.path} to a port that takes a number.",
+                        f"{path_text(deferred.path)} to a port that takes a number.",
                     )
                 elif optional and not deferred.port.optional:
                     self.refuse(
                         at,
                         f"{path} reports {deferred.report} as optional, so it may be missing, "
-                        f"and the workflow gives it at {deferred.path} to a port that must have "
-                        "it.",
+                        f"and the workflow gives it at {path_text(deferred.path)} to a port that "
+                        "must have it.",
                     )
 
     def manifest_types(self, manifests: Mapping[str, bytes]) -> None:
@@ -834,7 +836,7 @@ class _Binder:
             parse_program(text, path, own_names=program.manifest.own_names)
         except InvalidDefinition as invalid:
             for problem in invalid.errors:
-                where = f", at {problem['path']}" if problem["path"] else ""
+                where = f", at {path_text(problem['path'])}" if problem["path"] else ""
                 self.refuse(at, f"{path}{where}: {problem['message']}")
 
     def _filled_with(self, name: str) -> list[str]:

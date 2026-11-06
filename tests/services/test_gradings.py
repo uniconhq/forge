@@ -299,6 +299,7 @@ async def test_staff_cancel_only_a_grading_in_system_error_and_say_why(
     with pytest.raises(WrongStatus) as waiting:
         await gradings.cancel(setup, manager, row.id, REASON)
     assert waiting.value.extra == {"current": "dispatched"}
+    assert waiting.value.detail.endswith("and this one is starting.")
     for unsaid in ("", "   ", "x" * (CANCEL_REASON_MAX + 1)):
         with pytest.raises(InvalidReason):
             await gradings.cancel(setup, manager, row.id, unsaid)
@@ -568,8 +569,9 @@ async def test_a_retry_makes_a_new_attempt_and_keeps_the_old(
 ) -> None:
     row = await _submit(setup, acme, entered)
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
-    with pytest.raises(WrongStatus):
+    with pytest.raises(WrongStatus) as unfinished:
         await gradings.retry(setup, manager, row.id)
+    assert unfinished.value.detail.startswith("This grading is starting and has not finished")
     await _graded(setup, row.id)
 
     retried = await gradings.retry(setup, manager, row.id)

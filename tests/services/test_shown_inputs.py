@@ -19,7 +19,7 @@ from forge.domain.ids import TaskId, WorkspaceId
 from forge.domain.roles import Scope
 from forge.domain.types import Type
 from forge.domain.workflows import Visibility
-from forge.domain.yaml_models import InvalidDefinition
+from forge.domain.yaml_models import InvalidDefinition, path_text
 from forge.runtime.setup import Setup
 from forge.services import contest_home, entrant_view, landing, submissions
 from forge.testing import FakeClock
@@ -228,7 +228,7 @@ async def test_the_preview_checks_the_draft_alone_and_needs_a_publication(
             },
             "always",
         )
-    assert [problem["path"] for problem in refused.value.errors] == [
+    assert [path_text(problem["path"]) for problem in refused.value.errors] == [
         "scoring.show.always.values[0]",
         "scoring.show.always.outputs[0]",
         "scoring.show.after_release.values[0]",
@@ -309,6 +309,6 @@ async def test_the_preview_takes_an_output_given_once_under_its_ports_name(
             {"always": {"runs": [{"of": "all", "fields": ["log"]}]}},
             "always",
         )
-    assert [problem["path"] for problem in refused.value.errors] == [
+    assert [path_text(problem["path"]) for problem in refused.value.errors] == [
         "scoring.show.always.runs[0].fields[0]"
     ]

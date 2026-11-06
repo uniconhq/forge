@@ -47,6 +47,7 @@ is made as the organiser, so the record says who answered.
 """
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -64,7 +65,7 @@ from forge.domain.identity import PLATFORM, AsUser
 from forge.domain.ids import ContestId, OrgId, TaskId, ThreadId, WorkspaceId
 from forge.domain.names import ScopeNames, WorkspaceOwner, entrant_owner
 from forge.domain.registration import Status
-from forge.domain.roles import Role, contest_scope, holds, task_scope
+from forge.domain.roles import Role, RoleGrant, contest_scope, holds, task_scope
 from forge.domain.sessions import Session
 from forge.domain.threads import Comment, Thread, ThreadKind
 from forge.log import get_logger
@@ -121,8 +122,9 @@ class Message:
 class Clarification:
     """One question: its contest by name, whose desk it is in, the asking
     entrant's `entrant.<id>`, its number there, the task it names, what it
-    asks, when, whether it is answered and whether it is open, and every
-    message under it, oldest first.
+    asks, when, whether it is answered and whether it is open, every
+    message under it, oldest first, and whether the reader manages its
+    contest, who may reply to it, mark it and answer it publicly.
     """
 
     contest: ScopeNames
@@ -135,6 +137,7 @@ class Clarification:
     answered: bool
     closed: bool
     messages: tuple[Message, ...]
+    may_answer: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,7 +265,7 @@ async def inbox(ctx: Context, session: Session, org: str) -> tuple[Clarification
         )
         if holds(grants, contest_scope(contest), Role.OBSERVER)
     ]
-    return await _shown(ctx, await _with_messages(ctx, as_, threads))
+    return await _shown(ctx, await _with_messages(ctx, as_, threads), grants=grants)
 
 
 @action
@@ -290,7 +293,9 @@ async def of_contest(
         )
         if asked_in == contest
     ]
-    return await _shown(ctx, await _with_messages(ctx, organiser.identity, threads))
+    return await _shown(
+        ctx, await _with_messages(ctx, organiser.identity, threads), grants=organiser.grants
+    )
 
 
 @action
@@ -304,7 +309,7 @@ async def reply(
     _, body = announcements.checked("-", body)
     await ctx.forge.threads.comment(organiser.identity, thread.id, body)
     log.info("clarifications.replied", contest=contest, number=number, by=organiser.user.id)
-    return await _again(ctx, organiser.identity, thread)
+    return await _again(ctx, organiser.identity, thread, organiser.grants)
 
 
 @action
@@ -318,7 +323,7 @@ async def mark(
     if not (thread.answered and thread.closed):
         await ctx.forge.threads.mark_answered(organiser.identity, thread.id)
         log.info("clarifications.marked", contest=contest, number=number, by=organiser.user.id)
-    return await _again(ctx, organiser.identity, thread)
+    return await _again(ctx, organiser.identity, thread, organiser.grants)
 
 
 @action
@@ -333,7 +338,7 @@ async def unmark(
     if thread.answered or thread.closed:
         await ctx.forge.threads.unmark_answered(organiser.identity, thread.id)
         log.info("clarifications.unmarked", contest=contest, number=number, by=organiser.user.id)
-    return await _again(ctx, organiser.identity, thread)
+    return await _again(ctx, organiser.identity, thread, organiser.grants)
 
 
 @action
@@ -412,7 +417,7 @@ async def answer_publicly(
         announcement=posted.number,
         by=organiser.user.id,
     )
-    return PublicAnswer(posted, await _again(ctx, organiser.identity, thread))
+    return PublicAnswer(posted, await _again(ctx, organiser.identity, thread, organiser.grants))
 
 
 async def _managed(
@@ -451,10 +456,12 @@ async def _found(ctx: Context, as_: AsUser, thread: ThreadId) -> Thread:
     return found
 
 
-async def _again(ctx: Context, as_: AsUser, thread: Thread) -> Clarification:
+async def _again(
+    ctx: Context, as_: AsUser, thread: Thread, grants: Iterable[RoleGrant] = ()
+) -> Clarification:
     """The question as it now stands, read again as `as_`."""
     found = await _found(ctx, as_, thread.id)
-    return (await _shown(ctx, [found]))[0]
+    return (await _shown(ctx, [found], grants=grants))[0]
 
 
 def _contest_of(ctx: Context, thread: Thread) -> ContestId:
@@ -508,10 +515,14 @@ async def _shown(
     ctx: Context,
     threads: list[Thread] | tuple[Thread, ...],
     known: dict[ContestId, ScopeNames] | None = None,
+    *,
+    grants: Iterable[RoleGrant] = (),
 ) -> tuple[Clarification, ...]:
     """The threads as questions, with their contests' and tasks' names, read
-    in one go for the ones not `known`.
+    in one go for the ones not `known`, each as someone with `grants` reads
+    it.
     """
+    grants = tuple(grants)
     asked = [
         (
             thread,
@@ -559,6 +570,7 @@ async def _shown(
                     _message(comment, comment.author_id in askers[asker], contest, places)
                     for comment in thread.comments
                 ),
+                may_answer=holds(grants, contest_scope(contest), Role.MANAGER),
             )
         )
     return tuple(shown)

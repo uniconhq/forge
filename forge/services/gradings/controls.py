@@ -4,7 +4,14 @@ from sqlalchemy import select
 
 from forge.db.tables import Grading
 from forge.domain.errors import Conflict, NotFound, WrongStatus
-from forge.domain.grading import AT_THE_CI, FINISHED, UNFINISHED, GradingStatus, cancel_reason
+from forge.domain.grading import (
+    AT_THE_CI,
+    FINISHED,
+    STATUS_WORDS,
+    UNFINISHED,
+    GradingStatus,
+    cancel_reason,
+)
 from forge.domain.ids import PublicationId, RunId, TaskId
 from forge.domain.regrades import RegradeCause
 from forge.domain.roles import Role, task_scope
@@ -56,8 +63,8 @@ async def cancel(
     status = status_of(ctx, row, gone)
     if status is not GradingStatus.SYSTEM_ERROR:
         raise WrongStatus(
-            f"Only a grading that failed with a system error can be cancelled, and this one is "
-            f"{status.value}.",
+            "Only a grading that failed with a system error can be cancelled, and this one "
+            f"{STATUS_WORDS[status]}.",
             current=status.value,
         )
     if any(other.attempt > row.attempt for other in attempts):
@@ -96,7 +103,8 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     status = status_of(ctx, row, gone)
     if status not in FINISHED:
         raise WrongStatus(
-            f"This grading is {status.value} and has not finished, so it cannot be retried yet.",
+            f"This grading {STATUS_WORDS[status]} and has not finished, so it cannot be "
+            "retried yet.",
             current=status.value,
         )
     if staff_cancelled(row):

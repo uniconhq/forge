@@ -64,6 +64,9 @@ RUN_NAMES = ("verdict", "passed")
 """What Unicon gives every run itself: its verdict, and `passed`, 1 when the
 verdict is `accepted`, else 0 (SIMPLER-CORE.md 7.3). A workflow names no
 input or output with one, nor with one of `RESERVED_NAMES`."""
+TASK_FOLDERS = ("tests", "public", "plans")
+"""A task's folders with a meaning of their own. An input's files are kept in
+a folder of its name, so no input takes one of these."""
 TEXT_OUTPUTS = ("label", "message")
 """The texts a run's steps may give to be shown with its verdict."""
 MAX_USES = 32
@@ -446,6 +449,12 @@ class RunWorkflow(Model):
                 )
             elif key in RESERVED_NAMES or key in RUN_NAMES:
                 problems.add(("inputs", key), reserved_message(key))
+            elif key in TASK_FOLDERS:
+                problems.add(
+                    ("inputs", key),
+                    f"{key}/ is a folder of every task with a meaning of its own, and an "
+                    "input's files are kept in a folder of its name. Name the input otherwise.",
+                )
         problems.duplicates([step.id for step in self.steps], ("steps",))
         if len({str(step.use) for step in self.steps}) > MAX_USES:
             problems.add(

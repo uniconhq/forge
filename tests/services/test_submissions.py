@@ -761,7 +761,7 @@ async def test_a_folder_input_takes_a_tree_of_files_within_its_size_together(
     assert refused.value.extra["errors"] == [
         {
             "input": "code",
-            "message": "The files of this input come to more than the 1024 bytes allowed. "
+            "message": "The files of this input come to more than the 1 KB allowed. "
             "Make them smaller.",
         }
     ]

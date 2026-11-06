@@ -39,7 +39,14 @@ from forge.domain.definitions import (
 from forge.domain.errors import ServiceError
 from forge.domain.leaderboard_task_check import marks_of
 from forge.domain.workflow_definition import WorkflowRef
-from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line, parse_size
+from forge.domain.yaml_models import (
+    InvalidDefinition,
+    Problem,
+    load_yaml,
+    one_line,
+    parse_size,
+    path_text,
+)
 
 NOW = datetime(2026, 9, 29, 10, 30, tzinfo=UTC)
 
@@ -132,9 +139,9 @@ END = datetime(2026, 6, 1, 14, tzinfo=UTC)
 
 
 def contest_problems(text: str) -> list[Problem]:
-    """What a save of `text` is refused with."""
+    """What `text` is refused with."""
     with pytest.raises(InvalidDefinition) as refused:
-        parse_contest(text, saved=True)
+        parse_contest(text)
     return refused.value.errors
 
 
@@ -145,12 +152,12 @@ def task_problems(text: str) -> list[Problem]:
 
 
 def paths(problems: list[Problem]) -> list[str]:
-    return [problem["path"] for problem in problems]
+    return [path_text(problem["path"]) for problem in problems]
 
 
 def at(problems: list[Problem], path: str) -> str:
     """The one sentence the problems give at `path`."""
-    found = [problem["message"] for problem in problems if problem["path"] == path]
+    found = [problem["message"] for problem in problems if path_text(problem["path"]) == path]
     assert len(found) == 1, problems
     return found[0]
 
@@ -289,44 +296,22 @@ def test_a_retired_contest_key_is_refused_at_its_path_with_what_replaced_it(
     assert sentence in problems[0]["message"]
 
 
-@pytest.mark.parametrize("value", ["last_result", "grading"])
-def test_a_stored_contest_still_holding_on_system_error_reads_with_it_ignored(value: str) -> None:
-    text = HEAD + f"on_system_error: {value}\n"
-
-    assert parse_contest(text) == parse_contest(HEAD)
-    assert paths(contest_problems(text)) == ["on_system_error"]
-
-
-def test_a_stored_contest_whose_tasks_still_give_worth_reads_with_it_ignored() -> None:
-    text = (
-        HEAD
-        + "tasks:\n"
-        + "  - {id: a, worth: 100}\n"
-        + "  - {id: b, due: 2026-06-01T12:00:00Z, late_per_day: 0.1}\n"
-    )
-
-    assert parse_contest(text) == parse_contest(
-        HEAD + "tasks: [{id: a}, {id: b, due: 2026-06-01T12:00:00Z}]\n"
-    )
-    assert paths(contest_problems(text)) == ["tasks[0].worth", "tasks[1].late_per_day"]
-
-
-def test_a_stored_contest_with_old_leaderboards_or_freeze_at_reads_with_no_leaderboards() -> None:
+def test_a_stored_contest_holding_a_retired_key_cannot_be_read() -> None:
     text = (
         HEAD
         + "freeze_at: 2026-06-01T13:00:00Z\n"
+        + "tasks: [{id: a, worth: 100}]\n"
         + "leaderboards:\n  - {name: Standings, who: contestants, select: best}\n"
     )
 
-    assert parse_contest(text) == parse_contest(HEAD)
-    assert paths(contest_problems(text)) == ["leaderboards", "freeze_at"]
+    assert paths(contest_problems(text)) == ["tasks[0].worth", "leaderboards", "freeze_at"]
 
 
 def test_public_visibility_is_refused_naming_everyone() -> None:
     problems = contest_problems(HEAD.replace("everyone", "public"))
 
     assert problems == [
-        {"path": "visibility", "message": 'This is now called "everyone". Choose that instead.'}
+        {"path": ("visibility",), "message": 'This is now called "everyone". Choose that instead.'}
     ]
 
 
@@ -419,6 +404,69 @@ def test_a_malformed_contest_is_refused_at_the_path_that_is_wrong(extra: str, pa
     assert path in paths(contest_problems(HEAD + extra))
 
 
+_COLUMN_NAME = (
+    "cannot be a column's name. Use at most 40 lower case letters, digits, hyphens (-) and "
+    "underscores (_), starting with a letter."
+)
+_DECIMALS = (
+    "Give a column's name, or its name with how many decimals it is shown, such as "
+    "{total: {decimals: 2}}, from 0 to 10."
+)
+
+
+@pytest.mark.parametrize(
+    ("extra", "path", "sentence"),
+    [
+        (
+            "leaderboards: {b: {columns: {Big: 1}}}\n",
+            "leaderboards.b.columns.Big",
+            f"'Big' {_COLUMN_NAME}",
+        ),
+        (
+            "leaderboards: {b: {columns: {1st: 1}}}\n",
+            "leaderboards.b.columns.1st",
+            f"'1st' {_COLUMN_NAME}",
+        ),
+        (
+            f"leaderboards: {{b: {{columns: {{{'a' * 41}: 1}}}}}}\n",
+            f"leaderboards.b.columns.{'a' * 41}",
+            f"'{'a' * 41}' {_COLUMN_NAME}",
+        ),
+        (
+            "leaderboards: {b: {columns: {t: 1}, display: [{t: {decimals: 11}}]}}\n",
+            "leaderboards.b.display[0]",
+            _DECIMALS,
+        ),
+        (
+            "leaderboards: {b: {columns: {t: 1}, display: [{t: {decimals: -1}}]}}\n",
+            "leaderboards.b.display[0]",
+            _DECIMALS,
+        ),
+        (
+            "leaderboards: {'': {columns: {t: 1}}}\n",
+            "leaderboards.",
+            "'' cannot be used as a name. Use at most 24 lower case letters, digits, hyphens (-) "
+            "and underscores (_), starting with a letter or a digit.",
+        ),
+        (
+            "hold: {from: 2026-06-01T13:00:00Z, until: 2026-06-01T13:00:00Z}\n",
+            "hold.until",
+            "The hold must end after it starts.",
+        ),
+        (
+            "hold: {from: 2026-06-01T13:00:00Z, until: 2026-06-01T12:00:00Z}\n",
+            "hold.until",
+            "The hold must end after it starts.",
+        ),
+    ],
+)
+def test_a_leaderboard_or_hold_refused_at_the_parse_names_its_path(
+    extra: str, path: str, sentence: str
+) -> None:
+    found = contest_problems(HEAD + extra)
+    assert [(path_text(each["path"]), each["message"]) for each in found] == [(path, sentence)]
+
+
 @pytest.mark.parametrize(
     "domain", ["'*nus.edu.sg'", "'a.*.nus.edu.sg'", "'*.*.nus.edu.sg'", "'*.sg'", "'*'", "'*.'"]
 )
@@ -436,8 +484,7 @@ def test_star_stands_only_as_a_domains_whole_first_label(domain: str) -> None:
 
 def test_a_domain_and_every_domain_under_it_is_written_with_star() -> None:
     contest = parse_contest(
-        HEAD + "registration: {ways: [{signup: {domains: ['*.nus.edu.sg', u.nus.edu]}}]}\n",
-        saved=True,
+        HEAD + "registration: {ways: [{signup: {domains: ['*.nus.edu.sg', u.nus.edu]}}]}\n"
     )
 
     (way,) = contest.registration.ways
@@ -672,7 +719,7 @@ def test_a_typo_says_so_and_a_key_given_twice_is_refused() -> None:
     problems = task_problems(task_text("submision: {max: 3}\n"))
     assert problems == [
         {
-            "path": "submision",
+            "path": ("submision",),
             "message": "Unicon does not know this setting. Check its spelling, or remove it.",
         }
     ]
@@ -869,7 +916,7 @@ def test_display_refuses_places_with_the_decimals_spelling(how: str) -> None:
         parse_contest(HEAD + f"leaderboards: {{s: {{display: [{{total: {how}}}]}}}}\n")
     assert refused.value.errors == [
         {
-            "path": "leaderboards.s.display[0]",
+            "path": ("leaderboards", "s", "display", 0),
             "message": "Write `decimals`, such as `{total: {decimals: 2}}`.",
         },
     ]

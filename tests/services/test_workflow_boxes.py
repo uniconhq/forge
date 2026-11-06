@@ -13,7 +13,7 @@ from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.sessions import Session
 from forge.domain.workflow_boxes import flatten, placed
 from forge.domain.workflow_definition import RunWorkflow, parse_run_workflow
-from forge.domain.yaml_models import InvalidDefinition
+from forge.domain.yaml_models import InvalidDefinition, path_text
 from forge.runtime.setup import Setup
 from forge.services import sessions, workflows
 from forge.services.workflow_boxes import Expanded, expand
@@ -402,7 +402,7 @@ async def test_a_loop_of_two_is_refused_at_the_outer_box_naming_the_path(
 
     assert refused.value.errors == [
         {
-            "path": "steps[0].use",
+            "path": ("steps", 0, "use"),
             "message": (
                 "`inner/back` uses bob/a@v1, and bob/a is already on that path, so the "
                 "workflow would hold itself."
@@ -427,12 +427,14 @@ async def test_a_workflow_holding_itself_is_refused_when_the_check_names_it(
         "`again` uses bob/held@v1, and bob/held is already on that path, so the workflow "
         "would hold itself."
     )
-    assert found == ({"path": "steps[0].use", "message": message, "step": "again"},)
+    assert found == ({"path": ("steps", 0, "use"), "message": message, "step": "again"},)
     repo = acme.fake.state.repos[("bob", "held.workflow")]
     acme.fake.state.commit(repo, {"workflow.yaml": draft.encode()}, "self", 8)
     with pytest.raises(InvalidDefinition) as refused:
         await workflows.create_version(setup, bob, "bob", "held", "v2")
-    assert refused.value.errors == [{"path": "steps[0].use", "message": message, "step": "again"}]
+    assert refused.value.errors == [
+        {"path": ("steps", 0, "use"), "message": message, "step": "again"}
+    ]
 
 
 async def test_a_box_that_cannot_be_opened_or_is_in_an_older_form_is_refused(
@@ -444,7 +446,7 @@ async def test_a_box_that_cannot_be_opened_or_is_in_an_older_form_is_refused(
     opened = await workflows.check(setup, bob, missing)
     assert opened == (
         {
-            "path": "steps[0].use",
+            "path": ("steps", 0, "use"),
             "message": (
                 "Unicon cannot open bob/missing@v1: there is no such primitive or workflow "
                 "at that version, or it is not shared with you."
@@ -457,7 +459,7 @@ async def test_a_box_that_cannot_be_opened_or_is_in_an_older_form_is_refused(
     acme.fake.state.create_version(PLATFORM, repo, "v1")
     graded = "steps:\n  - id: box\n    use: bob/graded@v1\n"
     [problem] = await workflows.check(setup, bob, graded)
-    assert problem["path"] == "steps[0].use"
+    assert path_text(problem["path"]) == "steps[0].use"
     assert problem["message"].startswith(
         "The workflow bob/graded@v1 is written in an older form that Unicon no longer reads"
     )
@@ -501,23 +503,23 @@ steps:
 """
     assert await workflows.check(setup, bob, unknown) == (
         {
-            "path": "steps[0].with.extra",
+            "path": ("steps", 0, "with", "extra"),
             "message": "extra is not an input of bob/build@v1, whose inputs are code, language.",
         },
     )
     assert await workflows.check(setup, bob, missing) == (
         {
-            "path": "steps[0].with.code",
+            "path": ("steps", 0, "with", "code"),
             "message": "build gives no value for code, which bob/build@v1 needs.",
         },
     )
     assert await workflows.check(setup, bob, unfit) == (
         {
-            "path": "steps[0].with.code",
+            "path": ("steps", 0, "with", "code"),
             "message": "This takes a folder, not a number.",
         },
         {
-            "path": "steps[0]",
+            "path": ("steps", 0),
             "message": "In `build/compile`: This takes a folder, not a number.",
             "step": "build/compile",
         },
@@ -544,7 +546,7 @@ steps:
     inside = [problem for problem in found if problem.get("step") == "build/compile"]
     assert inside == [
         {
-            "path": "steps[0]",
+            "path": ("steps", 0),
             "message": (
                 "In `build/compile`: A step's output can be given only whole, "
                 "not written into text."
@@ -565,7 +567,7 @@ steps:
       language: python
 """
     found = await workflows.check(setup, bob, text)
-    assert [problem["path"] for problem in found] == ["steps[0].with.source"]
+    assert [path_text(problem["path"]) for problem in found] == ["steps[0].with.source"]
     assert "workflow@1.src/" in found[0]["message"]
 
 
@@ -612,7 +614,7 @@ async def test_the_cap_counts_every_use_of_the_expansion(setup: Setup, acme: Acm
     found = await workflows.check(setup, bob, outer)
     assert found == (
         {
-            "path": "steps",
+            "path": ("steps",),
             "message": (
                 "Expanded, this workflow uses 33 different primitive and workflow versions, "
                 "and at most 32 are allowed. Use fewer."
@@ -657,9 +659,11 @@ async def test_a_run_workflow_version_is_a_box_with_its_inputs_and_outputs(
     assert face == Box(
         True,
         (
-            BoxInput("code", "folder", None, False, "Solution", None),
-            BoxInput("language", "enum", ("python",), False, "Language", None),
-            BoxInput("note", "text", None, True, "Note", None),
+            BoxInput("code", "folder", None, False, "Solution", None, ("file", "folder")),
+            BoxInput("language", "enum", ("python",), False, "Language", None, ("enum",)),
+            BoxInput(
+                "note", "text", None, True, "Note", None, ("text", "number", "boolean", "enum")
+            ),
         ),
         (
             BoxOutput("log", "text", None, None, None, None, None, True),

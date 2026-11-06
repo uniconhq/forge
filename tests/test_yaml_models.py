@@ -12,7 +12,13 @@ from decimal import Decimal
 import pytest
 
 from forge.domain.definitions import parse_contest, parse_task
-from forge.domain.yaml_models import InvalidDefinition, load_mapping, load_yaml, one_line
+from forge.domain.yaml_models import (
+    InvalidDefinition,
+    load_mapping,
+    load_yaml,
+    one_line,
+    size_in_words,
+)
 
 THIRTY_DIGITS = "123456789012345.678901234567891"
 
@@ -208,3 +214,11 @@ def test_a_time_that_is_not_one_says_what_it_lacks(written: str, message: str) -
         parse_contest(contest_starting(written))
 
     assert raised.value.errors[0]["message"].startswith(message)
+
+
+@pytest.mark.parametrize(
+    ("size", "words"),
+    [(0, "0 B"), (1023, "1023 B"), (1024, "1 KB"), (1536, "1.5 KB"), (10 * 1024**2, "10 MB")],
+)
+def test_a_size_is_written_in_the_largest_unit_it_reaches(size: int, words: str) -> None:
+    assert size_in_words(size) == words

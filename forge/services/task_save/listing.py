@@ -1,11 +1,14 @@
+import asyncio
 from collections.abc import Mapping
 from dataclasses import replace
 
-from forge.domain.content import Edit, Uploaded, WrittenEdit
-from forge.domain.errors import InvalidInputs, UploadNotReady
+from forge.domain.content import VALUES_ONLY, ConflictToken, Edit, Uploaded, Values, WrittenEdit
+from forge.domain.definitions import TASK_FILE
+from forge.domain.errors import Conflict, InvalidInputs, NotFound, UploadNotReady
 from forge.domain.ids import TaskId
 from forge.domain.publication_record import Publication
 from forge.domain.roles import Role, task_scope
+from forge.domain.settings_values import written_values
 from forge.domain.uploads import (
     ATTRIBUTES_FILE,
     UploadStatus,
@@ -104,6 +107,10 @@ async def _resolve(
             row.status = UploadStatus.CONSUMED
             resolved[path] = WrittenEdit(pointer_text(row.digest, row.size), edit.token)
             continue
+        if isinstance(edit.content, Values):
+            content = await _with_values(ctx, organiser, task, path, edit.content, edit.token)
+            resolved[path] = WrittenEdit(content, edit.token)
+            continue
         held = await _held_pointer(ctx, organiser, task, path, edit.content)
         if held is None:
             refuse_pointer(path, edit.content)
@@ -111,3 +118,25 @@ async def _resolve(
     if named:
         await ctx.db.flush()
     return resolved
+
+
+async def _with_values(
+    ctx: Context,
+    organiser: Organiser,
+    task: TaskId,
+    path: str,
+    edit: Values,
+    token: ConflictToken | None,
+) -> bytes:
+    """`task.yaml` as it is with a form's values written into it. The token
+    is checked here, since the values are laid over the file as read now."""
+    if path != TASK_FILE:
+        raise InvalidInputs(VALUES_ONLY, errors=[{"input": path, "message": VALUES_ONLY}])
+    try:
+        current = await ctx.forge.content.read_file(organiser.identity, task, path)
+    except NotFound:
+        current = None
+    if (current.token if current is not None else None) != token:
+        raise Conflict(f"{path} has changed since it was read.")
+    old = current.content if current is not None else b""
+    return await asyncio.to_thread(written_values, "task", old, edit.values)

@@ -50,6 +50,7 @@ from forge.domain.ids import SubmissionId, VersionId
 from forge.domain.run_task import Part, Run
 from forge.domain.types import FILES, Type
 from forge.domain.uploads import filename_problem
+from forge.domain.yaml_models import size_in_words
 
 RUN_SCHEMA_VERSION = 6
 SUBMISSION_FILE = "submission.json"
@@ -433,7 +434,7 @@ def _files(
     total = sum(upload.size for upload in chosen)
     if total > max_size:
         return (
-            f"The files of this input come to more than the {max_size} bytes allowed. "
+            f"The files of this input come to more than the {size_in_words(max_size)} allowed. "
             "Make them smaller."
         )
     paths = []
@@ -453,7 +454,7 @@ def value_problem(entry: Field, value: object) -> str | None:
             if not isinstance(value, str):
                 return "This must be text."
             if len(value.encode()) > TEXT_MAX:
-                return f"This must be at most {TEXT_MAX} bytes."
+                return f"This must be at most {size_in_words(TEXT_MAX)}."
         case Type.NUMBER:
             if not isinstance(value, str) or PLAIN_DECIMAL.match(value) is None:
                 return "Give a number in plain digits, such as 2.5."

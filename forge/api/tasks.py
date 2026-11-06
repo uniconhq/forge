@@ -6,8 +6,10 @@ known by.
 """
 
 from forge.domain.roles import task_id_of
+from forge.services.may import PlaceMay
 from forge.services.taking_out import PutBack, TakeOut, put_back, take_out
 from forge.services.tasks import (
+    ListedTask,
     TaskStanding,
     TaskState,
     Timeline,
@@ -18,6 +20,8 @@ from forge.services.tasks import (
 )
 
 __all__ = [
+    "ListedTask",
+    "PlaceMay",
     "PutBack",
     "TakeOut",
     "TaskStanding",
