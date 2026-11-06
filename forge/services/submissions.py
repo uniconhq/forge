@@ -919,6 +919,8 @@ async def shown_input(
     place: int,
     name: str,
     path: str | None = None,
+    *,
+    listing: bool = False,
 ) -> ShownInput:
     """An input of a run the signed-in person's own submission of the task
     shows them now that is a file or a folder, the run named by the group
@@ -939,7 +941,7 @@ async def shown_input(
         if grading is not None
         else None
     )
-    return await entrant_view.shown_input(ctx, person.published, named, path)
+    return await entrant_view.shown_input(ctx, person.published, named, path, listing=listing)
 
 
 @dataclass(frozen=True, slots=True)
