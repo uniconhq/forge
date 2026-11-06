@@ -25,8 +25,8 @@ from forge.domain.run_plan.models import (
     RunStep,
 )
 from forge.domain.run_plan.plan_checks import cache_problems, order_problems
-from forge.domain.run_plan.planner import _last, _Planner
-from forge.domain.run_plan.records import EXEC_USE, PIPELINES
+from forge.domain.run_plan.planner import _Planner
+from forge.domain.run_plan.records import EXEC_USE
 from forge.domain.run_task import RunTask, key_json
 from forge.domain.run_workflow import RunWorkflowCheck
 from forge.domain.types import FILES
@@ -102,26 +102,17 @@ def plan_runs(
     if problems:
         return RunPlanCheck(problems, None)
     pipelines = planner.pipelines()
-    released_pipelines = planner.pipelines(released=True)
-    fitted = planner.fit(pipelines)
-    problems = [
-        *fitted,
-        *(problem for problem in planner.fit(released_pipelines) if problem not in fitted),
-        *planner.refusals(),
-    ]
+    # A release reorders the grading's runs alone, which takes the same time.
+    problems = [*planner.fit(pipelines), *planner.refusals()]
     if problems:
         return RunPlanCheck(problems, None)
     early_released = task.early(released=True)
     released = (
         ReleasedSplit(
             early=tuple(run.id for run in task.runs if run.id in early_released),
-            pipelines={
-                kind: released_pipelines[kind]
-                for kind in ("early", "late")
-                if kind in released_pipelines
-            },
+            grading=planner.pipelines(released=True)["grading"],
         )
-        if early_released != task.early() or released_pipelines != pipelines
+        if early_released != task.early()
         else None
     )
     copied, save, refused = _check_copies(
@@ -135,11 +126,7 @@ def plan_runs(
     if refused:
         return RunPlanCheck(refused, None)
     if save:
-        pipelines = {
-            kind: save if kind == "save" else pipelines[kind]
-            for kind in PIPELINES
-            if kind == "save" or kind in pipelines
-        }
+        pipelines = {"save": save, "grading": pipelines["grading"]}
     plan = RunPlan(
         workflow=PinnedWorkflow(
             ref=ref, id=workflow_id, commit=commit, files=dict(sorted(workflow_files.items()))
@@ -217,16 +204,10 @@ def _check_copies(
         problems += _too_large(task, check, at, task_files)
         for step in order:
             copied[rename[step]] = _copied(steps[step], step, check, rename, task)
-        before = _last(save)
         for each in whole:
-            waits = tuple(copy_of(check.index, name) for name in each.depends_on)
             save.append(
                 each.model_copy(
-                    update={
-                        "name": copy_of(check.index, each.name),
-                        "step": rename[each.step],
-                        "depends_on": waits or before,
-                    }
+                    update={"name": copy_of(check.index, each.name), "step": rename[each.step]}
                 )
             )
     if problems:

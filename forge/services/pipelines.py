@@ -1,51 +1,46 @@
 """A task's gradings as Woodpecker pipelines (SIMPLER-CORE.md 11.3,
 11.7, 11.8, phase 4.9).
 
-A task's grading is a row per pipeline (`forge.services.gradings`). Its
-`early` row runs the steps of the runs shown during the contest, and once it
-ends `done` its `late` row runs the rest (`gradings.follow`); a plan with
-nothing early has an early row with nothing to run, which ends `done` at
-once, so the late row is made at once, and a plan with nothing late makes
-no late row. A publication whose plan holds steps done at the save is
-checked by a `save` row of its own before it takes over (`queue_save`):
+A task's grading is one row and one pipeline (`forge.services.gradings`,
+#647), which runs every step of the plan's grading pipeline over every run,
+the runs shown during the contest first in each step (#649). A publication
+whose plan holds steps done at the save is checked by a `save` row of its
+own before it takes over (`queue_save`):
 until that row ends `done` with every run accepted and every check of the
 task given what it expects, the task's publication is the one before
 (`published.task`), so entrants keep being graded on it.
 
 Each row runs as a manual pipeline on its org's dispatch repository
-(`gradings.start`). `prepare` readies a row's start: only the steps the
-store leaves to run (`steps.pipeline_to_run`), each with its door and token
-minted, and the report step; and a user for the row, from `USER_FIRST` to
+(`gradings.start`), or restarts the run of the attempt before it (#631).
+`prepare` readies a row's start: the steps left to run
+(`steps.pipeline_to_run`), each with its door and token minted, and the
+report step; and a user for the row, from `USER_FIRST` to
 `USER_LAST`, unique among the rows not finished, a row past what its state
 may take settled to free its user, which every step but `exec`
 runs as, since it makes isolate boxes of its own (phase
 4.1). A step left to run whose image the platform has withdrawn
 (`Settings.withdrawn_images`) ends the row's start in `system_error` saying
 so, and `lookup` answers no pipeline that holds one. A pipeline left with
-nothing is not started: its row is concluded at once from what the store
-holds, and a late row whose step's early batch gave a compile error, the
-same for every item, so takes that verdict for every run with no pipeline
-run.
+nothing is not started: its row is concluded at once, as a row whose every
+run is left out, its part not given.
 
 `lookup` answers the CI that asks what a pipeline is as it starts one, from
 the row and its minted steps alone, writing nothing: each step's image by
 digest, its door and token as settings, the org's cache for a step that
-takes it, its user, and what it waits for; then the report step, the step
-wrapper's base image in its report mode, which runs whatever the steps
-before it ended with. The pipeline's labels are the platform's pool, the
-machine shape's when it holds an `exec` step, since a label
-picks a machine for a whole pipeline, the size of the smallest slot that
-holds what its steps left to run can use at once (`run_plan.slot_of`).
-Every slot takes any pipeline, early, late or save, first come, first
+takes it, and its user, in the plan's order, which they run in one after
+another (#630); then the report step, the step wrapper's base image in its
+report mode, which runs whatever the steps before it ended with. The
+pipeline's labels are the platform's pool, the machine shape's when it
+holds an `exec` step, since a label picks a machine for a whole pipeline,
+the size of the smallest slot that
+holds the largest of its steps left to run (`run_plan.slot_of`).
+Every slot takes any pipeline, a grading's or a save's, first come, first
 served. A pipeline no slot holds, as after the slots were made smaller
 than when its task was saved, is not answered.
 
 `concluded` follows a row's report: a `system_error` is tried again once by
-itself as any row is (`gradings.notice`); an early row that ends `done`
-makes its late row, started in the background, so the report waits for no
-start; a late row that ends once its task has revealed is told to its
-entrant, whose result reads it then; and a save row that ends `done` with
-every run accepted lets its publication take over (`published.live`).
+itself as any row is (`gradings.notice`); and a save row that ends `done`
+with every run accepted lets its publication take over (`published.live`).
 Grading the task's submissions again, when that publication changed how the
 task grades, runs in the background too (`take_over`); until it has, the
 row's `taken_over_at` is empty, and the next save of the task or
@@ -70,7 +65,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from forge.db.tables import Grading, GradingStep
-from forge.db.tables.gradings import EARLY, LATE, PASSED, SAVE
+from forge.db.tables.gradings import PASSED, SAVE
 from forge.domain.errors import CiRequestRefused, Misconfigured, NotFound, PortError, Unavailable
 from forge.domain.grading import (
     BOXED_SHAPE,
@@ -85,12 +80,11 @@ from forge.domain.grading import (
 from forge.domain.ids import OrgId, PublicationId, SubmissionId, TaskId, VersionId
 from forge.domain.publication_record import Check, FailedCheck, Publication, failed_checks
 from forge.domain.regrades import RegradeCause
-from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.run_plan import BOXED, PipelineKind, RunPlan, slot_of
 from forge.domain.step_data import REPORT_STEP, all_accepted, without
 from forge.log import get_logger
 from forge.runtime.context import Context
-from forge.services import entrant_view, gradings, names, places, steps, timelines
+from forge.services import entrant_view, gradings, places, steps, timelines
 
 log = get_logger(__name__)
 
@@ -126,17 +120,10 @@ async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
     does not read, `NotFound` when its publication is gone, and
     `Unavailable` when no user is free, `NoImage` when the platform names
     no image for the report step, and `ImageWithdrawn` when a step
-    left to run names an image the platform has withdrawn. A late row
-    reuses, or runs everything again, as its early row's steps were minted
-    to.
+    left to run names an image the platform has withdrawn.
     """
     pipeline = _kind(row)
-    scratch = row.from_scratch
-    if row.early_id is not None:
-        scratch = scratch and bool(
-            await ctx.db.scalar(select(Grading.from_scratch).where(Grading.id == row.early_id))
-        )
-    left = await steps.pipeline_to_run(ctx, row, pipeline, from_scratch=scratch)
+    left = await steps.pipeline_to_run(ctx, row, pipeline)
     if not left:
         held = await gradings.find(ctx, row.id, lock=True)
         if held is not None and held.status == GradingStatus.QUEUED:
@@ -152,8 +139,8 @@ async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
         if ctx.settings.withdraws(image):
             raise ImageWithdrawn(WITHDRAWN.format(image=image))
     for held_step in left:
-        await steps.mint(ctx, row, pipeline=pipeline, step=held_step.name, from_scratch=scratch)
-    await steps.mint(ctx, row, pipeline=pipeline, step=REPORT_STEP, from_scratch=scratch)
+        await steps.mint(ctx, row, pipeline=pipeline, step=held_step.name)
+    await steps.mint(ctx, row, pipeline=pipeline, step=REPORT_STEP)
     await _take_user(ctx, row)
     return await _run(ctx, row)
 
@@ -163,20 +150,27 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
     steps, for a row of `org` whose pipeline is being started.
     `CiRequestRefused` for any other, and `Unavailable` when the forge does
     not answer.
+
+    A restart keeps the old run's variables, so `grading` may name an
+    earlier attempt: the latest attempt on its line is answered then, only
+    when it restarts a run (#631).
     """
-    row = await _named(ctx, grading)
+    named = await _named(ctx, grading)
+    row = await gradings.newest_on_line(ctx, named) if named is not None else None
     if (
-        row is None
+        named is None
+        or row is None
         or gradings.org_of(row) != org
         or row.status != GradingStatus.QUEUED
         or row.run_user is None
+        or (row.id != named.id and row.restarts is None)
     ):
         log.warning("pipelines.config_refused", reason="not_starting", grading=grading)
         raise CiRequestRefused(REFUSED)
     pipeline = _kind(row)
     try:
         plan, _ = await steps.plan_of(ctx, row)
-        run = await _run(ctx, row)
+        run = await _run(ctx, named)
     except (Misconfigured, NotFound) as exc:
         log.warning("pipelines.config_refused", reason="plan", grading=grading, error=str(exc))
         raise CiRequestRefused(REFUSED) from None
@@ -207,7 +201,6 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
                 settings=_settings(
                     steps.access(ctx, row, each.name, plan.woodpecker_name(each.name))
                 ),
-                depends_on=tuple(plan.woodpecker_name(name) for name in each.depends_on),
                 cache=step.cache,
                 user=None if in_boxes else row.run_user,
             )
@@ -224,7 +217,6 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
                 "mode": REPORT_MODE,
                 **_settings(steps.access(ctx, row, REPORT_STEP, REPORT_STEP)),
             },
-            depends_on=tuple(plan.woodpecker_name(each.name) for each in left),
             user=row.run_user,
             always=True,
         )
@@ -248,54 +240,14 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
 
 async def concluded(ctx: Context, row: Grading) -> None:
     """What follows a row that has just been concluded, in the unit of work
-    that concluded it: its retry by itself for a `system_error`, the late
-    row for an early row `done`, and the publication taking over for a
-    save row `done` with every run accepted; and for a late row once its
-    task has revealed, or while its results are released for a grading
-    that took the unreleased split, a nudge to its entrant, whose result
-    reads it then.
+    that concluded it: its retry by itself for a `system_error`, and the
+    publication taking over for a save row `done` with every run accepted.
     """
     status = GradingStatus(row.status)
-    task = TaskId(row.task_id)
-    if row.pipeline == LATE and (
-        await _revealed(ctx, task)
-        or (not row.released_split and await entrant_view.results_released(ctx, task))
-    ):
-        gradings.told_late(ctx, row)
     if status is GradingStatus.SYSTEM_ERROR:
         await gradings.notice(ctx, [row])
-        return
-    if status is not GradingStatus.DONE:
-        return
-    if row.pipeline == EARLY:
-        plan, _ = await steps.plan_of(ctx, row)
-        # A late pipeline may hold a value's program alone, its runs early.
-        if plan.pipeline("late"):
-            made = await gradings.follow(ctx, row)
-            log.info(
-                "pipelines.late_made",
-                grading=str(row.id),
-                late=str(made.id) if made is not None else None,
-            )
     elif row.pipeline == SAVE and accepted(row):
         _take_over_later(ctx, TaskId(row.task_id))
-
-
-async def _revealed(ctx: Context, task: TaskId) -> bool:
-    """Whether the task has closed for every row of its contest, read as
-    an entrant's result reads it; a contest or task that does not read has
-    not."""
-    contest = contest_id_of(task_scope(task))
-    name = (await names.names_of(ctx, [task])).get(task)
-    if name is None:
-        return False
-    try:
-        settings = await entrant_view.contest(ctx, contest)
-    except PortError as exc:
-        log.warning("pipelines.reveal_unread", task=task, error=type(exc).__name__)
-        return False
-    reveal = await timelines.reveal(ctx, contest, settings, name)
-    return reveal is not None and ctx.now >= reveal
 
 
 def accepted(row: Grading) -> bool:
@@ -560,7 +512,6 @@ async def _run(ctx: Context, row: Grading) -> PipelineRun:
     publication = await gradings.publication_of(ctx, row)
     return PipelineRun(
         grading=row.id,
-        pipeline=row.pipeline,
         org=gradings.org_of(row),
         publication_version=publication.version,
         submission=SubmissionId(row.submission_id) if row.submission_id else None,

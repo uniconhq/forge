@@ -1,9 +1,8 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Literal
+from typing import Any
 
-from forge.db.tables.gradings import EARLY
 from forge.domain.grading import GradingStatus
 from forge.domain.ids import PublicationId, TaskId, WorkspaceId
 from forge.domain.regrades import Compared
@@ -34,10 +33,6 @@ PUBLICATION_GONE = "The publication it grades against is gone."
 CI_CONFIG_PATH = "/api/v1/ci/config"
 """Where a CI that asks what a pipeline is asks it, under the platform's
 internal URL."""
-
-
-Listed = Literal["early", "late"]
-"""The rows an organiser's list reads: every one but a save's."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,8 +84,6 @@ class GradingRecord:
     retry_limit: int | None = None
     regrade: uuid.UUID | None = None
     change: Compared | None = None
-    pipeline: Listed = EARLY
-    early: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)

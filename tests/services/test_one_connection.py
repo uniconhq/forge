@@ -131,7 +131,7 @@ async def test_a_contestants_whole_path_to_a_graded_submission(
     [read] = await submissions.mine(one, await guard(), entered.task)
     assert read.number == made.number
     assert any(
-        call.arguments["variables"]["UNICON_PIPELINE"] == "early"
+        "UNICON_SUBMISSION_COMMIT" in call.arguments["variables"]
         for call in acme.fake.calls_to("start_pipeline")
     )
 

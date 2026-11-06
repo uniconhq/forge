@@ -6,29 +6,18 @@ step outputs, and the large-file objects a publication's planned files are
 step's token is minted: the step's name inside forge (`step`), its name in
 the Woodpecker file (`woodpecker`, null on a row minted before steps were
 named that way), the pipeline it runs in, the SHA-256 of its token,
-when the token expires, whether the grading reuses nothing (`from_scratch`),
-and, once the step has asked, when (`job_at`), the items its job held, each
-run with its key (`items`), the files the door serves it by SHA-256,
-each with where it is read from and the SHA-256 the plan pinned
-(`served`), the first of its box users (`box_first`, unique while held),
+when the token expires, and, once the step has asked, when (`job_at`), the
+runs its job held, none for a step done once (`items`), the files the door
+serves it by SHA-256, each with where it is read from and the SHA-256 the
+plan pinned (`served`), the first of its box users (`box_first`, unique while held),
 the files it said it would upload (`uploads`), when it said it was done
 (`done_at`) and, when what it wrote is no outputs, why (`fault`).
 
-`step_outputs` is one row per item a step did: the org whose machine did
-it, the item's key, the pipeline it was measured in, the grading and step
-that did it and the run, what `outputs.json` said of it (`outputs`) and the
-files those name, each with its object in the results store, its SHA-256
-and size (`files`). The first row of a submission's key in a pipeline is
-reused (`reusable`, unique among those). Save pipelines have no submission
-and reuse within their org; submission pipelines can read those save rows.
-A grading from scratch replaces its submission's reusable row; any other
-is kept only for the grading that made it.
-
-`grading_reuses` is, per grading and key, the `step_outputs` row the
-grading's first read of that key in the store resolved to: every later
-read of the key by that grading takes the same row, so a grading from
-scratch that makes another row the reused one of the key changes nothing
-for a grading already under way.
+`step_outputs` is one row per item a step did: the pipeline it was
+measured in, the grading and step that did it and the run, none for a step
+done once, what `outputs.json` said of it (`outputs`) and the files those
+name, each with its object in the results store, its SHA-256 and size
+(`files`). A row is read by its own grading alone (#625).
 
 `publication_objects` is the SHA-256 and size of every large-file object a
 publication's planned files are, the task's and its workflow's, read once:
@@ -58,7 +47,6 @@ class GradingStep(Base, Timestamped):
     pipeline: Mapped[str]
     token_hash: Mapped[bytes]
     expires_at: Mapped[datetime]
-    from_scratch: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     job_at: Mapped[datetime | None]
     items: Mapped[list[Any] | None] = mapped_column(JSONB)
     served: Mapped[dict[str, Any] | None]
@@ -88,11 +76,7 @@ class StepOutput(Base):
     __tablename__ = "step_outputs"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=new_id)
-    org_id: Mapped[str]
-    submission_id: Mapped[str | None]
-    key: Mapped[str]
     pipeline: Mapped[str]
-    reusable: Mapped[bool]
     grading_id: Mapped[uuid.UUID]
     step: Mapped[str]
     run: Mapped[str | None]
@@ -102,23 +86,16 @@ class StepOutput(Base):
 
     __table_args__ = (
         CheckConstraint(f"pipeline in {PIPELINES}", name="pipeline"),
+        # One output per item of a grading (#625): the reader reads it by
+        # step and run alone.
         Index(
-            "ix_step_outputs_org_id_key_pipeline",
-            "org_id",
-            "key",
-            "pipeline",
+            "ix_step_outputs_grading_id_step_run",
+            "grading_id",
+            "step",
+            "run",
             unique=True,
-            postgresql_where=text("reusable and submission_id is null"),
+            postgresql_nulls_not_distinct=True,
         ),
-        Index(
-            "ix_step_outputs_submission_id_key_pipeline",
-            "submission_id",
-            "key",
-            "pipeline",
-            unique=True,
-            postgresql_where=text("reusable and submission_id is not null"),
-        ),
-        Index("ix_step_outputs_grading_id", "grading_id"),
     )
 
 
@@ -129,11 +106,3 @@ class PublicationObjects(Base):
     task_id: Mapped[str]
     objects: Mapped[dict[str, Any]]
     read_at: Mapped[datetime]
-
-
-class GradingReuse(Base):
-    __tablename__ = "grading_reuses"
-
-    grading_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
-    key: Mapped[str] = mapped_column(primary_key=True)
-    output_id: Mapped[uuid.UUID]

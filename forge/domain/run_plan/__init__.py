@@ -21,7 +21,7 @@ from forge.domain.run_plan.models import (
     ValueStep,
 )
 from forge.domain.run_plan.plan import plan_runs
-from forge.domain.run_plan.plan_checks import files_named, order_problems, side_by_side, slot_of
+from forge.domain.run_plan.plan_checks import files_named, order_problems, slot_of
 from forge.domain.run_plan.plan_helpers import once_steps
 from forge.domain.run_plan.records import (
     BOXED,
@@ -34,7 +34,6 @@ from forge.domain.run_plan.records import (
     RETIRED,
     RUN_ENTRY_KB,
     SCHEMA_VERSION,
-    GradingKind,
     PipelineKind,
     StepClass,
     retired,
@@ -54,7 +53,6 @@ __all__ = [
     "FileFact",
     "FilesNamed",
     "FilesRead",
-    "GradingKind",
     "Item",
     "PinnedWorkflow",
     "PipelineKind",
@@ -73,7 +71,6 @@ __all__ = [
     "plan_runs",
     "retired",
     "run_plan_changes",
-    "side_by_side",
     "slot_of",
     "steps_run_again",
 ]

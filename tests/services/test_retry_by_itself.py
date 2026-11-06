@@ -8,10 +8,13 @@ attempt that fails getting its one retry by itself. Two retries by itself of
 one grading at once make one attempt, and a staff cancel or retry before it
 leaves it nothing to do. While the retry runs, a submission with no result
 reads as queued or grading again, and once its second failure waits, as
-delayed, counted among the contest's failed gradings.
+delayed, counted among the contest's failed gradings. Each new attempt
+restarts the run before it (#631), or starts a new one when there is none
+or the CI refuses (#635).
 """
 
 import asyncio
+import json
 from datetime import timedelta
 from typing import Any
 
@@ -19,14 +22,14 @@ import pytest
 from sqlalchemy import select, update
 
 from forge.db.tables import Grading
-from forge.domain.errors import Conflict, Unavailable
+from forge.domain.errors import CiRequestRefused, Conflict, Unavailable
 from forge.domain.grading import NEVER_BEGAN, OVERDUE, GradingStatus
-from forge.domain.ids import RunId
+from forge.domain.ids import OrgId, RunId
 from forge.domain.roles import Role, Scope
 from forge.domain.submission_state import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.runtime.setup import Setup
-from forge.services import gradings, submissions
+from forge.services import gradings, runs, submissions
 from forge.services.gradings import NO_ANSWER, NO_RUN, START_RETRY_WAIT
 from forge.settings import Settings
 from forge.testing import APP_URL, FORGE_URL, FakeClock
@@ -78,7 +81,7 @@ async def _rows(setup: Setup) -> list[Grading]:
 
 async def _first_step(setup: Setup, row: Grading) -> str:
     """The name of the first step the grading's pipeline runs."""
-    [(first, _), *_] = await _to_run(setup, row.id, "early")
+    [first, *_] = await _to_run(setup, row.id, "grading")
     return first
 
 
@@ -88,8 +91,8 @@ async def _fail(setup: Setup, acme: Acme, row: Grading) -> GradingStatus:
     the background has finished.
     """
     step = await _first_step(setup, row)
-    await _step(setup, acme, row.id, "early", step, lambda job: {"outputs.json": b"{"})
-    status = await _report(setup, row.id, "early")
+    await _step(setup, acme, row.id, "grading", step, lambda job: {"outputs.json": b"{"})
+    status = await _report(setup, row.id, "grading")
     await setup.settle()
     return status
 
@@ -203,7 +206,7 @@ async def test_a_run_past_its_deadline_is_retried_by_itself_once_found(
     await _submit(setup, acme, entered)
     (first,) = await _rows(setup)
     step = await _first_step(setup, first)
-    await _job(setup, first.id, step, await _mint(setup, first.id, "early", step))
+    await _job(setup, first.id, step, await _mint(setup, first.id, "grading", step))
     (running,) = await _rows(setup)
     assert running.deadline_at is not None
     clock.set(running.deadline_at)
@@ -233,6 +236,8 @@ async def test_a_start_that_fails_is_retried_by_the_first_read_a_minute_after(
     old, new = await _rows(setup)
     assert (old.id, old.status) == (only.id, GradingStatus.SYSTEM_ERROR)
     assert (new.attempt, new.automatic, new.status) == (2, True, GradingStatus.DISPATCHED)
+    assert (old.run_id, new.restarts) == (None, None)
+    assert acme.fake.ci.runs[RunId(str(new.run_id))].variables["UNICON_GRADING_ID"] == str(new.id)
 
 
 async def test_a_retry_that_cannot_start_either_waits_for_staff(
@@ -420,3 +425,109 @@ async def test_a_staff_cancel_beside_the_retry_by_itself_waits_for_it_and_finds_
         (1, GradingStatus.SYSTEM_ERROR, None),
         (2, GradingStatus.DISPATCHED, None),
     ]
+
+
+async def _asked(setup: Setup, acme: Acme, clock: FakeClock, run: RunId) -> str:
+    request = acme.fake.grading.config_request(
+        OrgId("acme"), acme.fake.ci.runs[run].variables, now=clock.now()
+    )
+    return json.dumps(json.loads((await runs.config(setup, request)).body))
+
+
+async def test_a_retry_by_itself_restarts_the_failed_run_answered_with_its_own_steps(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _submit(setup, acme, entered)
+    (first,) = await _rows(setup)
+    run = RunId(str(first.run_id))
+    restart = acme.fake.grading.restart_pipeline
+    answered: list[str] = []
+
+    async def asking(*args: Any) -> RunId:
+        made = await restart(*args)
+        answered.append(await _asked(setup, acme, clock, made))
+        return made
+
+    monkeypatch.setattr(acme.fake.grading, "restart_pipeline", asking)
+    await _fail(setup, acme, first)
+
+    _, new = await _rows(setup)
+    restarted = acme.fake.ci.runs[RunId(str(new.run_id))]
+    assert (new.restarts, restarted.parent, new.status) == (run, run, GradingStatus.DISPATCHED)
+    # The variables name the first attempt, but the new one is answered.
+    assert restarted.variables == acme.fake.ci.runs[run].variables
+    assert len(acme.fake.calls_to("start_pipeline")) == 1
+    [answer] = answered
+    assert str(new.id) in answer and str(first.id) not in answer
+    with pytest.raises(CiRequestRefused):
+        await _asked(setup, acme, clock, RunId(str(new.run_id)))
+
+
+async def test_a_staff_retry_restarts_the_run_of_the_attempt_it_retries(
+    setup: Setup, acme: Acme, entered: Entered
+) -> None:
+    await _submit(setup, acme, entered)
+    (first,) = await _rows(setup)
+    await _fail(setup, acme, first)
+    _, second = await _rows(setup)
+    await _fail(setup, acme, second)
+    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
+
+    await gradings.retry(setup, manager, second.id)
+    await setup.settle()
+
+    *_, third = await _rows(setup)
+    assert (third.attempt, third.restarts) == (3, second.run_id)
+    assert acme.fake.ci.runs[RunId(str(third.run_id))].parent == second.run_id
+    assert len(acme.fake.calls_to("start_pipeline")) == 1
+
+
+@pytest.mark.parametrize("gone", [False, True], ids=["refused", "not-held"])
+async def test_a_restart_the_ci_refuses_or_no_longer_holds_starts_a_new_run(
+    setup: Setup, acme: Acme, entered: Entered, gone: bool
+) -> None:
+    await _submit(setup, acme, entered)
+    (first,) = await _rows(setup)
+    if gone:
+        del acme.fake.ci.runs[RunId(str(first.run_id))]
+    else:
+        acme.fake.ci.refuse_restarts = 1
+
+    await _fail(setup, acme, first)
+
+    _, new = await _rows(setup)
+    started = acme.fake.ci.runs[RunId(str(new.run_id))]
+    assert (new.status, new.restarts, started.parent) == (
+        GradingStatus.DISPATCHED,
+        first.run_id,
+        None,
+    )
+    assert started.variables["UNICON_GRADING_ID"] == str(new.id)
+    assert len(acme.fake.calls_to("start_pipeline")) == 2
+
+
+async def test_a_restart_is_answered_only_for_the_latest_attempt_that_restarts_a_run(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    """So an old run restarted by hand isn't answered while the platform
+    starts a new run of its own."""
+    await _submit(setup, acme, entered)
+    (first,) = await _rows(setup)
+    old = RunId(str(first.run_id))
+    await _fail(setup, acme, first)
+    _, new = await _rows(setup)
+    new_run = RunId(str(new.run_id))
+
+    for restarts in (None, str(old)):
+        async with setup.unit_of_work() as ctx:
+            await ctx.db.execute(
+                update(Grading)
+                .where(Grading.id == new.id)
+                .values(status=GradingStatus.QUEUED, restarts=restarts)
+            )
+        if restarts is None:
+            with pytest.raises(CiRequestRefused):
+                await _asked(setup, acme, clock, old)
+        else:
+            assert str(new.id) in await _asked(setup, acme, clock, old)
+    assert str(new.id) in await _asked(setup, acme, clock, new_run)

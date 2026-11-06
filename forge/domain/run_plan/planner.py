@@ -2,12 +2,11 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any
 
 from forge.domain.blocks.catalogue import ALL
 from forge.domain.content import named_by
 from forge.domain.definitions import (
-    AFTER_RELEASE,
     DEFAULT_MAX_SIZE,
     PUBLIC_FOLDER,
     Scoring,
@@ -50,11 +49,9 @@ from forge.domain.run_plan.records import (
     BOXED,
     BUILT,
     COMPILE_ERROR,
-    COMPILED,
     EXEC_USE,
     ONCE,
     PIPELINE_WORDS,
-    PIPELINES,
     PRIMITIVE_ROOM_MB,
     PROGRAM_MB,
     RUN_ENTRY_KB,
@@ -77,12 +74,6 @@ from forge.domain.run_workflow import ResolvedStep, RunWorkflowCheck
 from forge.domain.types import FILES, Type
 from forge.domain.workflow_definition import SELF_REPORTED, RunWorkflow, references, whole_reference
 from forge.domain.yaml_models import Path, Problem, is_number, path_text
-
-
-def _last(steps: Sequence[PipelineStep]) -> tuple[str, ...]:
-    """The steps of a pipeline no other step of it waits for."""
-    waited = {name for held in steps for name in held.depends_on}
-    return tuple(held.name for held in steps if held.name not in waited)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +102,13 @@ class _Bound:
 
 
 _ABSENT = object()
+_GRADED: dict[StepClass, StepClass] = {
+    "save_once": "grading_once",
+    "save_per_run": "grading_per_run",
+}
+"""Where a workflow step that reads nothing of the entrant's runs: in each
+grading, as every workflow step does (#640). Only the planner's own steps
+run at the save: its builds and each check's copies (#655)."""
 
 
 class _Planner:
@@ -140,6 +138,14 @@ class _Planner:
         """The inputs whose value differs per run: each repeated one, the
         entrant's given in parts among them."""
         self.classes: dict[str, StepClass] = {}
+        """How often, and in which pipeline, each workflow step runs: once
+        or once per run, in each grading."""
+        self.reading: dict[str, StepClass] = {}
+        """What each workflow step reads, as `step_class` classes it:
+        whether the entrant's inputs and a repeated input, directly or
+        through a step before it. A step reading nothing of the entrant's
+        is classed as if done at the save, though it runs in each grading
+        (`_GRADED`)."""
         self.reads: dict[str, list[str]] = {}
         """The steps each step reads directly, in the order it names them."""
         self.raising: dict[str, list[str]] = {}
@@ -155,11 +161,8 @@ class _Planner:
         its declaration gives it (`once_time_ms`)."""
         self.compiling: set[str] = set()
         """The steps that compile the entrant's code and give a compile
-        error the same for every item, which `compiled` reads."""
-        self.leaking: dict[str, str | None] = {}
-        """The steps that would be among `compiling` but for a compile
-        error that could say what a hidden file holds, each with the run of
-        such an item, None for a step done once."""
+        error the same for every item, which `compiled` reads, but one whose
+        compile error could say what a hidden file holds (`_leaks`)."""
         self.program_steps: dict[str, RunStep] = {}
         """The steps the planner adds to the workflow's, by id: the build
         of each source of the task's own at the save (`builds`), and each
@@ -169,7 +172,9 @@ class _Planner:
 
     def bind(self, step_id: str, given: Mapping[str, Any]) -> None:
         resolved = self.checked.steps[step_id]
-        kind, read = step_class(given, self.entrant, self.repeated, self.classes)
+        reading, read = step_class(given, self.entrant, self.repeated, self.reading)
+        self.reading[step_id] = reading
+        kind = _GRADED.get(reading, reading)
         self.classes[step_id] = kind
         self.reads[step_id] = read
         self.raising[step_id] = self._raising(resolved, given)
@@ -208,25 +213,25 @@ class _Planner:
         self.output_mb[step_id] = max(
             bound.limits["output_mb"] for (each, _), bound in self.bound.items() if each == step_id
         )
-        if self._entrant_source(given) and COMPILE_ERROR in self._once_outcomes(step_id):
-            leaked = self._leaked(step_id, resolved.use)
-            if leaked is False:
-                self.compiling.add(step_id)
-            else:
-                self.leaking[step_id] = leaked
+        if (
+            self._entrant_source(given)
+            and COMPILE_ERROR in self._once_outcomes(step_id)
+            and not self._leaks(step_id, resolved.use)
+        ):
+            self.compiling.add(step_id)
 
-    def _leaked(self, step_id: str, use: str) -> str | Literal[False] | None:
-        """The run of an item of `step_id` whose compile error could say what
-        a hidden file holds, None for a step done once; False when none can.
-        A step that runs the entrant's code beside a hidden file is one,
-        unless it is `EXEC_USE`, whose compile box sees only the source; one
-        that reads a tainted step's output always is.
+    def _leaks(self, step_id: str, use: str) -> bool:
+        """Whether an item of `step_id` gives a compile error that could say
+        what a hidden file holds: one that runs the entrant's code beside a
+        hidden file, unless the step is `EXEC_USE`, whose compile box sees
+        only the source, and always one that reads a tainted step's output.
         """
-        for (each, run), bound in self.bound.items():
-            tainted = bound.tainted
-            if each == step_id and tainted is not None and ("reads" in tainted or use != EXEC_USE):
-                return run
-        return False
+        return any(
+            each == step_id
+            and bound.tainted is not None
+            and ("reads" in bound.tainted or use != EXEC_USE)
+            for (each, _), bound in self.bound.items()
+        )
 
     def _of(self, step_id: str, run: Any) -> _Bound:
         """The run of `step_id` that `run` reads: its own, or the one run of a
@@ -531,14 +536,10 @@ class _Planner:
         source that does not compile refuses the publication before it
         takes over. A programs-form step's own program of the task's
         is `build-<step>-<program>`. A workflow step of that name is refused.
-        A step done at the save is not built: its own run refuses the save.
         """
         problems: list[Problem] = []
         for step in self.workflow.steps:
-            if self.checked.steps[step.id].use != EXEC_USE or self.classes[step.id] in (
-                "save_once",
-                "save_per_run",
-            ):
+            if self.checked.steps[step.id].use != EXEC_USE:
                 continue
             given = step.with_.get(PROGRAMS)
             sources = (
@@ -590,7 +591,7 @@ class _Planner:
         ]
         return any(
             (each.kind == "inputs" and each.name in self.entrant)
-            or (each.kind == "steps" and _READS[self.classes[each.name]][0])
+            or (each.kind == "steps" and _READS[self.reading[each.name]][0])
             for each in _references_in(sources)
         )
 
@@ -740,117 +741,49 @@ class _Planner:
             )
         return problems
 
-    def _program_pipelines(
-        self, found: dict[PipelineKind, tuple[PipelineStep, ...]], *, released: bool
-    ) -> dict[PipelineKind, tuple[PipelineStep, ...]]:
-        """`found` with the steps the planner adds after the rest: each
-        build at the save, and each value's program's run in the early
-        pipeline when its value is early (`RunTask.early_programs`), else
-        the late one, each waiting for every step before it, so the runs a
-        program reads are done.
-        """
-        early = self.task.early_programs(released=released)
-        held = dict(found)
-        for step, made in self.program_steps.items():
-            kind: PipelineKind = "save"
-            if made.value is not None and made.value.report is not None:
-                kind = "early" if made.value.name in early else "late"
-            before = held.get(kind, ())
-            waited = {waits for each in before for waits in each.depends_on}
-            last = tuple(each.name for each in before if each.name not in waited)
-            placed = PipelineStep(
-                name=step, step=step, depends_on=last, limits=self._limits(step, None)
-            )
-            held[kind] = (*before, placed)
-        return {kind: held[kind] for kind in PIPELINES if kind in held}
-
     # Pipelines
 
     def pipelines(self, *, released: bool = False) -> dict[PipelineKind, tuple[PipelineStep, ...]]:
         """The pipelines of a grading made before any release, or with
-        `released`, of one made while the task's results are released."""
+        `released`, of one made while the task's results are released: the
+        save's, each build of a source of the task's own (`builds`), and the
+        grading's, one line over every run (#647), its shown runs first in
+        each step (#649).
+        """
         early = self.task.early(released=released)
-        early_runs = tuple(run.id for run in self.task.runs if run.id in early)
-        late_runs = tuple(run.id for run in self.task.runs if run.id not in early)
-        early_once = self._early_once(bool(early_runs), released=released)
-        held: dict[PipelineKind, list[tuple[str, tuple[str, ...] | None]]] = {
-            kind: [] for kind in PIPELINES
-        }
-        every = tuple(run.id for run in self.task.runs)
-        for step in self.workflow.steps:
-            placed = self.classes[step.id]
-            if placed == "save_once":
-                held["save"].append((step.id, None))
-            elif placed == "save_per_run":
-                held["save"].append((step.id, every))
-            elif placed == "grading_once":
-                held["early" if step.id in early_once else "late"].append((step.id, None))
-            else:
-                if early_runs:
-                    held["early"].append((step.id, early_runs))
-                if late_runs:
-                    held["late"].append((step.id, late_runs))
-        found: dict[PipelineKind, tuple[PipelineStep, ...]] = {}
-        for kind, steps in held.items():
-            made = self._chained(self._pipeline(steps))
-            if made:
-                found[kind] = made
-        return self._program_pipelines(found, released=released)
+        runs = (
+            *(run.id for run in self.task.runs if run.id in early),
+            *(run.id for run in self.task.runs if run.id not in early),
+        )
+        builds = tuple(
+            PipelineStep(name=step, step=step, limits=self._limits(step, None))
+            for step, made in self.program_steps.items()
+            if made.value is None or made.value.report is None
+        )
+        return {**({"save": builds} if builds else {}), "grading": self._grading(runs)}
 
     def whole(self) -> tuple[PipelineStep, ...]:
         """Every step graded per submission laid out as one pipeline over
-        every run, each value's program after the rest: a check's grading,
-        done in the save's pipeline (`_check_copies`)."""
-        every = tuple(run.id for run in self.task.runs)
-        held: list[tuple[str, tuple[str, ...] | None]] = []
-        for step in self.workflow.steps:
-            placed = self.classes[step.id]
-            if placed == "grading_once":
-                held.append((step.id, None))
-            elif placed == "grading_per_run":
-                held.append((step.id, every))
-        made = self._chained(self._pipeline(held))
+        every run in the task's order: a check's grading, done in the save's
+        pipeline (`_check_copies`)."""
+        return self._grading(tuple(run.id for run in self.task.runs))
+
+    def _grading(self, runs: tuple[str, ...]) -> tuple[PipelineStep, ...]:
+        """The grading's pipeline over `runs`, in that order: each workflow
+        step, then each value's program, which reads the runs before it."""
+        held: list[tuple[str, tuple[str, ...] | None]] = [
+            (step.id, None if self.classes[step.id] == "grading_once" else runs)
+            for step in self.workflow.steps
+        ]
+        made = self._pipeline(held)
         for name in self.task.programs:
             program = f"exec-{name}"
             if program in self.program_steps:
                 made = (
                     *made,
-                    PipelineStep(
-                        name=program,
-                        step=program,
-                        depends_on=_last(made),
-                        limits=self._limits(program, None),
-                    ),
+                    PipelineStep(name=program, step=program, limits=self._limits(program, None)),
                 )
         return made
-
-    def _early_once(self, any_early: bool, *, released: bool = False) -> set[str]:
-        """The steps done once per grading in the early pipeline: every one
-        when a run is early, since every run's verdict reads each; when none
-        is but `compiled`, or a value reading it, is shown `always`, those
-        done once per grading that compile the entrant's code, which
-        `compiled` reads, and the steps done once per grading they read; a
-        step that compiles it only with the runs is refused then
-        (`refusals`); otherwise none.
-        """
-        once = [step.id for step in self.workflow.steps if self.classes[step.id] == "grading_once"]
-        if any_early:
-            return set(once)
-        if not self.task.compile_early(released=released):
-            return set()
-        found: set[str] = set()
-        waiting = [step for step in self._compilers() if self.classes[step] == "grading_once"]
-        while waiting:
-            step = waiting.pop()
-            if step in found:
-                continue
-            found.add(step)
-            waiting += [each for each in self.reads[step] if self.classes[each] == "grading_once"]
-        return found
-
-    def _outcomes(self, step_id: str) -> set[str]:
-        outcome = self.checked.steps[step_id].declaration.outputs.get("outcome")
-        return set(outcome.outcomes or {}) if outcome is not None else set()
 
     def _once_outcomes(self, step_id: str) -> tuple[str, ...]:
         """The outcomes the step's declaration says it gives the same for
@@ -860,85 +793,22 @@ class _Planner:
 
     def _pipeline(self, held: list[tuple[str, tuple[str, ...] | None]]) -> tuple[PipelineStep, ...]:
         """The Woodpecker steps of one pipeline from the workflow steps it
-        holds, each with the runs it holds of it.
+        holds, each with the runs it holds of it, in the workflow's order,
+        which they run in: a step reads only the steps before it.
         """
-        names: dict[str, dict[str | None, str]] = {}
-        """Each workflow step's Woodpecker step by the run it holds, none
-        for one holding every run of the step it holds."""
         made: list[PipelineStep] = []
         for step_id, runs in held:
             declaration = self.checked.steps[step_id].declaration
             if runs is None or declaration.batch:
                 groups: list[tuple[str, tuple[str, ...] | None]] = [(step_id, runs)]
-                names[step_id] = {None: step_id}
             else:
                 groups = [(f"{step_id}.{run}", (run,)) for run in runs]
-                names[step_id] = {run: f"{step_id}.{run}" for run in runs}
-            for name, group in groups:
-                depends: list[str] = []
-                for read in self.reads[step_id]:
-                    held_names = names.get(read)
-                    if held_names is None:
-                        continue  # in an earlier pipeline
-                    if None in held_names:
-                        depends.append(held_names[None])
-                    else:
-                        depends += [held_names[run] for run in group or () if run in held_names]
-                made.append(
-                    PipelineStep(
-                        name=name,
-                        step=step_id,
-                        runs=group,
-                        depends_on=tuple(dict.fromkeys(depends)),
-                        limits=self._limits(step_id, group),
-                    )
+            made += [
+                PipelineStep(
+                    name=name, step=step_id, runs=group, limits=self._limits(step_id, group)
                 )
-        return tuple(made)
-
-    def _chained(self, steps: tuple[PipelineStep, ...]) -> tuple[PipelineStep, ...]:
-        """The pipeline in stages for the smallest slot that holds its
-        largest step: a stage takes the next step while their memory adds up
-        within the slot, their boxes, one for an `exec` step and one for each
-        program of an `exec` programs-form step, number no more than the slot's cores,
-        and both run in boxes, and each step of a stage waits for every step
-        of the stage before that it does not wait for already. A step that
-        runs no boxes, whose container may use the whole slot, is a stage
-        alone, and so is one with more boxes than the slot has cores. With
-        no slot, as without one that holds the largest step, which `fit`
-        refuses, it is as it was.
-        """
-        largest = max((step.limits.memory_mb for step in steps), default=0)
-        slot = next((each for each in self.machine.slots if each.memory_mb >= largest), None)
-        if slot is None:
-            return steps
-        stages: list[list[PipelineStep]] = []
-        held = boxes = 0
-        open_ = False
-        for step in steps:
-            resolved = self.checked.steps[step.step]
-            boxed = resolved.use.partition("@")[0] in BOXED
-            memory = step.limits.memory_mb
-            given = len(resolved.programs) or 1
-            if open_ and boxed and held + memory <= slot.memory_mb and boxes + given <= slot.cores:
-                stages[-1].append(step)
-                held += memory
-                boxes += given
-            else:
-                stages.append([step])
-                held, boxes = memory, given
-            open_ = boxed
-        waits: dict[str, set[str]] = {}
-        made: list[PipelineStep] = []
-        for number, stage in enumerate(stages):
-            for step in stage:
-                found = {each for name in step.depends_on for each in (name, *waits.get(name, ()))}
-                added = [
-                    each.name
-                    for each in (stages[number - 1] if number else ())
-                    if each.name not in found
-                ]
-                waits[step.name] = found | set(added)
-                made.append(step.model_copy(update={"depends_on": (*step.depends_on, *added)}))
+                for name, group in groups
+            ]
         return tuple(made)
 
     def _limits(self, step_id: str, runs: tuple[str, ...] | None) -> StepLimits:
@@ -1020,9 +890,8 @@ class _Planner:
 
     def refusals(self) -> list[Problem]:
         """A value or group shown during the contest that reads runs behind
-        a tainted step done once per grading, which every run reads (11.4);
-        and `compiled`, or a value reading it, shown then when it cannot be
-        known before the hidden runs, or tells of a tainted compile.
+        a tainted step done once per grading, which every run reads (11.4).
+        `compiled` shown then is refused nothing (#656).
         """
         tainted = next(
             (
@@ -1033,80 +902,24 @@ class _Planner:
             ),
             None,
         )
+        if tainted is None:
+            return []
         problems: list[Problem] = []
         for time, at, entry, runs in self._shown():
-            if tainted is not None and runs:
-                chain, beside = self._chain(tainted, None)
-                why = "every run reads " + ", which reads ".join(f"`{step}`" for step in chain)
-                why += f", which runs the entrant's code beside {_words(beside)}"
-                why += _UNSHOWN.format(entry=entry)
-            elif at[0] != "runs" and self.task.reads_compiled(entry):
-                why = self._compiled_problem(entry, released=time == AFTER_RELEASE)
-            else:
+            if not runs:
                 continue
-            if why:
-                problems.append(
-                    Problem(
-                        path=path_text(("scoring", "show", time, *at)),
-                        message=f"{entry} cannot be shown {SHOWN_WORDS[time]}: {why}. Show "
-                        f"{entry} after_deadline instead.",
-                    )
+            chain, beside = self._chain(tainted, None)
+            why = "every run reads " + ", which reads ".join(f"`{step}`" for step in chain)
+            why += f", which runs the entrant's code beside {_words(beside)}"
+            why += _UNSHOWN.format(entry=entry)
+            problems.append(
+                Problem(
+                    path=path_text(("scoring", "show", time, *at)),
+                    message=f"{entry} cannot be shown {SHOWN_WORDS[time]}: {why}. Show "
+                    f"{entry} after_deadline instead.",
                 )
+            )
         return problems
-
-    def _compiled_problem(self, entry: str, *, released: bool = False) -> str:
-        """Why `compiled`, which `entry` is or reads, cannot be shown during
-        the contest, `released` while the task's results are: a step that
-        can give a compile error for one run alone runs once per run, so
-        it would wait for the hidden runs; no step compiles the entrant's
-        code with a compile error the same for every item, so it would wait
-        for the whole grading; or every such step compiles it only with the
-        runs, and no run is early. None when it can.
-        """
-        but = "" if entry == COMPILED else f"it reads `{COMPILED}`, but "
-        per_run = [
-            step.id
-            for step in self.workflow.steps
-            if self.classes[step.id] == "grading_per_run"
-            and COMPILE_ERROR in self._outcomes(step.id)
-            and COMPILE_ERROR not in self._once_outcomes(step.id)
-        ]
-        if per_run:
-            return (
-                f"{but}`{per_run[0]}`, which can give a compile error, runs once per run, so "
-                f"`{COMPILED}` is known only once every run has run, the hidden ones too"
-            )
-        compilers = self._compilers()
-        if not compilers and self.leaking:
-            step, run = next(iter(self.leaking.items()))
-            chain, beside = self._chain(step, run)
-            return (
-                ("it comes from " if entry == COMPILED else f"it reads `{COMPILED}`, from ")
-                + ", which reads ".join(f"`{each}`" for each in chain)
-                + f", which runs the entrant's code beside {_words(beside)}"
-                + _UNSHOWN.format(entry=entry)
-            )
-        if not compilers:
-            return (
-                f"{but}no step compiles the entrant's code, so `{COMPILED}` is known only once "
-                "the whole grading ends, its hidden runs too"
-            )
-        if self.task.early(released=released) or any(
-            self.classes[step] == "grading_once" for step in compilers
-        ):
-            return ""
-        return (
-            f"{but}`{compilers[0]}`, which compiles the entrant's code, does so with the runs, "
-            f"and no run is graded during the contest, so `{COMPILED}` is known only once the "
-            "hidden runs have run"
-        )
-
-    def _compilers(self) -> list[str]:
-        """The steps that compile the entrant's code and give a compile
-        error the same for every item, which `compiled` reads, in the
-        workflow's order.
-        """
-        return [step.id for step in self.workflow.steps if step.id in self.compiling]
 
     def notes(self) -> list[str]:
         """For each value or group shown during the contest reading runs
@@ -1172,19 +985,16 @@ class _Planner:
         ]
 
     def _shown(self) -> Iterable[tuple[str, Path, str, set[str]]]:
-        """Each value, run entry showing results and `compiled` that `show`
-        lists during the contest, with its moment, where in that moment's
-        lists it is, its name and the runs it reads: a run entry's own, and
-        every run for `first_not_passed`.
+        """Each value and run entry showing results that `show` lists during
+        the contest, with its moment, where in that moment's lists it is,
+        its name and the runs it reads: a run entry's own, and every run for
+        `first_not_passed`.
         """
         columns = self.task.columns
         for time in SHOWN_DURING:
             shown = self.scoring.show.moments()[time]
             for index, entry in enumerate(shown.values):
                 yield time, ("values", index), entry, self._runs_read(entry)
-            for index, entry in enumerate(shown.outputs):
-                if entry == COMPILED:
-                    yield time, ("outputs", index), entry, set()
             for index, each in enumerate(shown.runs):
                 if results(each.of, each.fields, columns):
                     of = ALL if each.of == FIRST_NOT_PASSED else each.of

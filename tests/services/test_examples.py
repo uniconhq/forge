@@ -268,14 +268,12 @@ async def _submit(
     acme: Acme,
     session: Any,
     task: TaskId,
-    early: dict[str, Any],
-    late: dict[str, Any] | None = None,
+    result: dict[str, Any],
     *,
     field: str = "code",
 ) -> int:
     """A submission of `task` by `session`'s entrant through `field`, its
-    early row ended done with `early` and, given `late`, its late row made
-    and ended with it; its number."""
+    grading ended done with `result`; its number."""
     made = await upload(setup, acme.fake, session, task, CODE, input=field)
     given = {field: SubmittedInput(uploads=(made.id,))}
     if field == "code":
@@ -284,8 +282,8 @@ async def _submit(
         setup, session, task, given, idempotency_key=uuid.uuid4().hex
     )
     await setup.settle()
-    [row] = [each for each in await _rows(setup, "early") if each.status != GradingStatus.DONE]
-    await _ended(setup, row, early, late)
+    [row] = [each for each in await _rows(setup, "grading") if each.status != GradingStatus.DONE]
+    await _ended(setup, row, result)
     return submitted.number
 
 
@@ -337,21 +335,24 @@ def _tests(accepted: int, *, compiled: bool = True) -> dict[str, Any]:
 
 def _islands(verdicts: Mapping[str, str]) -> dict[str, Any]:
     """A result of islands' runs, each with its verdict, an accepted one
-    scoring 1; the once outcomes of its steps with the samples."""
+    scoring 1, and the once outcomes of its steps."""
     runs = {
         run: ("accepted", {"score": 1, "time_ms": 12, "memory_kb": 1500})
         if verdict == "accepted"
         else (verdict, {})
         for run, verdict in verdicts.items()
     }
-    return _result(runs, ONCE_ACCEPTED if "r1" in runs else {})
+    return _result(runs, ONCE_ACCEPTED)
 
 
-def _kaggle(rmse: float | None, run: str) -> dict[str, Any]:
-    """A result of one split's run: its RMSE, or, for a malformed file, a
-    wrong answer with none."""
-    found = ("accepted", {"rmse": rmse}) if rmse is not None else ("wrong_answer", {})
-    return _result({run: found})
+def _kaggle(public: float | None, private: float | None) -> dict[str, Any]:
+    """A result of both splits' runs, r1 the public and r2 the private:
+    each its RMSE, or, for a malformed file, a wrong answer with none."""
+    found = {
+        run: ("accepted", {"rmse": rmse}) if rmse is not None else ("wrong_answer", {})
+        for run, rmse in (("r1", public), ("r2", private))
+    }
+    return _result(found)
 
 
 def _cartpole(reward: int) -> dict[str, Any]:
@@ -465,13 +466,15 @@ async def test_islands_with_its_checks_ranks_on_the_olympiad_leaderboard_by_the_
     ana = await _entrant(setup, acme, 20, "ana")
     ben = await _entrant(setup, acme, 21, "ben")
 
-    samples = _islands({"r1": "accepted", "r2": "accepted"})
+    samples = {"r1": "accepted", "r2": "accepted"}
     clock.set(at(11, 0))
-    await _submit(setup, acme, ana, islands, samples, _islands({"r3": "accepted", "r4": "wrong"}))
-    await _submit(setup, acme, ben, islands, samples, _islands({"r3": "accepted", "r4": "wrong"}))
+    one_wrong = _islands({**samples, "r3": "accepted", "r4": "wrong"})
+    await _submit(setup, acme, ana, islands, one_wrong)
+    await _submit(setup, acme, ben, islands, one_wrong)
     clock.set(at(12, 0))
-    every = _islands({"r3": "accepted", "r4": "accepted"})
-    await _submit(setup, acme, ana, islands, samples, every)
+    await _submit(
+        setup, acme, ana, islands, _islands({**samples, "r3": "accepted", "r4": "accepted"})
+    )
     staff = await _staff(setup, acme)
 
     # Before the reveal the total, st1 and st2 are shown to no entrant, so
@@ -567,8 +570,9 @@ async def test_kaggle_ranks_each_split_lowest_first_and_a_malformed_file_nowhere
     cy = await _entrant(setup, acme, 22, "cy")
 
     async def predicted(session: Any, public: float | None, private: float | None) -> int:
-        early, late = _kaggle(public, "r1"), _kaggle(private, "r2")
-        return await _submit(setup, acme, session, house, early, late, field="predictions")
+        return await _submit(
+            setup, acme, session, house, _kaggle(public, private), field="predictions"
+        )
 
     clock.set(at(11, 0))
     await predicted(ana, 0.3, 0.4)

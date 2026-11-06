@@ -396,7 +396,6 @@ async def _results(
         # Only staff's read sees to a failure, so a read with no session
         # writes nothing; an entrant's own submission page sees to theirs.
         await gradings.notice(ctx, latest, lost)
-        await gradings.notice_late(ctx, latest)
     read: list[tuple[str, int, Grading, Grading | None]] = []
     for (workspace, number), attempts in sorted(grouped.items()):
         chosen = pick(attempts) if pick is not None else attempts
@@ -408,7 +407,6 @@ async def _results(
         first = min(chosen, key=lambda row: row.attempt)
         read.append((workspace, number, first, usable.row))
     good = [row for _, _, _, row in read if row is not None]
-    lates = await scores.lates_of(ctx, good)
     entered = await entries.entered_for(ctx, task.id, [row.submission_id for row in good])
     entry = task.entry
     assert entry is not None
@@ -444,7 +442,6 @@ async def _results(
             settings,
             extension,
             counted,
-            lates.get(counted.id),
             entered[counted.submission_id],
         )
         if viewer.staff:
@@ -467,7 +464,7 @@ async def _results(
                 scored.self_reported,
                 revealed=revealed,
                 released=released,
-                late=scored.late,
+                hidden=scored.hidden,
             )
             facts = {name: scored.whole.facts[name] for name in ("seconds", "seconds_late")}
             results = results_seen(

@@ -1,10 +1,7 @@
 import uuid
 from collections.abc import Collection, Iterable
 
-from sqlalchemy import select
-
 from forge.db.tables import Grading
-from forge.db.tables.gradings import EARLY, LATE
 from forge.domain.grading import UNFINISHED, GradingStatus
 from forge.domain.ids import PublicationId, TaskId
 from forge.log import get_logger
@@ -47,31 +44,6 @@ async def notice(ctx: Context, rows: Iterable[Grading], lost: Collection[uuid.UU
         ctx.in_background(retry_it)
 
 
-async def notice_late(ctx: Context, fronts: Iterable[Grading]) -> None:
-    """The lost check and the retry by itself (`notice`) over the latest
-    late row of each submission of `fronts`, the early rows a read finds:
-    no entrant reads a late row, so whatever reads its early row sees to it
-    as it does to that one.
-    """
-    submissions = sorted({row.submission_id for row in fronts})
-    if not submissions:
-        return
-    rows = (
-        (
-            await ctx.db.execute(
-                select(Grading)
-                .where(Grading.submission_id.in_(submissions), Grading.pipeline == LATE)
-                .order_by(Grading.submission_id, Grading.attempt.desc())
-                .distinct(Grading.submission_id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if rows:
-        await notice(ctx, rows, await lost(ctx, rows))
-
-
 def start_waits(ctx: Context, row: Grading) -> bool:
     """Whether a grading whose run could not be started (a system error
     with no run) failed less than `START_RETRY_WAIT` ago, so its retry by
@@ -106,16 +78,14 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
     is not the latest attempt of its submission any more, does not read as a
     system error, its run could not be started and it still waits
     (`start_waits`), staff ended it, it was itself such a retry, or another
-    attempt is still being graded; or, for a late row, its early row is no
-    longer its submission's latest early attempt, the late row settled then
-    if it still waits. The task and the submission's attempts are held as a
-    staff retry holds them, so two of these at once, or one beside a staff
-    retry, a cancel or a rejudge, make one attempt between them. One that
-    reads failed only because it is overdue or lost is ended first, with the
-    reason written on its row, its run cancelled at the CI once this
-    commits. A submission with no result is graded again only while its
-    entrant has room under the task's `submissions.max`, and otherwise its
-    new attempt ends `over_limit` (`_over_limit`). The new attempt belongs
+    attempt is still being graded. The task and the submission's attempts
+    are held as a staff retry holds them, so two of these at once, or one
+    beside a staff retry, a cancel or a rejudge, make one attempt between
+    them. One that reads failed only because it is overdue or lost is ended
+    first, with the reason written on its row, its run cancelled at the CI
+    once this commits. A submission with no result is graded again only
+    while its entrant has room under the task's `submissions.max`, and
+    otherwise its new attempt ends `over_limit` (`_over_limit`). The new attempt belongs
     to the regrade the failed one belonged to.
     """
     found = await find(ctx, grading)
@@ -129,10 +99,6 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
         return None
     if status_of(ctx, row, gone) is not GradingStatus.SYSTEM_ERROR or start_waits(ctx, row):
         return None
-    if row.pipeline == LATE and await _follows_an_earlier_attempt(ctx, row):
-        _settle(ctx, row, gone)
-        log.info("gradings.late_left", grading=str(row.id))
-        return None
     if any(status_of(ctx, other, gone) in UNFINISHED for other in attempts):
         return None
     over = await _over_limit(ctx, row, attempts, gone)
@@ -144,7 +110,6 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
         attempts,
         automatic=True,
         over_limit=over,
-        from_scratch=row.from_scratch,
     )
     await ctx.db.flush()
     log.info(
@@ -154,17 +119,3 @@ async def retry_by_itself(ctx: Context, grading: uuid.UUID) -> Grading | None:
         over_limit=over is not None,
     )
     return made
-
-
-async def _follows_an_earlier_attempt(ctx: Context, late: Grading) -> bool:
-    """Whether a late row follows an early row that is no longer its
-    submission's latest early attempt, since a rejudge or a save's regrade
-    made another: its runs are read by no one, so it is not tried again.
-    """
-    latest = await ctx.db.scalar(
-        select(Grading.id)
-        .where(Grading.submission_id == late.submission_id, Grading.pipeline == EARLY)
-        .order_by(Grading.attempt.desc())
-        .limit(1)
-    )
-    return latest != late.early_id

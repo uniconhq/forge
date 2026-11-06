@@ -10,16 +10,16 @@ separate: a release before the deadline shows `always` and
 Anything not named is never shown: a workflow version adding an output
 shows nothing by itself.
 
-**Until the deadline, a release, or a late run's results shown, an
-entrant reads the early row alone:** its runs, the values worked out from
-them, what its steps done once gave and `compiled`, as if no late row were
-made. Nothing they read then moves when the late row is made, runs or
-ends, so they never learn its timing (the order rule). From then on they
-read both rows. A late run's results are shown before the deadline only
-when a save moved them to `always` (phase 4.10). A value a save moved to
-`always` that reads, directly or through other values, a run this
-grading's plan ran late is missing until then, not worked out with that
-run as never run (stage 5 section 6, item 134).
+**Until the deadline, a release, or a hidden run's results shown, an
+entrant reads the row's shown runs alone (#648):** those runs, the values
+worked out from them, what its steps done once gave and `compiled`, as if
+no other run were graded. A fault on a hidden run alone is not told then:
+with nothing they read waiting, their submission reads as graded (#657).
+From then on they read every run. A hidden run's results are shown before
+the deadline only when a save moved them to `always` (phase 4.10). A value
+a save moved to `always` that reads, directly or through other values, a
+run this grading's plan did not show is missing until then, not worked out
+with that run as never run (stage 5 section 6, item 134).
 
 - **A value** listed is shown with its number, missing as none. One that
   waits for staff is told so ("being checked") only as its runs are: when
@@ -62,9 +62,9 @@ while released, `after_release`, has nothing to tell before the deadline
 (`later`): its entrant's submission reads "Submitted, results after the
 contest" (stage 4 open 128).
 
-Organisers read everything at once from both rows: every value with its
+Organisers read everything at once from the row: every value with its
 outcome, the moment `show` lists it under and what it read, every setting,
-every run a row holds under `all` with its id, every field and its texts'
+every run the row holds under `all` with its id, every field and its texts'
 outputs, a run the live publication dropped after them marked `dropped`,
 everything done once, and the facts. The staff preview counts the runs
 that holds and an entrant's answer leaves out (`Shown.ids`).
@@ -137,7 +137,9 @@ class Shown:
     nothing of the task's results is shown before its deadline, and the
     shared inputs shown. Organisers also read the facts. `ids` are the runs
     shown, by id, which no reader is sent: what the staff preview counts
-    the hidden runs against.
+    the hidden runs against. `settled` when the reader reads the shown runs
+    alone and nothing they read waits, no shown run, value or `compiled`:
+    a fault elsewhere in the grading is not told yet (#657).
     """
 
     values: tuple[ValueShown, ...]
@@ -148,6 +150,7 @@ class Shown:
     facts: Mapping[str, Fraction] = field(default_factory=dict)
     inputs: Mapping[str, Any] = field(default_factory=dict)
     ids: frozenset[str] = frozenset()
+    settled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,7 +216,7 @@ def shown(
     revealed: bool,
     released: bool = False,
     everything: bool = False,
-    late: Collection[str] = (),
+    hidden: Collection[str] = (),
     titles: Mapping[str, tuple[str | None, ...]] | None = None,
     axes: Sequence[Sequence[str]] = (),
     meanings: Mapping[str, tuple[str | None, str | None]] | None = None,
@@ -221,10 +224,11 @@ def shown(
     kinds: Mapping[str, Type] | None = None,
 ) -> Shown:
     """What a reader sees of a grading now: `scoring` and `runs` the task's
-    live publication's, `whole` the grading worked out from both its rows
-    and `early` giving it from its early row alone, called only before the
+    live publication's, `whole` the grading worked out from its row and
+    `early` giving it from its shown runs alone, called only before the
     deadline and the release, `self_reported` the values reading a column
-    the entrant could set, and `late` the runs the grading's plan ran late;
+    the entrant could set, and `hidden` the runs the grading's plan did not
+    show;
     for an entrant, whether the task's deadline has passed for everyone
     (`revealed`) and whether its results are released; with `everything`,
     as organisers read it. `titles` is each run's tuple titles, one per
@@ -248,9 +252,10 @@ def shown(
     unseen: frozenset[str] = frozenset()
     rows = _rows(scoring, runs, whole.grading, moments, inputs, named, columns, words, types)
     told = {run for run, row, result in rows if result}
-    if not (revealed or released or told - whole.grading.early):
+    alone = not (revealed or released or told - whole.grading.early)
+    if alone:
         view = early()
-        unseen = frozenset(late)
+        unseen = frozenset(hidden)
     rows = _rows(scoring, runs, view.grading, moments, inputs, named, columns, words, types)
     rows += _first_not_passed(scoring, runs, view.grading, moments, named, columns, words, types)
     grading = view.grading
@@ -263,7 +268,7 @@ def shown(
         if name not in named_values:
             continue
         if outcome.runs & unseen:
-            # Moved to `always` after this grading: missing until its late runs show.
+            # Moved to `always` after this grading: missing until its hidden runs show.
             values.append(ValueShown(name, None, False, name in self_reported))
             continue
         if outcome.waiting:
@@ -280,14 +285,21 @@ def shown(
             )
         )
     outputs = listed(show, "outputs", moments)
+    compiled = set(outputs) & set(SHOWN_FACTS)
+    waiting = (
+        any(grading.read[run].verdict == SYSTEM_ERROR for run in grading.early)
+        or any(value.waiting for value in values)
+        or (bool(compiled) and grading.compiled is None)
+    )
     return Shown(
         tuple(values),
         tuple(row for _, row, _ in rows),
-        _once([grading.once_early, grading.once_late], set(outputs) - set(SHOWN_FACTS)),
-        grading.compiled if set(outputs) & set(SHOWN_FACTS) else None,
+        _once(grading.once, set(outputs) - set(SHOWN_FACTS)),
+        grading.compiled if compiled else None,
         later(scoring, inputs, released=released) and not revealed,
         inputs=_settings(show, given, types, moments),
         ids=frozenset(run for run, _, _ in rows),
+        settled=alone and not waiting,
     )
 
 
@@ -516,7 +528,7 @@ def _everything(
     return Shown(
         values,
         shown_runs,
-        _once([grading.once_early, grading.once_late]),
+        _once(grading.once),
         grading.compiled,
         later=False,
         facts=dict(whole.facts),
@@ -724,16 +736,11 @@ def _reports(
     return found
 
 
-def _once(
-    parts: Sequence[Mapping[str, Any]], listed: Collection[str] | None = None
-) -> dict[str, Any]:
-    """The reports and texts of the steps done once in `parts`, only those
-    `listed` names when given."""
-    reports: dict[str, Any] = {}
-    named: dict[str, Any] = {}
-    for part in parts:
-        reports |= part.get("reports") or {}
-        named |= part.get("texts") or {}
+def _once(once: Mapping[str, Any], listed: Collection[str] | None = None) -> dict[str, Any]:
+    """The reports and texts of the steps done once, only those `listed`
+    names when given."""
+    reports = dict(once.get("reports") or {})
+    named = dict(once.get("texts") or {})
     if listed is not None:
         reports = {name: each for name, each in reports.items() if name in listed}
         named = {name: each for name, each in named.items() if name in listed}

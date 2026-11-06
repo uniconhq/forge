@@ -15,7 +15,6 @@ from datetime import UTC, datetime
 from fractions import Fraction
 from typing import Any
 
-from forge.db.tables import Grading
 from forge.domain.grading import GradingStatus
 from forge.domain.leaderboards import Counted, LeaderboardCell, LeaderboardView, LeaderboardViewRow
 from forge.domain.roles import Scope
@@ -26,8 +25,7 @@ from forge.testing import FakeClock
 from tests.services.conftest import SPRING, Acme, signed_in, upload, write_contest
 from tests.services.test_examples import BASE, _judged, _task, _workflows
 from tests.services.test_pipelines import (
-    ACCEPTED_EARLY,
-    ACCEPTED_LATE,
+    ACCEPTED,
     AFTER_CLOSE,
     BEFORE_CLOSE,
     LIVE,
@@ -79,10 +77,10 @@ def at(hour: int, minute: int) -> datetime:
 
 
 async def _graded(setup: Setup) -> None:
-    """Every early row still running ended with every run accepted."""
-    for row in await _rows(setup, "early"):
+    """Every row still running ended with every run accepted."""
+    for row in await _rows(setup, "grading"):
         if row.status is not GradingStatus.DONE:
-            await _ended(setup, row, ACCEPTED_EARLY, ACCEPTED_LATE)
+            await _ended(setup, row, ACCEPTED)
 
 
 async def _entrant(setup: Setup, acme: Acme, islands: Islands, user: int) -> Any:
@@ -361,31 +359,7 @@ RANKED = OPEN.replace("sort: [{sample: desc}, {tries: asc}]", "sort: [{total: de
 close."""
 
 
-async def _late_running(setup: Setup, row: Grading) -> None:
-    """A late row of the early row `row`, still running."""
-    async with setup.unit_of_work() as ctx:
-        early = await ctx.db.get(Grading, row.id)
-        assert early is not None
-        ctx.db.add(
-            Grading(
-                task_id=early.task_id,
-                workspace_id=early.workspace_id,
-                submission_id=early.submission_id,
-                submission_number=early.submission_number,
-                submission_version=early.submission_version,
-                submitted_at=early.submitted_at,
-                publication_id=early.publication_id,
-                pipeline="late",
-                early_id=early.id,
-                regrade_id=early.regrade_id,
-                attempt=1,
-                status=GradingStatus.RUNNING,
-                queued_at=ctx.now,
-            )
-        )
-
-
-async def test_a_value_whose_late_runs_still_run_after_the_reveal_waits_for_every_viewer(
+async def test_a_value_whose_row_still_runs_after_the_reveal_waits_for_every_viewer(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(at(13, 0))
@@ -394,10 +368,8 @@ async def test_a_value_whose_late_runs_still_run_after_the_reveal_waits_for_ever
     for user in (20, 21):
         acme.fake.add_user(user, f"entrant{user}")
         sessions.append(await _submit(setup, acme, islands, user=user))
-    done, running = await _rows(setup, "early")
-    await _ended(setup, done, ACCEPTED_EARLY, ACCEPTED_LATE)
-    await _ended(setup, running, ACCEPTED_EARLY, None)
-    await _late_running(setup, running)
+    done, running = await _rows(setup, "grading")
+    await _ended(setup, done, ACCEPTED)
     clock.set(AFTER_CLOSE)
 
     visitor = await _standings(setup, None)
@@ -405,7 +377,7 @@ async def test_a_value_whose_late_runs_still_run_after_the_reveal_waits_for_ever
     graded, grading = staff.rows
     own = await _standings(setup, sessions[[20, 21].index(int(grading.name[-2:]))])
 
-    # The grading row's total still waits on its late runs, so the latest
+    # The grading row's total still waits on its runs, so the latest
     # pick passes over its submission and the total falls back to 0, as
     # staff read it; it is hidden from nobody, so the leaderboard keeps its
     # places.

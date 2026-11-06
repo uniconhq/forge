@@ -107,7 +107,7 @@ async def save(
     newest = made[-1] if made else None
     previous = await at(ctx, PLATFORM, task, latest.version) if latest is not None else None
     changed: tuple[str, ...] = ()
-    rerun: tuple[str, ...] | None = None
+    rerun: tuple[str, ...] = ()
     pinned = False
     read = ReadChanges()
     anew = True
@@ -257,7 +257,7 @@ async def _publish(
     latest: Publication | None,
     newest: Publication | None,
     changed: tuple[str, ...],
-    rerun: tuple[str, ...] | None,
+    rerun: tuple[str, ...],
     read: ReadChanges,
 ) -> Published:
     assert checked.definition is not None
@@ -376,8 +376,8 @@ async def _publish(
 
 def _regrades(changed: tuple[str, ...], checked: Checked) -> bool:
     """Whether the save grades the task's submissions again now: when what
-    it grades changed, the store running again only what changed by key
-    (SIMPLER-CORE.md 11.6); but not for a task whose plan holds steps done
+    it grades changed, every step of each grading running again (#625); but
+    not for a task whose plan holds steps done
     at the save, which grades them again once its save row
     lets it take over (`pipelines`).
     """

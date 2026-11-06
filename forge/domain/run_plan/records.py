@@ -10,13 +10,11 @@ from forge.domain.yaml_models import is_number
 
 SCHEMA_VERSION: Literal[6] = 6
 StepClass = Literal["save_once", "save_per_run", "grading_once", "grading_per_run"]
-PipelineKind = Literal["save", "early", "late"]
-PIPELINES: tuple[PipelineKind, ...] = ("save", "early", "late")
-GradingKind = Literal["early", "late"]
-"""The pipelines of a grading, which a release may lay out otherwise."""
+PipelineKind = Literal["save", "grading"]
+PIPELINES: tuple[PipelineKind, ...] = ("save", "grading")
 RELEASE_MOVED = (
     "What a release shows moved, so a grading made while results are released runs other runs "
-    "early."
+    "first."
 )
 """The words a save says when it moves only the released split, which
 grades nothing again while the task's results are not released."""
@@ -91,8 +89,7 @@ COMPILED = "compiled"
 _UNSHOWN = ", which entrants are not shown during the contest, so {entry} could tell them about it"
 PIPELINE_WORDS: dict[PipelineKind, str] = {
     "save": "The steps done at the save",
-    "early": "The steps of a grading's early pipeline",
-    "late": "The steps of a grading's late pipeline",
+    "grading": "The steps of a grading",
 }
 SHA256 = r"^[0-9a-f]{64}$"
 COMMIT = r"^[0-9a-f]{40}([0-9a-f]{24})?$"

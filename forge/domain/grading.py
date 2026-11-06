@@ -91,6 +91,9 @@ carries beside its pool's, so only a machine of the shape phase 4.1 picked
 takes it: Woodpecker's labels pick a machine for a whole pipeline."""
 SIZE_LABEL = "size"
 """The label naming the slot a task's pipeline needs, `size:<slot>`."""
+CHECKOUT = "submission"
+"""The workspace folder the entrant's checkout goes in, beside ours, so
+nothing they commit lands in a step's folder (#646)."""
 
 RUN_TIMEOUT = timedelta(minutes=30)
 CHECKOUT_ALLOWANCE = timedelta(minutes=4)
@@ -326,14 +329,13 @@ class InboundAnswer:
 @dataclass(frozen=True, slots=True)
 class PipelineRun:
     """One pipeline of a task's grading (phase 4.9), in the platform's
-    words: the grading's row and which of its pipelines, `save`, `early` or
-    `late`, the org on whose dispatch repository it runs, the commit the
-    publication froze, the submission with the version its files went in
-    with, none for a save, and the label of the machines that may take it.
+    words: the grading's row, the org on whose dispatch repository it runs,
+    the commit the publication froze, the submission with the version its
+    files went in with, none for a save, and the label of the machines that
+    may take it.
     """
 
     grading: uuid.UUID
-    pipeline: str
     org: OrgId
     publication_version: VersionId
     submission: SubmissionId | None
@@ -344,16 +346,14 @@ class PipelineRun:
 @dataclass(frozen=True, slots=True)
 class PipelineStepSpec:
     """One Woodpecker step of a pipeline: its name, its image by digest, its
-    settings, the steps it waits for, whether it takes the org's cache,
-    the user its container runs as, none for a step that runs as its image
-    says, and whether it runs whatever the steps it waits for ended with,
-    as the report step does.
+    settings, whether it takes the org's cache, the user its container runs
+    as, none for a step that runs as its image says, and whether it runs
+    whatever the steps before it ended with, as the report step does.
     """
 
     name: str
     image: str
     settings: Mapping[str, Any]
-    depends_on: tuple[str, ...] = ()
     cache: bool = False
     user: int | None = None
     always: bool = False

@@ -192,7 +192,6 @@ async def test_a_submit_starts_one_pipeline_as_the_org_account_on_the_platform_p
     [publication] = await acme.fake.workspaces.list_publications(entered.task)
     variables = started.arguments["variables"]
     assert variables["UNICON_GRADING_ID"] == str(row.id)
-    assert variables["UNICON_PIPELINE"] == "early"
     assert variables["UNICON_COMPUTE"] == "pool:platform"
     assert variables["UNICON_PUBLICATION_COMMIT"] == publication.version
     assert variables["UNICON_SUBMISSION_COMMIT"] == row.submission_version
@@ -247,7 +246,7 @@ async def test_two_starts_at_once_leave_one_run_and_cancel_the_other(
     assert [
         made
         for made, run in acme.fake.ci.runs.items()
-        if run.variables["UNICON_PIPELINE"] == "early" and not run.cancelled
+        if run.variables["UNICON_GRADING_ID"] == str(row.id) and not run.cancelled
     ] == [RunId(str(after.run_id))]
 
 
@@ -617,6 +616,11 @@ async def test_a_rejudge_grades_every_submission_again_against_the_current_publi
         (2, 2, GradingStatus.DISPATCHED),
     ]
     assert {row.publication_id for row in rows if row.attempt == 2} == {republished.publication}
+    # A cancelled run is restarted too (#631).
+    assert [row.restarts for row in rows if row.attempt == 2] == [rows[0].run_id, rows[2].run_id]
+    assert [
+        acme.fake.ci.runs[RunId(str(row.run_id))].parent for row in rows if row.attempt == 2
+    ] == [rows[0].run_id, rows[2].run_id]
     assert rows[0].result == RESULT
     again = await gradings.rejudge(setup, manager, entered.task)
     assert (again.queued, again.left_running) == (0, 2)
@@ -865,20 +869,3 @@ async def test_a_cancel_the_ci_refuses_still_cancels_the_grading(
 
     assert cancelled.status == GradingStatus.CANCELLED
     assert (await _row(setup, row.id)).status == GradingStatus.CANCELLED
-
-
-async def test_from_scratch_restarts_the_latest_submission_attempt_before_dispatch(
-    setup: Setup, acme: Acme, entered: Entered
-) -> None:
-    row = await _submit(setup, acme, entered)
-    manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
-    with pytest.raises(WrongStatus):
-        await gradings.regrade_from_scratch(setup, manager, row.id)
-    await _graded(setup, row.id)
-    made = await gradings.regrade_from_scratch(setup, manager, row.id)
-    fresh = await _row(setup, made.id)
-    assert fresh.from_scratch and fresh.pipeline == "early"
-    assert fresh.submission_id == row.submission_id
-    assert fresh.attempt == row.attempt + 1
-    assert fresh.status == GradingStatus.DISPATCHED
-    assert not (await _row(setup, row.id)).from_scratch

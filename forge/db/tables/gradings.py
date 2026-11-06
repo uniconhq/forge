@@ -16,7 +16,8 @@ format before pipelines reported back with, kept on the rows that had one
 and written on no new row.
 
 `queued_at` is when the row was made, by the package's clock. `run_id` is
-its run at the CI, `dispatched_at` when that run was started,
+its run at the CI, `restarts` the run its start restarts (#631),
+`dispatched_at` when that run was started,
 `started_at` when its first step asked for its job and `deadline_at` the
 run's deadline from then. `progress` is the last progress a run of the
 grading format before pipelines reported, `{"step", "done", "total"}`,
@@ -30,18 +31,17 @@ itself, but waits for staff. `submission_limit` is the task's
 `regrade_id` names the regrade of many (`Regrade`) the attempt belongs to:
 one it made, or a retry of one of those; none on any other.
 
-A grading is a row per pipeline (`pipeline`): `early`, `late`, with
-`early_id` naming the early row it follows, none on a lone late row, and
-`save`, a publication's own checking, which has no submission, so the
-submission's columns are empty on it and on no other. A submission's
-attempts are counted per pipeline (its line), a publication's save attempts
-once each. `run_user` is the user the row's steps run as, while it is not
-finished unique among the rows not finished. `taken_over_at` is when a save
-row that passed let its publication take over, the task graded again when
-that changed how it grades; none while that waits. `released_split` says the
-grading takes its plan's released split (`RunPlan.for_split`): its early row
-was made while the task's results were released, and its late row and
-retries keep what their grading was made with.
+A row is one pipeline (`pipeline`): `grading`, a submission's grading,
+one row per attempt (#647), or `save`, a publication's own checking, which
+has no submission, so the submission's columns are empty on it and on no
+other. A submission's attempts are counted on its line, a publication's
+save attempts once each. `run_user` is the user the row's steps run as,
+while it is not finished unique among the rows not finished.
+`taken_over_at` is when a save row that passed let its publication take
+over, the task graded again when that changed how it grades; none while
+that waits. `released_split` says the grading takes its plan's released
+split (`RunPlan.for_split`): it was made while the task's results were
+released, and its retries keep what their grading was made with.
 """
 
 import uuid
@@ -66,10 +66,9 @@ from forge.domain.grading import GradingStatus
 from forge.domain.ids import new_id
 
 STATUSES = tuple(status.value for status in GradingStatus)
-EARLY: Final = "early"
-LATE: Final = "late"
+GRADING: Final = "grading"
 SAVE: Final = "save"
-PIPELINES = f"pipeline in ('{SAVE}', '{EARLY}', '{LATE}')"
+PIPELINES = f"pipeline in ('{SAVE}', '{GRADING}')"
 SUBMISSION = (
     f"(pipeline = '{SAVE}') = (submission_id is null) and (pipeline = '{SAVE}' or ("
     "workspace_id is not null and submission_number is not null "
@@ -91,8 +90,7 @@ class Grading(Base, Timestamped):
     submission_version: Mapped[str] = mapped_column(nullable=True)
     submitted_at: Mapped[datetime] = mapped_column(nullable=True)
     publication_id: Mapped[str]
-    pipeline: Mapped[str] = mapped_column(server_default=text(f"'{EARLY}'"))
-    early_id: Mapped[uuid.UUID | None]
+    pipeline: Mapped[str] = mapped_column(server_default=text(f"'{GRADING}'"))
     released_split: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     run_user: Mapped[int | None]
     taken_over_at: Mapped[datetime | None]
@@ -105,6 +103,7 @@ class Grading(Base, Timestamped):
     result: Mapped[dict[str, Any] | None]
     log_key: Mapped[str | None]
     run_id: Mapped[str | None]
+    restarts: Mapped[str | None]
     callback_token_hash: Mapped[bytes | None]
 
     dispatched_at: Mapped[datetime | None]
@@ -113,7 +112,6 @@ class Grading(Base, Timestamped):
     deadline_at: Mapped[datetime | None]
     error: Mapped[str | None]
     cancel_reason: Mapped[str | None]
-    from_scratch: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     automatic: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     submission_limit: Mapped[int | None]
     regrade_id: Mapped[uuid.UUID | None]
@@ -152,10 +150,8 @@ class Grading(Base, Timestamped):
     )
 
 
-FRONT = Grading.pipeline == EARLY
-"""The rows that are a submission's grading as its entrant knows it: its
-early row; not a late row, which follows one, nor a save row, which has no
-submission."""
+FRONT = Grading.pipeline == GRADING
+"""The rows that grade a submission: not a save row, which has none."""
 
 
 def _failing(holds: str, items: str) -> str:

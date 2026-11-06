@@ -29,7 +29,7 @@ from tests.services.test_pipelines import (
     AFTER_CLOSE,
     BEFORE_CLOSE,
     _checked,
-    _graded_both,
+    _graded_submission,
     _rows,
     _submit,
 )
@@ -131,10 +131,10 @@ async def test_the_owner_fetches_the_input_of_the_first_run_their_submission_did
     clock.set(BEFORE_CLOSE)
     islands = await _checked(setup, acme, FIRST)
     session = await _submit(setup, acme, islands)
-    [early] = await _rows(setup, "early")
-    await _step(setup, acme, early.id, "early", "solution", _batch({"r3": "wrong_answer"}))
-    await _step(setup, acme, early.id, "early", "compare", _batch(score=True))
-    await _report(setup, early.id, "early")
+    [early] = await _rows(setup, "grading")
+    await _step(setup, acme, early.id, "grading", "solution", _batch({"r3": "wrong_answer"}))
+    await _step(setup, acme, early.id, "grading", "compare", _batch(score=True))
+    await _report(setup, early.id, "grading")
     await setup.settle()
 
     [mine] = await submissions.mine(setup, session, islands.task)
@@ -162,9 +162,9 @@ async def test_the_preview_answers_the_entrants_page_at_a_moment_under_the_draft
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_both(setup, acme)
+    islands, _ = await _graded_submission(setup, acme)
     clock.set(AFTER_CLOSE)
-    [early] = await _rows(setup, "early")
+    [early] = await _rows(setup, "grading")
     async with setup.unit_of_work() as ctx:
         owner = ctx.forge.workspaces.owner_of(WorkspaceId(early.workspace_id))
     draft = {

@@ -3,7 +3,6 @@ import uuid
 from sqlalchemy import select
 
 from forge.db.tables import Grading
-from forge.db.tables.gradings import EARLY
 from forge.domain.errors import Conflict, NotFound, WrongStatus
 from forge.domain.grading import AT_THE_CI, FINISHED, UNFINISHED, GradingStatus, cancel_reason
 from forge.domain.ids import PublicationId, RunId, TaskId
@@ -119,7 +118,6 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
         PublicationId(row.publication_id),
         attempts,
         over_limit=over,
-        from_scratch=row.from_scratch and status is not GradingStatus.DONE,
     )
     await ctx.db.flush()
     log.info(
@@ -129,46 +127,15 @@ async def retry(ctx: Context, organiser: Organiser, grading: uuid.UUID) -> Gradi
     return record(ctx, made, latest=True, last_good=good.attempt if good else None)
 
 
-@action
-async def regrade_from_scratch(
-    ctx: Context, organiser: Organiser, grading: uuid.UUID
-) -> GradingRecord:
-    """Restart this submission's latest early attempt, replacing its measurements.
-
-    A late grading identifies the same submission; its latest early attempt
-    supplies the publication and retry guards. The flag is set before the
-    shared transaction commits and starts the run.
-    """
-    found = await _managed(ctx, organiser, grading, lock=False)
-    if found.pipeline != EARLY:
-        early = await ctx.db.scalar(
-            select(Grading.id)
-            .where(Grading.submission_id == found.submission_id, Grading.pipeline == EARLY)
-            .order_by(Grading.attempt.desc())
-            .limit(1)
-        )
-        if early is None:
-            raise Conflict(
-                "This submission has no early grading to restart. Rejudge the task first."
-            )
-        grading = early
-    made = await retry(ctx, organiser, grading)
-    row = await ctx.db.get(Grading, made.id)
-    assert row is not None
-    row.from_scratch = True
-    await ctx.db.flush()
-    return made
-
-
 async def free_user(ctx: Context, user: int) -> bool:
     """Free `user`, a row's (`pipelines`), from the row not
     finished that holds it when that row is past what its state may take
     (`overdue_of`): it is written as a system error, with why, and its run
     stopped once the unit of work commits, as a retry or a cancel settles
     it. Without this, a row nobody reads again, such as an automatic retry
-    whose run the CI lost, a late row after its contest, or the save row of
-    a task since removed, would hold its user for good. A row another unit
-    of work holds is left to it. Whether the user is free now.
+    whose run the CI lost, or the save row of a task since removed, would
+    hold its user for good. A row another unit of work holds is left to it.
+    Whether the user is free now.
     """
     holder = await ctx.db.scalar(
         select(Grading)

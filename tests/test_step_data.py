@@ -1,6 +1,6 @@
 """What a task's step is handed and hands back, without its door: the
-upload list a step may send, what its `outputs.json` must be, an item's
-key, the pipeline left once stored steps are taken out, result version 6
+upload list a step may send, what its `outputs.json` must be, the
+pipeline left once steps with nothing to do are taken out, result version 6
 built from a fake set of outputs, a step's token, the name Forgejo keeps a
 large file under, and the fake store's links.
 """
@@ -35,7 +35,7 @@ from forge.domain.step_data import (
     all_accepted,
     chain_of,
     is_step_name,
-    item_key,
+    keep_of,
     program_alone,
     read_outputs,
     read_uploads,
@@ -247,30 +247,41 @@ def test_a_file_an_output_names_must_be_one_a_job_can_place(islands: RunPlan) ->
     assert item.files == {"out/r1": Upload(SHA, 1)}
 
 
-# Keys and the pipeline left
+# The pipeline left
 
 
-def test_an_items_key_is_its_image_and_inputs_and_nothing_else() -> None:
-    inputs = {"stdin": {"file": SHA}, "time_limit": {"value": 2}}
+def test_a_step_with_nothing_to_do_is_left_out_and_the_rest_keep_their_order(
+    islands: RunPlan,
+) -> None:
+    """#630: the steps run in their order, so leaving one out keeps it."""
+    early = islands.pipeline("grading")
 
-    assert item_key("image@1", inputs) == item_key("image@1", dict(reversed(inputs.items())))
-    assert item_key("image@1", inputs) != item_key("image@2", inputs)
-    assert item_key("image@1", inputs) != item_key("image@1", inputs | {"time_limit": 3})
-
-
-def test_a_stored_step_is_left_out_and_what_waited_for_it_rewired(islands: RunPlan) -> None:
-    early = islands.pipeline("early")
-
-    assert [(held.name, held.depends_on) for held in early] == [
-        ("solution", ()),
-        ("compare", ("solution",)),
-    ]
-    left = without(early, ["solution"])
-    assert [(held.name, held.depends_on) for held in left] == [("compare", ())]
-    assert [(held.name, held.depends_on) for held in without(early, ["compare"])] == [
-        ("solution", ())
-    ]
+    assert [held.name for held in early] == ["solution", "compare"]
+    assert [held.name for held in without(early, ["solution"])] == ["compare"]
+    assert [held.name for held in without(early, ["compare"])] == ["solution"]
     assert without(early, ["solution", "compare"]) == ()
+
+
+def test_only_a_boxed_step_a_later_step_reads_keeps_its_outputs(islands: RunPlan) -> None:
+    """#623: solution, boxed and read by compare, keeps under its
+    Woodpecker name; compare, read by nothing after it, keeps nothing; and
+    a step that is not boxed, which cannot write the workspace, keeps
+    nothing however it is read."""
+    solution, compare = islands.pipeline("grading")
+    linked = islands.model_copy(
+        update={
+            "steps": islands.steps
+            | {
+                "solution": islands.steps["solution"].model_copy(
+                    update={"primitive": "acme/link@v1"}
+                )
+            }
+        }
+    )
+
+    assert keep_of(islands, "grading", solution) == f".unicon/{islands.woodpecker_name('solution')}"
+    assert keep_of(islands, "grading", compare) is None
+    assert keep_of(linked, "grading", solution) is None
 
 
 # Result version 6
@@ -280,18 +291,30 @@ def _found(outcome: str = "accepted", **outputs: Any) -> Found:
     return Found(str(uuid.uuid4()), {"outcome": outcome, **outputs})
 
 
-def _early(
-    skip: tuple[str, ...] = (), **changes: Found | Faulted | None
+EVERY = ("r1", "r2", "r3", "r4")
+
+
+def _graded(
+    skip: tuple[str, ...] = (), /, **changes: Found | Faulted | None
 ) -> dict[Item, Found | Faulted]:
+    """Every run of islands but `skip` graded, each accepted, the samples
+    scoring 1 in 12 ms and the tests 0 in 20 ms, but what `changes` gives,
+    as `<step>_<run>`: none takes the item out."""
     found: dict[Item, Found | Faulted | None] = {("build-compare", None): _found(log="")}
-    for run in ("r1", "r2"):
+    for run in EVERY:
         if run in skip:
             continue
+        sample = run in ("r1", "r2")
         found[("solution", run)] = _found(
-            memory_kb=1500, time_ms=12, output={"file": "out/o"}, log="built"
+            memory_kb=1500, time_ms=12 if sample else 20, output={"file": "out/o"}, log="built"
         )
         found[("compare", run)] = _found(
-            memory_kb=1, time_ms=1, score=1, output={"file": "out/o"}, message="Right.", log=""
+            memory_kb=1,
+            time_ms=1,
+            score=1 if sample else 0,
+            output={"file": "out/o"},
+            message="Right.",
+            log="",
         )
     for name, value in changes.items():
         step, _, run = name.partition("_")
@@ -300,14 +323,16 @@ def _early(
 
 
 def test_a_result_gives_each_run_its_verdict_and_reports(islands: RunPlan) -> None:
-    found = _early(compare_r2=_found("wrong_answer"))
+    found = _graded(compare_r2=_found("wrong_answer"))
 
-    result = result_of(islands, "early", frozenset(), found)
+    result = result_of(islands, "grading", frozenset(), found)
 
     assert violation(result, "result", "result_v6") is None
     assert [(run["id"], run["verdict"], run["passed"]) for run in result["runs"]] == [
         ("r1", "accepted", 1),
         ("r2", "wrong_answer", 0),
+        ("r3", "accepted", 1),
+        ("r4", "accepted", 1),
     ]
     assert result["runs"][0]["reports"] == {"memory_kb": 1500, "score": 1, "time_ms": 12}
     assert result["runs"][1]["reports"] == {"memory_kb": 1500, "time_ms": 12}
@@ -321,13 +346,15 @@ def test_a_result_gives_each_run_its_verdict_and_reports(islands: RunPlan) -> No
 
 
 def test_a_skipped_run_and_a_fault_are_verdicts(islands: RunPlan) -> None:
-    found = _early(skip=("r1",), solution_r2=Faulted("The step solution faulted: no JSON."))
+    found = _graded(("r1",), solution_r2=Faulted("The step solution faulted: no JSON."))
 
-    result = result_of(islands, "early", frozenset({"r1"}), found)
+    result = result_of(islands, "grading", frozenset({"r1"}), found)
 
     assert [(run["id"], run["verdict"]) for run in result["runs"]] == [
         ("r1", "skipped"),
         ("r2", "system_error"),
+        ("r3", "accepted"),
+        ("r4", "accepted"),
     ]
     assert result["error"] == "The step solution faulted: no JSON."
     assert violation(result, "result", "result_v6") is None
@@ -336,24 +363,22 @@ def test_a_skipped_run_and_a_fault_are_verdicts(islands: RunPlan) -> None:
 def test_a_step_that_gave_nothing_is_a_system_error_but_a_stop_before_it_is_not(
     islands: RunPlan,
 ) -> None:
-    missing = result_of(islands, "early", frozenset(), _early(compare_r1=None))
-    stopped = _early(
-        solution_r1=_found("compile_error", log="error"),
-        solution_r2=_found("compile_error", log="error"),
-        compare_r1=None,
-        compare_r2=None,
+    missing = result_of(islands, "grading", frozenset(), _graded(compare_r1=None))
+    stopped = _graded(
+        **{f"solution_{run}": _found("compile_error", log="error") for run in EVERY},
+        **{f"compare_{run}": None for run in EVERY},
     )
 
     assert missing["error"] == "The step compare gave nothing for the run r1."
-    result = result_of(islands, "early", frozenset(), stopped)
-    assert [run["verdict"] for run in result["runs"]] == ["compile_error", "compile_error"]
+    result = result_of(islands, "grading", frozenset(), stopped)
+    assert [run["verdict"] for run in result["runs"]] == ["compile_error"] * 4
     assert result["error"] is None
 
 
 def test_staff_texts_are_kept_once_per_item_this_pipeline_did(islands: RunPlan) -> None:
-    found = _early(compare_r1=_found(score=0, memory_kb=1, time_ms=1, staff_message="Look."))
+    found = _graded(compare_r1=_found(score=0, memory_kb=1, time_ms=1, staff_message="Look."))
 
-    result = result_of(islands, "early", frozenset(), found)
+    result = result_of(islands, "grading", frozenset(), found)
 
     [staff] = result["staff"]
     assert (staff["step"], staff["run"], staff["staff_message"]["name"]) == (
@@ -361,9 +386,7 @@ def test_staff_texts_are_kept_once_per_item_this_pipeline_did(islands: RunPlan) 
         "r1",
         "staff_message",
     )
-    late = result_of(islands, "late", frozenset(), {})
-    assert late["staff"] == []
-    assert late["once"] == {"reports": {}, "texts": {}, "outcomes": {}}
+    assert result_of(islands, "save", frozenset(), found)["staff"] == []
 
 
 def test_a_compile_error_from_a_batch_step_is_every_runs_verdict_and_told_once(
@@ -375,19 +398,17 @@ def test_a_compile_error_from_a_batch_step_is_every_runs_verdict_and_told_once(
     the compiled fact reads, and the log once, from the batch's first item,
     never in a run's own texts."""
     first = _found("compile_error", log="error: expected ';'")
-    found = _early(
-        solution_r1=first,
-        solution_r2=_found("compile_error", log="error: expected ';'"),
-        compare_r1=None,
-        compare_r2=None,
+    found = _graded(
+        **{f"solution_{run}": _found("compile_error", log="error: expected ';'") for run in EVERY},
+        **{f"compare_{run}": None for run in EVERY},
     )
+    found[("solution", "r1")] = first
 
-    result = result_of(islands, "early", frozenset(), found)
+    result = result_of(islands, "grading", frozenset(), found)
 
     assert violation(result, "result", "result_v6") is None
     assert [(run["id"], run["verdict"], run["passed"]) for run in result["runs"]] == [
-        ("r1", "compile_error", 0),
-        ("r2", "compile_error", 0),
+        (run, "compile_error", 0) for run in EVERY
     ]
     assert result["once"]["outcomes"] == {"solution": "compile_error"}
     assert result["once"]["texts"] == {"log": {"output": first.id, "name": "log"}}
@@ -398,11 +419,16 @@ def test_a_compile_error_from_a_batch_step_is_every_runs_verdict_and_told_once(
 def test_an_outcome_a_batch_step_gives_per_item_is_not_told_once(islands: RunPlan) -> None:
     """A runtime error of one item is that run's alone: the step's once
     outcome stays accepted."""
-    found = _early(solution_r1=_found("runtime_error", log="built"), compare_r1=None)
+    found = _graded(solution_r1=_found("runtime_error", log="built"), compare_r1=None)
 
-    result = result_of(islands, "early", frozenset(), found)
+    result = result_of(islands, "grading", frozenset(), found)
 
-    assert [run["verdict"] for run in result["runs"]] == ["runtime_error", "accepted"]
+    assert [run["verdict"] for run in result["runs"]] == [
+        "runtime_error",
+        "accepted",
+        "accepted",
+        "accepted",
+    ]
     assert result["once"]["outcomes"] == {"solution": "accepted", "compare": "accepted"}
 
 
@@ -425,7 +451,7 @@ def test_a_64_kb_text_on_a_thousand_runs_stays_under_the_cap(islands: RunPlan) -
         found[("solution", run.id)] = _found(memory_kb=1, time_ms=1, label=text, log=text)
         found[("compare", run.id)] = _found(score=1, memory_kb=1, time_ms=1, message=text, log="")
 
-    result = result_of(plan, "early", frozenset(), found)
+    result = result_of(plan, "grading", frozenset(), found)
 
     assert len(json.dumps(result).encode()) < RESULT_MAX
     assert result["runs"][999]["message"]["name"] == "message"
@@ -500,17 +526,13 @@ async def test_the_fake_stores_put_signed_for_a_checksum_writes_only_those_bytes
     assert await store.head("results/a") == Stored(2, None)
 
 
-def _late(changes: Mapping[Item, Found | Faulted | None] = {}) -> dict[Item, Found | Faulted]:
-    """Every run of the plan with a value's program graded, each accepted,
-    the program reporting a mean of 0.5, but what `changes` gives."""
-    found = _early()
-    for run in ("r3", "r4"):
-        found[("solution", run)] = _found(
-            memory_kb=1500, time_ms=20, output={"file": "out/o"}, log="built"
-        )
-        found[("compare", run)] = _found(
-            memory_kb=1, time_ms=1, score=0, output={"file": "out/o"}, log=""
-        )
+def _with_mean(
+    changes: Mapping[Item, Found | Faulted | None] = {},
+) -> dict[Item, Found | Faulted]:
+    """Every run of the plan with a value's program graded, as `_graded`
+    grades them, the program reporting a mean of 0.5, but what `changes`
+    gives."""
+    found = _graded()
     found[("build-mean", None)] = _found(log="")
     found[("exec-mean", None)] = _found(
         mean=Decimal("0.5"), memory_kb=1, time_ms=3, output={"file": "out/o"}, log=""
@@ -526,20 +548,18 @@ def _late(changes: Mapping[Item, Found | Faulted | None] = {}) -> dict[Item, Fou
 def test_a_values_program_is_no_step_of_a_runs_and_its_number_goes_in_values(
     mean: RunPlan,
 ) -> None:
-    order = step_order(mean, "late")
+    order = step_order(mean, "grading")
 
-    assert "exec-mean" in order and "build-mean" in order
+    assert "exec-mean" in order and "build-mean" not in order
     assert chain_of(mean, order, "r3") == [
-        ("build-compare", None),
         ("solution", "r3"),
         ("compare", "r3"),
     ]
-    result = result_of(mean, "late", frozenset(), _late())
+    result = result_of(mean, "grading", frozenset(), _with_mean())
     assert violation(result, "result", "result_v6") is None
     assert result["values"] == {"mean": Decimal("0.5")}
-    assert [run["id"] for run in result["runs"]] == ["r3", "r4"]
+    assert [run["id"] for run in result["runs"]] == list(EVERY)
     assert result["error"] is None
-    assert "values" not in result_of(mean, "early", frozenset(), _early())
 
 
 @pytest.mark.parametrize(
@@ -554,7 +574,7 @@ def test_a_values_program_is_no_step_of_a_runs_and_its_number_goes_in_values(
 def test_a_program_that_faulted_or_gave_no_number_is_the_gradings_error_not_a_verdict(
     mean: RunPlan, program: Found | Faulted | None, error: str
 ) -> None:
-    result = result_of(mean, "late", frozenset(), _late({("exec-mean", None): program}))
+    result = result_of(mean, "grading", frozenset(), _with_mean({("exec-mean", None): program}))
 
     assert "values" not in result
     assert result["error"] == error
@@ -564,10 +584,10 @@ def test_a_program_that_faulted_or_gave_no_number_is_the_gradings_error_not_a_ve
 def test_the_runs_file_holds_each_runs_id_key_verdict_passed_and_numbers_alone(
     mean: RunPlan,
 ) -> None:
-    found = _late({("compare", "r2"): _found("wrong_answer", message="No.", log="")})
+    found = _with_mean({("compare", "r2"): _found("wrong_answer", message="No.", log="")})
     present = {item: got for item, got in found.items() if isinstance(got, Found)}
 
-    written = runs_file(mean, "late", ["r1", "r2", "r3", "r4"], frozenset({"r4"}), present)
+    written = runs_file(mean, "grading", ["r1", "r2", "r3", "r4"], frozenset({"r4"}), present)
 
     assert written is not None
     assert json.loads(written) == {
@@ -603,7 +623,7 @@ def test_the_runs_file_holds_each_runs_id_key_verdict_passed_and_numbers_alone(
         ]
     }
     without_r3 = {item: got for item, got in present.items() if item != ("compare", "r3")}
-    assert runs_file(mean, "late", ["r3"], frozenset(), without_r3) is None
+    assert runs_file(mean, "grading", ["r3"], frozenset(), without_r3) is None
 
 
 def test_a_save_check_needs_every_step_done_once_accepted() -> None:
@@ -619,10 +639,10 @@ def test_a_number_too_long_for_the_runs_file_is_missing_to_the_program(
     mean: RunPlan, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     huge = Decimal("1" * 200)
-    found = _late({("compare", "r1"): _found(memory_kb=1, time_ms=1, score=huge, log="")})
+    found = _with_mean({("compare", "r1"): _found(memory_kb=1, time_ms=1, score=huge, log="")})
     present = {item: got for item, got in found.items() if isinstance(got, Found)}
 
-    written = runs_file(mean, "late", ["r1", "r2"], frozenset(), present)
+    written = runs_file(mean, "grading", ["r1", "r2"], frozenset(), present)
 
     assert written is not None
     first, second = json.loads(written)["runs"]
@@ -630,7 +650,7 @@ def test_a_number_too_long_for_the_runs_file_is_missing_to_the_program(
     assert first["reports"] == {"memory_kb": 1500, "time_ms": 12}
     assert second["reports"] == {"memory_kb": 1500, "score": 1, "time_ms": 12}
     monkeypatch.setattr(step_data, "MOST_RUN_ENTRY", 120)
-    cut = runs_file(mean, "late", ["r1", "r2"], frozenset(), present)
+    cut = runs_file(mean, "grading", ["r1", "r2"], frozenset(), present)
     assert cut is not None
     assert [run["reports"] for run in json.loads(cut)["runs"]] == [{}, {}]
     assert [run["verdict"] for run in json.loads(cut)["runs"]] == ["accepted", "accepted"]

@@ -315,9 +315,9 @@ async def run_summary(
     of those changed. Both are worked out on read, every value as
     organisers read it, the extensions and marks as they stand now on both
     sides, so nothing is stored (stage 5 section 6 items 1 and 67). The
-    late rows and marks of every submission are read in one go. The leaderboards that
-    read the task are a contest manager's or admin's alone, since a leaderboard
-    diff shows every cell. `Forbidden` below a manager of the task,
+    marks of every submission are read in one go. The leaderboards that
+    read the task are a contest manager's or admin's alone, since a
+    leaderboard diff shows every cell. `Forbidden` below a manager of the task,
     `NotFound` for a regrade of another task, or none, and for a task whose
     publication does not read.
     """
@@ -348,13 +348,6 @@ async def run_summary(
         )
         for submission in newest
     }
-    lates = await scores.lates_of(
-        ctx,
-        [
-            *(each for each in newest.values() if gradings.has_result(each)),
-            *(each for each in earliers.values() if each is not None),
-        ],
-    )
     marks = await entries.entered_for(ctx, task, newest)
     running = failed = unread = more = 0
     regrading: dict[WorkspaceOwner, list[Counted]] = {}
@@ -363,10 +356,7 @@ async def run_summary(
         newest.items(), key=lambda each: (each[1].submitted_at, each[0])
     ):
         status = gradings.status_of(ctx, latest_row, gone)
-        late = lates.get(latest_row.id) if gradings.has_result(latest_row) else None
-        if status in UNFINISHED or (
-            late is not None and gradings.status_of(ctx, late) in UNFINISHED
-        ):
+        if status in UNFINISHED:
             running += 1
             regrading.setdefault(owners[latest_row.workspace_id], []).append(
                 Counted(current.name, latest_row.submission_number)
@@ -383,12 +373,10 @@ async def run_summary(
             continue
         extension = extensions[owners[latest_row.workspace_id]]
         held = marks[submission]
-        after = await scores.run_scored(ctx, now, settings, extension, latest_row, late, held)
+        after = await scores.run_scored(ctx, now, settings, extension, latest_row, held)
         before = None
         if earlier is not None and then is not None:
-            stood = await scores.run_scored(
-                ctx, then, settings, extension, earlier, lates.get(earlier.id), held
-            )
+            stood = await scores.run_scored(ctx, then, settings, extension, earlier, held)
             before = stood.whole
         found = run_changes(before, after.whole)
         if not found:

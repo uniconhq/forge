@@ -34,23 +34,23 @@ from forge.services import entrant_view, entries, gradings, leaderboards, marks,
 from forge.testing import FakeClock, register_entrant
 from tests.services.conftest import SPRING, Acme, organiser, signed_in, upload
 from tests.services.test_pipelines import (
-    ACCEPTED_EARLY,
-    ACCEPTED_LATE,
+    ACCEPTED,
     AFTER_CLOSE,
     BEFORE_CLOSE,
     ISLANDS,
     LIVE,
+    ONE_WRONG,
     _checked,
     _ended,
-    _graded_both,
+    _graded,
+    _graded_submission,
     _grading,
-    _result,
     _rows,
     _values,
 )
 from tests.services.test_regrades import _held
 from tests.services.test_run_task_saves import TASKS
-from tests.services.test_steps import CODE, _save
+from tests.services.test_steps import CODE, _built, _report, _save, _step
 
 REVIEWED = (
     TASKS["islands"][0]
@@ -105,7 +105,7 @@ async def test_a_value_is_missing_until_a_mark_is_entered_and_the_latest_counts(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_both(setup, acme, REVIEWED)
+    islands, _ = await _graded_submission(setup, acme, REVIEWED)
 
     before = await _organised(setup, acme, islands.task)
     assert (before["review"], before["reviewed"]) == (None, None)
@@ -130,7 +130,7 @@ async def test_a_mark_outside_its_bounds_or_not_a_plain_number_is_refused(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock, mark: str
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_both(setup, acme, REVIEWED)
+    islands, _ = await _graded_submission(setup, acme, REVIEWED)
 
     with pytest.raises(InvalidMark) as refused:
         await _enter(setup, acme, islands.task, mark)
@@ -143,7 +143,7 @@ async def test_an_empty_mark_clears_it_and_the_entry_is_kept(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, session = await _graded_both(setup, acme, REVIEWED, BEST)
+    islands, session = await _graded_submission(setup, acme, REVIEWED, BEST)
     await _enter(setup, acme, islands.task, "7.50")
 
     clock.advance(timedelta(minutes=1))
@@ -175,7 +175,7 @@ async def test_a_value_the_live_version_gives_no_entered_block_takes_no_mark(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock, value: str
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_both(setup, acme, REVIEWED)
+    islands, _ = await _graded_submission(setup, acme, REVIEWED)
 
     with pytest.raises(InvalidMark) as refused:
         await _enter(setup, acme, islands.task, "5", value=value)
@@ -190,7 +190,7 @@ async def test_a_manager_of_the_contest_enters_a_mark_and_an_observer_is_refused
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_both(setup, acme, REVIEWED)
+    islands, _ = await _graded_submission(setup, acme, REVIEWED)
     owner = await _owner(setup)
 
     for scope in (ISLANDS, CONTEST):
@@ -208,7 +208,7 @@ async def test_a_submission_the_entrant_does_not_have_takes_no_mark(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_both(setup, acme, REVIEWED)
+    islands, _ = await _graded_submission(setup, acme, REVIEWED)
 
     with pytest.raises(NotFound):
         await entries.enter(setup, acme.ada, islands.task, await _owner(setup), 2, "review", "5")
@@ -218,16 +218,15 @@ async def test_an_entry_is_kept_through_a_regrade(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_both(setup, acme, REVIEWED)
+    islands, _ = await _graded_submission(setup, acme, REVIEWED)
     await _enter(setup, acme, islands.task, "4")
 
     await gradings.rejudge(setup, acme.ada, islands.task)
     await setup.settle()
 
-    # Every item is reused from the store, so the new attempt has finished.
-    assert [row.status for row in await _rows(setup, "early") if row.attempt == 2] == [
-        GradingStatus.DONE
-    ]
+    # #625: nothing is reused, so the new attempt runs its steps again.
+    [again] = [row for row in await _rows(setup, "grading") if row.attempt == 2]
+    assert await _graded(setup, acme, again.id) is GradingStatus.DONE
     assert (await _organised(setup, acme, islands.task))["review"] == 4
     assert await _entries(setup) == [("review", "4", 7)]
     async with setup.unit_of_work() as ctx:
@@ -238,7 +237,7 @@ async def test_an_entry_no_cell_counted_never_reaches_its_entrant(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, session = await _graded_both(setup, acme, REVIEWED)
+    islands, session = await _graded_submission(setup, acme, REVIEWED)
     await _enter(setup, acme, islands.task, "6")
 
     before = _values(await _grading(setup, session, islands))
@@ -256,7 +255,7 @@ async def test_a_mark_of_40_characters_is_kept_exactly_and_counts(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_both(setup, acme, REVIEWED)
+    islands, _ = await _graded_submission(setup, acme, REVIEWED)
     tiny = "." + "0" * 38 + "1"
     many = "9." + "9" * 38
 
@@ -271,7 +270,7 @@ async def test_a_kept_entry_that_is_no_mark_is_a_bug_not_a_missing_mark(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_both(setup, acme, REVIEWED)
+    islands, _ = await _graded_submission(setup, acme, REVIEWED)
     await _enter(setup, acme, islands.task, "5")
     async with setup.unit_of_work() as ctx:
         await ctx.db.execute(update(Entry).values(mark="five"))
@@ -284,7 +283,7 @@ async def test_a_value_removed_and_added_again_starts_with_no_marks(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_both(setup, acme, LATER)
+    islands, _ = await _graded_submission(setup, acme, LATER)
     await _enter(setup, acme, islands.task, "4")
     unreviewed = TASKS["islands"][0]
 
@@ -292,7 +291,9 @@ async def test_a_value_removed_and_added_again_starts_with_no_marks(
         await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
         await setup.settle()
         [*_, save] = await _rows(setup, "save")
-        assert save.status == GradingStatus.DONE
+        # #625: each save runs its own save steps.
+        await _step(setup, acme, save.id, "save", "build-compare", _built())
+        assert await _report(setup, save.id, "save") is GradingStatus.DONE
         await setup.settle()
 
     assert (await _organised(setup, acme, islands.task))["review"] is None
@@ -306,7 +307,7 @@ async def test_a_value_kept_through_a_save_keeps_its_marks(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_both(setup, acme, LATER)
+    islands, _ = await _graded_submission(setup, acme, LATER)
     await _enter(setup, acme, islands.task, "4")
 
     await _save(
@@ -327,16 +328,15 @@ async def test_the_shared_scoring_works_out_what_reads_a_mark_for_every_reader(
     # An entrant's page works it out with no mark while what the leaderboards'
     # cells counted holds the mark back (`submissions._runs`).
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_both(setup, acme, REVIEWED)
+    islands, _ = await _graded_submission(setup, acme, REVIEWED)
     await _enter(setup, acme, islands.task, "6")
-    [early] = [row for row in await _rows(setup, "early") if row.attempt == 1]
+    [row] = await _rows(setup, "grading")
 
     async with setup.unit_of_work() as ctx:
         settings = await entrant_view.contest(ctx, contest_id_of(task_scope(islands.task)))
         current = await entrant_view.task(ctx, islands.task, settings)
         assert current is not None
-        late = await scores.late_of(ctx, early)
-        scored = await scores.run_scored(ctx, current, settings, Extension(), early, late)
+        scored = await scores.run_scored(ctx, current, settings, Extension(), row)
 
     assert scored.whole.outcomes["review"].number == 6
     assert scored.early().outcomes["reviewed"].number == 7
@@ -378,7 +378,6 @@ BEST = LIVE + (
 """A leaderboard over islands' review of the submission with the highest total,
 which is shown only after the close."""
 END = datetime(2026, 9, 26, 15, 0, tzinfo=UTC)
-WRONG_LATE = _result({"r3": "accepted", "r4": "wrong_answer"})
 UNSHOWN = REVIEWED.replace("values: [st1, st2, total]", "values: [st1, st2]")
 """REVIEWED with a total no entrant is ever shown."""
 
@@ -398,10 +397,10 @@ async def _submitted(
     clock: FakeClock,
     islands: Any,
     session: Any,
-    late: dict[str, Any] = ACCEPTED_LATE,
+    result: dict[str, Any] = ACCEPTED,
 ) -> None:
     """Another submission of islands by the entrant, a minute on, graded
-    every early run accepted and the late ones as `late` gives them."""
+    as `result` gives it."""
     clock.advance(timedelta(minutes=1))
     made = await upload(setup, acme.fake, session, islands.task, CODE, input="code")
     await submissions.submit(
@@ -412,9 +411,9 @@ async def _submitted(
         idempotency_key=uuid.uuid4().hex,
     )
     await setup.settle()
-    for row in await _rows(setup, "early"):
+    for row in await _rows(setup, "grading"):
         if row.status is not GradingStatus.DONE:
-            await _ended(setup, row, ACCEPTED_EARLY, late)
+            await _ended(setup, row, result)
 
 
 def _seen(found: tuple[entries.QueueRow, ...]) -> list[tuple[str, list[tuple[int, Any]]]]:
@@ -499,7 +498,7 @@ async def test_an_entry_on_a_submission_chosen_by_a_hidden_value_shows_only_with
     islands = await _checked(setup, acme, REVIEWED, BEST)
     session, owner = await _entrant(setup, acme, 20)
     await _submitted(setup, acme, clock, islands, session)
-    await _submitted(setup, acme, clock, islands, session, WRONG_LATE)
+    await _submitted(setup, acme, clock, islands, session, ONE_WRONG)
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
     # The first has the higher total, 100 to 40, which only staff see yet.
     await entries.enter(setup, manager, islands.task, owner, 1, "review", "7")
@@ -533,7 +532,7 @@ async def test_a_longer_extension_on_another_row_keeps_a_mark_back_until_the_rev
     session, owner = await _entrant(setup, acme, 20)
     await _entrant(setup, acme, 21, timedelta(minutes=10))
     await _submitted(setup, acme, clock, islands, session)
-    await _submitted(setup, acme, clock, islands, session, WRONG_LATE)
+    await _submitted(setup, acme, clock, islands, session, ONE_WRONG)
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
     await entries.enter(setup, manager, islands.task, owner, 1, "review", "7")
     # Closed for entrant20, not yet for entrant21: the task has not
@@ -567,7 +566,7 @@ async def test_an_entry_a_cell_never_shown_counted_stays_hidden_after_the_reveal
     islands = await _checked(setup, acme, UNSHOWN, BEST)
     session, owner = await _entrant(setup, acme, 20)
     await _submitted(setup, acme, clock, islands, session)
-    await _submitted(setup, acme, clock, islands, session, WRONG_LATE)
+    await _submitted(setup, acme, clock, islands, session, ONE_WRONG)
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
     await entries.enter(setup, manager, islands.task, owner, 1, "review", "7")
     await entries.enter(setup, manager, islands.task, owner, 2, "review", "3")
@@ -697,7 +696,7 @@ async def test_the_hold_hides_a_mark_on_a_row_it_holds_and_a_staff_leaderboards_
     # 1 at 13:01, total 100; 2 at 14:31, after the hold's from, total 40.
     await _submitted(setup, acme, clock, islands, session)
     clock.set(datetime(2026, 9, 26, 14, 30, tzinfo=UTC))
-    await _submitted(setup, acme, clock, islands, session, WRONG_LATE)
+    await _submitted(setup, acme, clock, islands, session, ONE_WRONG)
     manager = await organiser(setup, acme.fake, 7, ISLANDS, Role.MANAGER)
     clock.set(BEFORE_CLOSE)
     await entries.enter(setup, manager, islands.task, owner, 1, "review", "7")
@@ -844,7 +843,7 @@ async def test_the_queue_starts_no_retry_of_a_failure_it_finds(
     islands = await _checked(setup, acme, REVIEWED, GRADEBOOK)
     session, _ = await _entrant(setup, acme, 20)
     await _submitted(setup, acme, clock, islands, session)
-    [first] = await _rows(setup, "early")
+    [first] = await _rows(setup, "grading")
     async with setup.unit_of_work() as ctx:
         row = await ctx.db.get(Grading, first.id)
         assert row is not None
@@ -853,7 +852,7 @@ async def test_the_queue_starts_no_retry_of_a_failure_it_finds(
     await entries.queue(setup, _held(acme, ISLANDS, Role.OBSERVER), islands.task)
     await setup.settle()
 
-    assert [(row.attempt, row.automatic) for row in await _rows(setup, "early")] == [(1, False)]
+    assert [(row.attempt, row.automatic) for row in await _rows(setup, "grading")] == [(1, False)]
 
 
 SUMMED = LIVE + (

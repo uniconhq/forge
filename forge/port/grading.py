@@ -71,6 +71,13 @@ class GradingPort(Protocol):
         """
         ...
 
+    async def restart_pipeline(self, as_: AsOrgAccount, org: OrgId, run: RunId) -> RunId:
+        """Run `run` again as a new run with the same variables. `NotFound`
+        when the CI holds no such run, `Rejected` when it refuses,
+        `Unavailable` with no answer, `Forbidden` for another org's account.
+        """
+        ...
+
     async def cancel_run(self, run: RunId) -> None:
         """Stop the run at the CI. `NotFound` when there is no such run."""
         ...

@@ -19,7 +19,6 @@ from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId, WorkflowId
 from forge.domain.plan_basics import PLAN_PATH, Snapshot
 from forge.domain.run_plan import RunPlan, steps_run_again
-from forge.domain.step_data import item_key
 from forge.domain.workflows import Visibility
 from forge.runtime.setup import Setup
 from forge.services import steps, task_save
@@ -38,6 +37,7 @@ from tests.services.test_steps import (
     _mint,
     _report,
     _row,
+    _save_row,
     _step,
 )
 from tests.services.test_workflow_boxes import JUDGE, OUTER, SOLVE
@@ -199,16 +199,10 @@ def _plan(acme: Acme, task: TaskId) -> RunPlan:
     return RunPlan.from_bytes(repo.files[PLAN_PATH])
 
 
-def _woodpecker(plan: RunPlan) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
-    """Each pipeline's Woodpecker steps: the name, and the names it waits for."""
+def _woodpecker(plan: RunPlan) -> dict[str, list[str]]:
+    """Each pipeline's Woodpecker steps by name, in the order they run."""
     return {
-        kind: [
-            (
-                plan.woodpecker_name(step.name),
-                tuple(plan.woodpecker_name(name) for name in step.depends_on),
-            )
-            for step in steps
-        ]
+        kind: [plan.woodpecker_name(step.name) for step in steps]
         for kind, steps in plan.pipelines.items()
     }
 
@@ -252,15 +246,13 @@ async def test_a_boxed_classic_task_saves_and_plans_as_the_flat_one(
         for name in ("solve/solution", "judge/compare", "build-judge/compare")
     ] == ["s1", "s2", "s3"]
     assert _woodpecker(plan) == {
-        "save": [("s3", ())],
-        "early": [("s1", ()), ("s2", ("s1",))],
-        "late": [("s1", ()), ("s2", ("s1",))],
+        "save": ["s3"],
+        "grading": ["s1", "s2"],
     }
     # The checker's build is the save, and its compare the grading, so one
-    # box's checker is checked at the save and run in both gradings.
+    # box's checker is checked at the save and run in the grading.
     assert [step.step for step in plan.pipeline("save")] == ["build-judge/compare"]
-    assert [step.step for step in plan.pipeline("early")] == ["solve/solution", "judge/compare"]
-    assert [step.step for step in plan.pipeline("late")] == ["solve/solution", "judge/compare"]
+    assert [step.step for step in plan.pipeline("grading")] == ["solve/solution", "judge/compare"]
     assert [pin.ref for pin in plan.inner_workflows] == ["bob/solve@v1", "bob/judge@v1"]
     assert plan.workflow.files == {}
     assert set(plan.inner_workflows[1].files) == {"diff/diff.py", "diff/program.yaml"}
@@ -307,9 +299,11 @@ async def test_taint_through_a_box_names_the_flat_step(
     assert any("judge/compare" in error["message"] for error in found.errors)
 
 
-async def test_a_step_added_at_the_top_regrades_only_what_reads_it(
+async def test_a_step_added_at_the_top_keeps_the_others_and_a_regrade_runs_every_step(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
+    # #625: nothing is reused, so the regrade runs every graded step, not
+    # only the ones that read the new one.
     task, _ = await _classic(setup, acme)
     first = _plan(acme, task).to_bytes()
     repo = acme.fake.state.repos[("bob", "outer.workflow")]
@@ -322,14 +316,12 @@ async def test_a_step_added_at_the_top_regrades_only_what_reads_it(
         Snapshot(plans={PLAN_PATH: first}, data={}),
         Snapshot(plans={PLAN_PATH: plan.to_bytes()}, data={}),
     )
-    assert again == ("banner", "judge/compare")
+    assert again == ("banner", "solve/solution", "judge/compare")
     before = RunPlan.from_bytes(first)
     assert before.steps["solve/solution"].items == plan.steps["solve/solution"].items
     built = "build-judge/compare"
     assert before.steps[built].inputs == plan.steps[built].inputs
-    assert item_key(before.steps[built].image, before.steps[built].inputs or {}) == item_key(
-        plan.steps[built].image, plan.steps[built].inputs or {}
-    )
+    assert before.steps[built].image == plan.steps[built].image
     assert before.steps["solve/solution"].woodpecker == "s1"
     assert plan.steps["solve/solution"].woodpecker == "s2"
     assert plan.steps["banner"].woodpecker == "s1"
@@ -345,7 +337,6 @@ async def test_a_new_inner_version_asks_first_and_names_that_workflow(
     async with setup.unit_of_work() as ctx:
         found = await ctx.db.get(Grading, row)
         assert found is not None
-        found.pipeline = "early"
         found.status = GradingStatus.DONE
     judge = acme.fake.state.repos[("bob", "judge.workflow")]
     changed = _diff()
@@ -377,14 +368,14 @@ async def test_the_door_serves_an_inner_workflows_file_from_its_pin(
     held = Islands(task, published.publication, WorkflowId("bob/outer"))
     plan = _plan(acme, task)
     judge = plan.inner_workflows[1]
-    saved = await _grading(setup, acme, held)
+    saved = await _save_row(setup, held)
     await _step(setup, acme, saved, "save", "build-judge/compare", _built())
     status = await _report(setup, saved, "save")
     assert status is GradingStatus.DONE, (await _row(setup, saved)).error
     row = await _grading(setup, acme, held)
-    await _step(setup, acme, row, "early", "solve/solution", _batch())
+    await _step(setup, acme, row, "grading", "solve/solution", _batch())
     acme.fake.reset_calls()
-    access = await _mint(setup, row, "early", "judge/compare")
+    access = await _mint(setup, row, "grading", "judge/compare")
     job = await _job(setup, row, "judge/compare", access)
     compare = job["inputs"]["batch"][0]["inputs"]
     manifest = _download(job, compare["manifest"]["file"])

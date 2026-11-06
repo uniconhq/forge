@@ -23,12 +23,12 @@ on the org's dispatch repository, `unicon-dispatch`, activated once and
 trusted for `volumes` alone, started on `main` with:
 
     UNICON_GRADING_ID           the grading's row
-    UNICON_PIPELINE             save, early or late
     UNICON_PUBLICATION_COMMIT   the commit the publication froze
     UNICON_SUBMISSION_REPO      the submission's repository, but for a save
     UNICON_SUBMISSION_COMMIT    its commit, but for a save
     UNICON_COMPUTE              the label of the pool that may take it
 
+restarted for a retry or regrade (#631), which keeps the old variables,
 and answered with one workflow, `grading`:
 
 - `when` the run is started by hand, and `labels` the pool's, for a
@@ -39,7 +39,8 @@ and answered with one workflow, `grading`:
   `remote`, `sha` and `ref` set, `lfs` off, since each upload reaches its
   step by a link of its own, and no `environment`, so it stays a plugin
   and is lent the credential when the image is on the CI's trusted-clone
-  list, checking the submission out into the workspace; a save has no
+  list, checking the submission out into `submission/` in the workspace,
+  beside the steps' folders (#646); a save has no
   submission, and a pipeline none of whose steps reads an entrant input,
   such as a regrade of compares, needs none, so each clones nothing
   (`skip_clone`);
@@ -48,8 +49,9 @@ and answered with one workflow, `grading`:
   `/var/lib/unicon/cache/<org>:/cache` on the machine's cache disk, which
   every slot's Docker daemon on the machine mounts alike, for a step that
   takes it, `backend_options.docker.user` for a step the
-  spec runs as the grading's user, and `depends_on`; the report step's
-  `when` lets it run after a step that failed.
+  spec runs as the grading's user, and no `depends_on`, so the steps run
+  one after another in their order (#630); the report step's `when` lets
+  it run after a step that failed.
 
 No step carries `commands`, `entrypoint` or `environment`, so an `exec`
 step stays a plugin the CI's privileged list can name. The deployment sets
@@ -74,6 +76,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 import yaml
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -93,6 +96,7 @@ from forge.domain.errors import (
     VariablesDiffer,
 )
 from forge.domain.grading import (
+    CHECKOUT,
     InboundAnswer,
     InboundRequest,
     PipelineLookup,
@@ -114,7 +118,6 @@ PUBLICATION_VARIABLE = "UNICON_PUBLICATION_COMMIT"
 SUBMISSION_REPO_VARIABLE = "UNICON_SUBMISSION_REPO"
 SUBMISSION_VARIABLE = "UNICON_SUBMISSION_COMMIT"
 COMPUTE_VARIABLE = "UNICON_COMPUTE"
-PIPELINE_VARIABLE = "UNICON_PIPELINE"
 
 WORKFLOW_NAME = "grading"
 FOLDER_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -160,7 +163,6 @@ def pipeline_variables(run: PipelineRun) -> dict[str, str]:
     """
     variables = {
         GRADING_VARIABLE: str(run.grading),
-        PIPELINE_VARIABLE: run.pipeline,
         PUBLICATION_VARIABLE: str(run.publication_version),
         COMPUTE_VARIABLE: run.compute,
     }
@@ -280,10 +282,15 @@ class WoodpeckerGrading:
             f"/api/repos/{repo['id']}/pipelines",
             json={"branch": self._host.default_branch, "variables": dict(variables)},
         )
-        body = started.json() if started.content else None
-        if not isinstance(body, dict) or not isinstance(body.get("number"), int):
-            raise Rejected(f"the CI answered {started.status_code} without a run")
-        return RunId(f"{repo['id']}/{body['number']}")
+        return _run_of(started, repo["id"])
+
+    async def restart_pipeline(self, as_: AsOrgAccount, org: OrgId, run: RunId) -> RunId:
+        # Woodpecker 3.18.1 answers a 400, making no pipeline, when the
+        # extension refuses, and a 404 for a pipeline it doesn't hold.
+        account = _acting_for(as_, org)
+        repo_id, number = _parse_run(run)
+        restarted = await self._ci.call(account, "POST", f"/api/repos/{repo_id}/pipelines/{number}")
+        return _run_of(restarted, repo_id)
 
     async def cancel_run(self, run: RunId) -> None:
         repo_id, number = _parse_run(run)
@@ -391,7 +398,7 @@ class WoodpeckerGrading:
 
     def _pipeline(self, run: PipelineRun, ask: _Ask, spec: PipelineSpec) -> dict[str, Any]:
         """The workflow of a grading's pipeline: the submission checked out
-        into the workspace when a step reads it, then each step of `spec`."""
+        into `submission/` when a step reads it, then each step of `spec`."""
         labels = dict(item for label in spec.labels for item in _labels(label).items())
         workflow: dict[str, Any] = {"when": [{"event": "manual"}], "labels": labels}
         if run.submission is None or not spec.clones:
@@ -409,6 +416,7 @@ class WoodpeckerGrading:
                         "sha": str(run.submission_version),
                         "ref": f"refs/tags/{SUBMISSION_PREFIX}{number}",
                         "lfs": False,
+                        "path": CHECKOUT,
                     },
                 }
             ]
@@ -494,7 +502,6 @@ def _step(step: PipelineStepSpec, cache: str) -> dict[str, Any]:
         found["volumes"] = [cache]
     if step.user is not None:
         found["backend_options"] = {"docker": {"user": f"{step.user}:{step.user}"}}
-    found["depends_on"] = list(step.depends_on)
     if step.always:
         found["when"] = [{"status": ["success", "failure"]}]
     return found
@@ -560,6 +567,13 @@ def _acting_for(as_: AsOrgAccount, org: str) -> AsOrgAccount:
     if as_.org != org:
         raise Forbidden(f"the org account of {as_.org} does not act for {org}")
     return as_
+
+
+def _run_of(response: httpx.Response, repo_id: int) -> RunId:
+    body = response.json() if response.content else None
+    if not isinstance(body, dict) or not isinstance(body.get("number"), int):
+        raise Rejected(f"the CI answered {response.status_code} without a run")
+    return RunId(f"{repo_id}/{body['number']}")
 
 
 def _parse_run(run: RunId) -> tuple[int, int]:

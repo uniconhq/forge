@@ -15,7 +15,6 @@ from forge.domain.run_plan.records import (
     PIPELINES,
     SCHEMA_VERSION,
     SHA256,
-    GradingKind,
     Inputs,
     PipelineKind,
     RunId,
@@ -74,8 +73,8 @@ class EntrantEntry(Model):
 
 class RunEntry(Model):
     """A run: its id, its key with a part as `{part: <n>}`, whether it is
-    early, and its tuples' titles, one per axis, none where that tuple
-    has none.
+    early, its results shown during the contest, and its tuples' titles,
+    one per axis, none where that tuple has none.
     """
 
     id: RunId
@@ -156,26 +155,26 @@ class RunStep(Model):
 
 class PipelineStep(Model):
     """One step of a pipeline: its name inside the plan, the workflow step it
-    runs, the runs it holds, none for a step done once, the steps of the same
-    pipeline it waits for, and its container's limits. The Woodpecker file
-    names it by `RunPlan.woodpecker_name`.
+    runs, the runs it holds, none for a step done once, and its container's
+    limits. A pipeline's steps run one after another in its order (#630).
+    The Woodpecker file names it by `RunPlan.woodpecker_name`.
     """
 
     name: Annotated[str, Field(pattern=PIPELINE_STEP)]
     step: StepId
     runs: tuple[RunId, ...] | None = Field(default=None, min_length=1)
-    depends_on: tuple[str, ...] = ()
     limits: StepLimits
 
 
 class ReleasedSplit(Model):
     """The split a grading takes when it is made while the task's results
-    are released (9.4): the ids of the runs early then, and the early and
-    late pipelines then. The save pipeline is the same either way.
+    are released (9.4): the ids of the runs shown then, and the grading's
+    pipeline then, which lists them first (#649). The save pipeline is the
+    same either way.
     """
 
     early: tuple[RunId, ...]
-    pipelines: dict[GradingKind, tuple[PipelineStep, ...]] = Field(default_factory=dict)
+    grading: tuple[PipelineStep, ...]
 
 
 class Confirmation(Model):
@@ -266,8 +265,8 @@ class RunPlan(Model):
     def for_split(self, released: bool) -> RunPlan:
         """The plan as a grading made `released` or not reads it: made
         while the task's results are released, each run early as the
-        released split says and its early and late pipelines; otherwise,
-        or when a release moves nothing, the plan as it is.
+        released split says and its grading's pipeline; otherwise, or when
+        a release moves nothing, the plan as it is.
         """
         split = self.released
         if not released or split is None:
@@ -278,10 +277,7 @@ class RunPlan(Model):
                 "runs": tuple(
                     run.model_copy(update={"early": run.id in early}) for run in self.runs
                 ),
-                "pipelines": {
-                    **({"save": self.pipelines["save"]} if "save" in self.pipelines else {}),
-                    **split.pipelines,
-                },
+                "pipelines": {**self.pipelines, "grading": split.grading},
                 "released": None,
             }
         )
