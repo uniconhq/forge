@@ -178,7 +178,7 @@ async def save(
         assert environment is not None
         version = await _write(ctx, organiser, task, head, written, {}, said)
         if await _landed_under(ctx, as_, task, head, version, written):
-            return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
+            return _draft(organiser, task, version, (Problem(path=(), message=LANDED_UNDER),), ())
 
         async def publish(later: Context, lock: EnvironmentLock, locked: VersionId) -> Published:
             await timelines.hold_rules(later, contest_id_of(scope))
@@ -242,7 +242,7 @@ async def save(
     version = await _write(ctx, organiser, task, head, written, plans, said)
     touched = {*written, *plans}
     if version != head.version and await _landed_under(ctx, as_, task, head, version, touched):
-        return _draft(organiser, task, version, (Problem(path="", message=LANDED_UNDER),), ())
+        return _draft(organiser, task, version, (Problem(path=(), message=LANDED_UNDER),), ())
     return await _publish(
         ctx, organiser, task, checked, version, latest, newest, changed, rerun, read
     )

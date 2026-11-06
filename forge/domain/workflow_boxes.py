@@ -9,7 +9,6 @@ left as it was written. The checker then reads that flat workflow, and
 on the outermost box, with `step` holding the path.
 """
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
@@ -27,9 +26,8 @@ from forge.domain.workflow_definition import (
     references,
     whole_reference,
 )
-from forge.domain.yaml_models import Problem, path_text
+from forge.domain.yaml_models import Path, Problem
 
-_STEP_PATH = re.compile(r"^steps\[(\d+)\](.*)$")
 _DROP = object()
 
 
@@ -209,7 +207,7 @@ class _Rewrite:
         return None
 
     def _bad(self, message: str) -> None:
-        self.problems.append(Problem(path="", message=message))
+        self.problems.append(Problem(path=(), message=message))
 
 
 def flatten(
@@ -245,7 +243,7 @@ def flatten(
             written = index if own else place
             use = str(step.use)
             path = f"{prefix}/{step.id}" if prefix else step.id
-            at = path_text(("steps", written, "with"))
+            at: Path = ("steps", written, "with")
             if use in inners:
                 refused, raw_given = _box_with(step, inners[use], use, path, written)
                 problems.extend(refused)
@@ -260,7 +258,7 @@ def flatten(
                         if not inners[use].inputs[key].optional:
                             problems.append(
                                 Problem(
-                                    path=path_text(("steps", written, "with", key)),
+                                    path=("steps", written, "with", key),
                                     message=f"{path} gives no value for {key}, which {use} needs.",
                                 )
                             )
@@ -320,7 +318,7 @@ def _box_with(
             listed = ", ".join(sorted(names)) or "none"
             problems.append(
                 Problem(
-                    path=path_text(("steps", place, "with", key)),
+                    path=("steps", place, "with", key),
                     message=f"{key} is not an input of {use}, whose inputs are {listed}.",
                 )
             )
@@ -330,7 +328,7 @@ def _box_with(
             if not port.optional:
                 problems.append(
                     Problem(
-                        path=path_text(("steps", place, "with", name)),
+                        path=("steps", place, "with", name),
                         message=f"{path} gives no value for {name}, which {use} needs.",
                     )
                 )
@@ -354,7 +352,7 @@ def _outputs(outer: RunWorkflow, writer: _Rewrite) -> dict[str, str | RunOutput]
         raw = entry if isinstance(entry, str) else entry.from_
         start = len(writer.problems)
         rewritten = writer.text(raw)
-        _stamp(writer.problems, start, path_text(("outputs", name)))
+        _stamp(writer.problems, start, ("outputs", name))
         if not isinstance(rewritten, str):
             continue
         if isinstance(entry, str):
@@ -366,29 +364,35 @@ def _outputs(outer: RunWorkflow, writer: _Rewrite) -> dict[str, str | RunOutput]
     return outputs
 
 
-def _stamp(problems: list[Problem], start: int, path: str) -> None:
+def _stamp(problems: list[Problem], start: int, path: Path) -> None:
     for problem in problems[start:]:
         if not problem["path"]:
             problem["path"] = path
 
 
-def _located(problems: list[Problem], path: str) -> list[Problem]:
+def _located(problems: list[Problem], path: Path) -> list[Problem]:
     return [
         Problem(path=problem["path"] or path, message=problem["message"]) for problem in problems
     ]
 
 
-def place(flat: FlatWorkflow, path: str) -> str:
+def _step_of(path: Path) -> int | None:
+    """The flat step's index a path under `steps` names, or none."""
+    if len(path) >= 2 and path[0] == "steps" and isinstance(path[1], int):
+        return path[1]
+    return None
+
+
+def place(flat: FlatWorkflow, path: Path) -> Path:
     """The written file's path for a path into the flat workflow. One under
     a step inside a box is the outermost box's step and nothing after it,
     since the box has no `with` of that inner key. A box's own `with:` keeps
     its key. Inputs, reports and `steps` as a whole are unchanged.
     """
-    found = _STEP_PATH.match(path)
-    if found is None:
+    index = _step_of(path)
+    if index is None:
         return path
-    index = int(found.group(1))
-    rest = found.group(2)
+    rest = path[2:]
     kept = _box_input(flat, index, rest)
     if kept is not None:
         return kept
@@ -397,20 +401,19 @@ def place(flat: FlatWorkflow, path: str) -> str:
     step = flat.workflow.steps[index]
     written = flat.places.get(step.id, index)
     if "/" not in step.id:
-        return f"steps[{written}]{rest}"
-    return f"steps[{written}]"
+        return ("steps", written, *rest)
+    return ("steps", written)
 
 
-def _box_input(flat: FlatWorkflow, index: int, rest: str) -> str | None:
+def _box_input(flat: FlatWorkflow, index: int, rest: Path) -> Path | None:
     """The written path of a box's own `with:` key, checked at its first
     flat step. None when `rest` is a key of the step inside the box.
     """
-    if not rest.startswith(".with."):
+    if len(rest) < 2 or rest[0] != "with":
         return None
-    key = rest.removeprefix(".with.").split(".", 1)[0]
     for box in flat.boxes:
-        if box.first == index and key in box.inputs:
-            return f"steps[{box.place}]{rest}"
+        if box.first == index and rest[1] in box.inputs:
+            return ("steps", box.place, *rest)
     return None
 
 
@@ -433,12 +436,10 @@ def placed(check: RunWorkflowCheck, flat: FlatWorkflow) -> RunWorkflowCheck:
 
 
 def _placed_problem(flat: FlatWorkflow, problem: Problem) -> Problem:
-    found = _STEP_PATH.match(problem["path"])
-    if found is None:
+    index = _step_of(problem["path"])
+    if index is None:
         return problem
-    index = int(found.group(1))
-    rest = found.group(2)
-    if _box_input(flat, index, rest) is not None:
+    if _box_input(flat, index, problem["path"][2:]) is not None:
         return Problem(path=place(flat, problem["path"]), message=problem["message"])
     if index >= len(flat.workflow.steps):
         return problem
@@ -459,7 +460,7 @@ def over_cap(count: int) -> Problem | None:
     if count <= MAX_USES:
         return None
     return Problem(
-        path=path_text(("steps",)),
+        path=("steps",),
         message=(
             f"Expanded, this workflow uses {count} different primitive and workflow "
             f"versions, and at most {MAX_USES} are allowed. Use fewer."

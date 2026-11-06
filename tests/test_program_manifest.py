@@ -26,7 +26,7 @@ from forge.domain.program_manifest import (
     parse_program,
 )
 from forge.domain.workflow_definition import REPORT_NAME
-from forge.domain.yaml_models import InvalidDefinition, Problem
+from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
 from tests.conftest import sibling
 
 PATH = "checker/program.yaml"
@@ -172,7 +172,7 @@ def test_a_manifest_that_breaks_a_rule_is_refused_naming_the_file_and_the_report
 ) -> None:
     problem = refused(text)
 
-    assert [found["path"] for found in problem.errors] == [path]
+    assert [path_text(found["path"]) for found in problem.errors] == [path]
     assert message in problem.errors[0]["message"]
     assert PATH in problem.detail
 
@@ -181,7 +181,7 @@ def test_a_name_the_programs_form_gives_is_refused_only_on_that_form() -> None:
     text = "reports:\n  ended: {type: text}\n  facts: {}\n"
 
     assert list(parse_program(text, PATH, own_names=EXEC_OWN_NAMES).reports) == ["ended", "facts"]
-    assert [found["path"] for found in refused(text, PROGRAMS_OWN_NAMES).errors] == [
+    assert [path_text(found["path"]) for found in refused(text, PROGRAMS_OWN_NAMES).errors] == [
         "reports.ended",
         "reports.facts",
     ]
@@ -194,7 +194,7 @@ def test_a_manifest_over_the_size_is_refused_unread() -> None:
         parse_program(padded, "diff/program.yaml", own_names=EXEC_OWN_NAMES)
 
     assert raised.value.errors == [
-        Problem(path="", message="A program.yaml can be at most 256 KB. Make it smaller.")
+        Problem(path=(), message="A program.yaml can be at most 256 KB. Make it smaller.")
     ]
     fits = b"reports: {}\n" + b"#" * (MAX_MANIFEST - 12)
     assert parse_program(fits, "diff/program.yaml", own_names=EXEC_OWN_NAMES).reports == {}
@@ -205,12 +205,12 @@ def test_every_problem_is_listed_together() -> None:
 
     assert problem.errors == [
         Problem(
-            path="reports.verdict",
+            path=("reports", "verdict"),
             message="verdict is a name the primitive running the program gives itself. "
             "Report this under another name.",
         ),
         Problem(
-            path="reports.note.better",
+            path=("reports", "note", "better"),
             message="note is text, and only a number says which way is better or its bounds. "
             "Remove this.",
         ),
@@ -225,7 +225,7 @@ def test_a_name_that_is_not_text_is_one_problem_at_its_written_path(key: str, sh
 
     assert problem.errors == [
         Problem(
-            path=f"reports.{shown}",
+            path=("reports", shown),
             message=f"'{shown}' cannot be a report's name. Use at most 64 lower case letters, "
             "digits and underscores (_), starting with a letter.",
         )

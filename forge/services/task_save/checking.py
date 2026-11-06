@@ -21,7 +21,7 @@ from forge.domain.run_task import check_run_task, manifest_files
 from forge.domain.run_workflow import check_run_workflow
 from forge.domain.save_effect import ReadChanges, as_extra
 from forge.domain.workflow_definition import RunWorkflow
-from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
+from forge.domain.yaml_models import InvalidDefinition, Path, Problem
 from forge.runtime.context import Context
 from forge.services import gradings, names
 from forge.services.task_save import sources
@@ -67,13 +67,13 @@ def _cannot_run(
         tried.add(use)
         if use in expanded.primitives or use in opened:
             continue
-        at = path_text(("steps", index, "use"))
+        at: Path = ("steps", index, "use")
         said = next((problem for problem in expanded.problems if problem["path"] == at), None)
         if said is None:
             continue
         problems.append(
             Problem(
-                path="workflow",
+                path=("workflow",),
                 message=(
                     f"In the workflow {definition.workflow}, the step {step.id} cannot run: "
                     f"{said['message']}"
@@ -90,7 +90,7 @@ def _cannot_run(
         said_inner.add(match.group(1))
         problems.append(
             Problem(
-                path="workflow",
+                path=("workflow",),
                 message=(
                     f"In the workflow {definition.workflow}, the step {match.group(1)} "
                     f"cannot run: {match.group(2)}"
@@ -188,7 +188,7 @@ async def _statement_ready(
         return []
     return [
         Problem(
-            path=STATEMENT_FILE,
+            path=(STATEMENT_FILE,),
             message=f"{contest.label_of(entry.id)} · {entry.id}: its statement is not written yet.",
         )
     ]
@@ -208,7 +208,7 @@ async def check(
             None,
             (
                 Problem(
-                    path="", message="The task's settings are missing. Add them and save again."
+                    path=(), message="The task's settings are missing. Add them and save again."
                 ),
             ),
         )
@@ -308,7 +308,7 @@ async def _check_runs(
         before = await sources._definition_of(ctx, task, publications[-1])
         if before is not None:
             # Numbering the runs afresh would give a key another run's id.
-            return Checked(definition, (Problem(path="", message=RUNS_UNREAD),), pins)
+            return Checked(definition, (Problem(path=(), message=RUNS_UNREAD),), pins)
     found = check_run_task(
         definition,
         workflow,

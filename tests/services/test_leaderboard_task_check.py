@@ -25,7 +25,7 @@ from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
 from forge.domain.workflows import Visibility
-from forge.domain.yaml_models import InvalidDefinition
+from forge.domain.yaml_models import InvalidDefinition, path_text
 from forge.runtime.setup import Setup
 from forge.services import files, leaderboards, task_save
 from forge.services.task_save import Draft, Published
@@ -115,12 +115,12 @@ async def _write(setup: Setup, acme: Acme, content: str) -> None:
 async def _refused(setup: Setup, acme: Acme, content: str) -> list[tuple[str, str]]:
     with pytest.raises(InvalidDefinition) as refused:
         await _write(setup, acme, content)
-    return [(error["path"], error["message"]) for error in refused.value.errors]
+    return [(path_text(error["path"]), error["message"]) for error in refused.value.errors]
 
 
 def _errors(result: Published | Draft | Preparing) -> list[tuple[str, str]]:
     assert isinstance(result, Draft), result
-    return [(error["path"], error["message"]) for error in result.errors]
+    return [(path_text(error["path"]), error["message"]) for error in result.errors]
 
 
 def _column(tree: str, sort: str = "") -> str:

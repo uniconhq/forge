@@ -14,8 +14,7 @@ async def test_files_are_uploaded_saved_together_and_frozen(setup: Setup, acme: 
     import hashlib
 
     bob = await _own(setup, acme)
-    page = await workflows.view(setup, bob, "bob", "tuned")
-    assert page.draft is not None
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
     content = b"print(42)\n"
     slot = await workflows.file_slot(
         setup,
@@ -39,8 +38,8 @@ async def test_files_are_uploaded_saved_together_and_frozen(setup: Setup, acme: 
         bob,
         "bob",
         "tuned",
-        page.draft.text,
-        page.draft.token,
+        draft.text,
+        draft.token,
         changes={"scorer/main.py": Edit(Uploaded(slot.id))},
     )
     entries = await workflows.files(setup, bob, "bob", "tuned", "scorer")
@@ -73,7 +72,7 @@ async def test_file_changes_conflict_atomically_and_need_write_access(
     setup: Setup, acme: Acme
 ) -> None:
     bob = await _own(setup, acme)
-    draft = (await workflows.view(setup, bob, "bob", "tuned")).draft
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
     assert draft is not None
     saved = await workflows.save(
         setup,
@@ -94,7 +93,7 @@ async def test_file_changes_conflict_atomically_and_need_write_access(
             saved.token,
             changes={"scorer/main.py": Edit(b"second")},
         )
-    assert (await workflows.view(setup, bob, "bob", "tuned")).draft == saved
+    assert (await workflows.read_draft(setup, bob, "bob", "tuned")) == saved
     with pytest.raises(InvalidInputs):
         await workflows.save(
             setup,
@@ -118,7 +117,7 @@ async def test_uploaded_manifests_are_checked_as_bytes(setup: Setup, acme: Acme)
     from forge.testing import CLASSIC
 
     bob = await _own(setup, acme)
-    draft = (await workflows.view(setup, bob, "bob", "tuned")).draft
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
     assert draft is not None
     place = WorkflowPlace(WorkflowId("bob/tuned"))
     changes = {}
@@ -174,7 +173,7 @@ async def test_an_upload_is_for_one_person_workflow_and_path(setup: Setup, acme:
     ada = await signed_in(setup, acme.fake, 7)
     with pytest.raises(NotFound):
         await workflows.complete_file(setup, ada, "bob", "tuned", slot.id)
-    draft = (await workflows.view(setup, bob, "bob", "tuned")).draft
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
     assert draft is not None
     with pytest.raises(InvalidInputs):
         await workflows.save(
@@ -201,7 +200,7 @@ async def test_a_versions_files_are_listed_and_downloaded_by_whoever_reads_it(
     from forge.domain.workflows import Visibility
 
     bob = await _own(setup, acme)
-    draft = (await workflows.view(setup, bob, "bob", "tuned")).draft
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
     assert draft is not None
     content = b"print(42)\n"
     slot = await workflows.file_slot(
@@ -271,7 +270,7 @@ async def test_a_drafts_file_is_downloaded_by_whoever_may_change_the_workflow(
     from forge.domain.workflows import Visibility
 
     bob = await _own(setup, acme)
-    draft = (await workflows.view(setup, bob, "bob", "tuned")).draft
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
     assert draft is not None
     saved = await workflows.save(
         setup,

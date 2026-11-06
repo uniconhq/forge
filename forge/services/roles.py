@@ -87,13 +87,24 @@ class Holder:
     role: Role
     at: Scope
     at_names: ScopeNames
+    may_change: bool = False
+
+
+def may_change(grants: Iterable[RoleGrant], scope: Scope, role: Role) -> bool:
+    """Whether these grants may give or take `role` at the scope: a manager
+    may, and only an admin for admin.
+    """
+    return holds(grants, scope, Role.MANAGER) and (
+        role is not Role.ADMIN or holds(grants, scope, Role.ADMIN)
+    )
 
 
 @action
 async def holders(ctx: Context, organiser: Organiser, scope: Scope) -> tuple[Holder, ...]:
     """Everyone holding a role at the scope, directly or from a broader scope,
-    each once with the highest role they hold there, highest first. Needs the
-    observer role at the scope.
+    each once with the highest role they hold there, highest first, and
+    whether the organiser may change them: `revoke` acts on a role held
+    here, not above. Needs the observer role at the scope.
     """
     require(organiser, scope, Role.OBSERVER)
     accounts = await org_accounts.service_account_ids(ctx)
@@ -105,7 +116,13 @@ async def holders(ctx: Context, organiser: Organiser, scope: Scope) -> tuple[Hol
             for user in await ctx.forge.orgs.holders_of(at, role):
                 held = found.get(user.id)
                 if user.id not in accounts and (held is None or RANK[role] > RANK[held.role]):
-                    found[user.id] = Holder(user=user, role=role, at=at, at_names=named[at])
+                    found[user.id] = Holder(
+                        user=user,
+                        role=role,
+                        at=at,
+                        at_names=named[at],
+                        may_change=at == scope and may_change(organiser.grants, scope, role),
+                    )
     return tuple(
         sorted(
             found.values(), key=lambda holder: (-RANK[holder.role], holder.user.username.lower())
@@ -238,11 +255,12 @@ async def holds_role_in_contest(ctx: Context, user_id: int, contest: ContestId) 
     """Whether the user holds any role at the contest, at one of its tasks or
     at its org, which is what refuses their registering in it.
     """
-    scope = contest_scope(contest)
-    return any(
-        grant.scope.covers(scope) or scope.covers(grant.scope)
-        for grant in await ctx.forge.orgs.roles_of_user(user_id)
-    )
+    return reaches(await ctx.forge.orgs.roles_of_user(user_id), contest_scope(contest))
+
+
+def reaches(grants: Iterable[RoleGrant], scope: Scope) -> bool:
+    """Whether any of the grants is held at the scope, above it or inside it."""
+    return any(grant.scope.covers(scope) or scope.covers(grant.scope) for grant in grants)
 
 
 async def admins_of(ctx: Context, scope: Scope, *, leaving: int | None = None) -> set[int]:
@@ -271,7 +289,7 @@ def sole_admin(scopes: Iterable[Scope], detail: str) -> SoleAdmin:
 
 
 def _require_admin(organiser: Organiser, scope: Scope, doing: str) -> None:
-    if not holds(organiser.grants, scope, Role.ADMIN):
+    if not may_change(organiser.grants, scope, Role.ADMIN):
         raise Forbidden(f"Only an admin of {scope.name} can {doing} there.")
 
 

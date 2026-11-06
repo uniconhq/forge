@@ -100,7 +100,6 @@ from forge.domain.leaderboards import (
     listed_now,
     read_leaderboards,
     results_seen,
-    seen_bounds,
     sees,
     still_grading,
 )
@@ -111,7 +110,7 @@ from forge.domain.roles import Role, contest_scope, holds
 from forge.domain.run_results import facts_of
 from forge.domain.run_task import holds as run_holds
 from forge.domain.sessions import Session
-from forge.domain.yaml_models import InvalidDefinition, Problem, path_text
+from forge.domain.yaml_models import InvalidDefinition, Path, Problem
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import (
@@ -287,14 +286,9 @@ async def read(
             groups[name] = [
                 RunResult(run.id, "", run.key) for run in held.runs if run_holds(picked, run.key)
             ]
-        # Anyone but staff knows a column's bounds only from what they are
-        # shown now (item 126): none from a task not released to them.
+        # Only staff are told a column's bounds.
         if viewer.staff:
             bounds[task.name] = value_bounds(scoring.values, groups, held.columns)
-            most[task.name] = task.definition.submissions.max
-        elif task.name in released:
-            times = run_showing.times_of(revealed=revealed, released=results_released)
-            bounds[task.name] = seen_bounds(scoring, groups, held.columns, times)
             most[task.name] = task.definition.submissions.max
         reported[task.name] = held.self_reported
         attempts = side.attempts if side is not None and side.task == task.id else None
@@ -338,7 +332,11 @@ async def read(
         rows,
         viewer,
         released=released,
-        headers={key: headers_of(key, settings.leaderboards[key], columns, parts) for key in every},
+        headers={
+            # Only staff are told a column's bounds, a literal's or a fact's too.
+            key: headers_of(key, settings.leaderboards[key], columns if viewer.staff else {}, parts)
+            for key in every
+        },
         held_from=since,
     )
 
@@ -513,7 +511,7 @@ async def check_contest(
         if all(at != each.at for at, _ in found):
             found.append((each.at, f"{each.message} {CHECKING.format(task=each.task)}"))
     found += hold_problems(before, settings, ctx.now)
-    problems = [Problem(path=path_text(path), message=message) for path, message in found]
+    problems = [Problem(path=path, message=message) for path, message in found]
     problems += await _held_marks(ctx, settings, ids)
     return ContestCheck(problems, [], hold_hiding(before, settings, ctx.now))
 
@@ -590,7 +588,7 @@ async def _held_marks(
             f"{rows} {'entrant has' if rows == 1 else 'entrants have'} marked {most} "
             f"submissions on {entry.id}"
         )
-        path = f"tasks[{index}].marks" if entry.marks is not None else f"tasks[{index}]"
+        path: Path = ("tasks", index, "marks") if entry.marks is not None else ("tasks", index)
         problems.append(Problem(path=path, message=f"{held}, so it cannot allow fewer marks."))
     return problems
 
@@ -614,13 +612,8 @@ async def _reader(
     entered = settings.state is ContestState.ARCHIVED and approved
     if not release.sees(settings, person) and not entered:
         raise NotFound(entrant_view.NO_SUCH_CONTEST)
-    if person.organises:
-        try:
-            grants = await ctx.forge.orgs.roles_of_user(session.user_id)
-        except NotFound:
-            grants = ()
-        if holds(grants, contest_scope(contest), Role.OBSERVER):
-            return settings, STAFF
+    if holds(person.grants, contest_scope(contest), Role.OBSERVER):
+        return settings, STAFF
     if approved:
         assert person.entrant is not None
         return settings, Viewer(own=EntrantOwner(person.entrant.id))

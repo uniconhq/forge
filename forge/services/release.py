@@ -20,7 +20,7 @@ from forge.domain.errors import NotFound
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.registration import Status
 from forge.domain.release import Closed, Extension
-from forge.domain.roles import contest_id_of, task_scope
+from forge.domain.roles import RoleGrant, contest_id_of, contest_scope, task_scope
 from forge.domain.sessions import Session
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -86,11 +86,13 @@ class Reader:
     org, and whether they have accepted an organiser's invite to take part
     and are in no entrant yet, which shows them a hidden contest as its
     contestants see it; once they are in an entrant, its status decides.
+    `grants` are every role they hold.
     """
 
     entrant: Entrant | None
     organises: bool
     invited: bool = False
+    grants: tuple[RoleGrant, ...] = ()
 
 
 async def reader(ctx: Context, session: Session, contest: ContestId) -> Reader:
@@ -100,10 +102,12 @@ async def reader(ctx: Context, session: Session, contest: ContestId) -> Reader:
     entrant = await member_lookup.of_person(ctx, contest, session.user_id)
     invited = entrant is None and await invites.accepted_place(ctx, contest, session.user_id)
     await ctx.let_go()
+    grants = await ctx.forge.orgs.roles_of_user(session.user_id)
     return Reader(
         entrant=entrant,
-        organises=await roles.holds_role_in_contest(ctx, session.user_id, contest),
+        organises=roles.reaches(grants, contest_scope(contest)),
         invited=invited,
+        grants=grants,
     )
 
 

@@ -5,7 +5,7 @@ records that are shown to a person carry their names, as `Named`,
 address into a scope.
 """
 
-from forge.domain.content import ConflictToken, Edit, Uploaded
+from forge.domain.content import ConflictToken, Edit, Uploaded, Values
 from forge.domain.entrants import MemberStatus
 from forge.domain.identity import User
 from forge.domain.ids import ContestId, OrgId, PublicationId, TaskId, VersionId
@@ -37,5 +37,6 @@ __all__ = [
     "TaskId",
     "Uploaded",
     "User",
+    "Values",
     "VersionId",
 ]

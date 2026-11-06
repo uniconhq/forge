@@ -62,7 +62,8 @@ async def test_a_contestant_asks_from_their_own_workspace_and_reads_it_back(
         False,
         False,
     )
-    assert inbox == mine
+    assert mine.may_answer is False
+    assert inbox == replace(mine, may_answer=True)
     [asked] = acme.fake.calls_to("post_thread")
     assert isinstance(asked.identity, AsUser) and asked.identity.user_id == 8
     assert len(acme.fake.calls_to("open_workspace")) == 1

@@ -11,7 +11,7 @@ from forge.domain.run_task.models import Run, RunsFile, RunTask, RunTaskCheck
 from forge.domain.run_task.show_rules import ShownUnder, read_later
 from forge.domain.run_workflow import RunWorkflowCheck
 from forge.domain.workflow_definition import RunWorkflow
-from forge.domain.yaml_models import Problem, path_text
+from forge.domain.yaml_models import Problem
 
 
 def fewer_runs(
@@ -39,7 +39,7 @@ def fewer_runs(
         if missing:
             problems.append(
                 Problem(
-                    path=path_text(("scoring", "values", name)),
+                    path=("scoring", "values", name),
                     message=f"Entrants have been shown {name} during the contest over "
                     f"{len(then)} {'run' if len(then) == 1 else 'runs'} the task still has, "
                     f"and it would now read {len(missing)} fewer. What they have been shown "

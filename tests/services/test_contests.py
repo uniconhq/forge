@@ -5,7 +5,8 @@ failure at either step fails the request, removes the contest if the first
 step made it, and leaves the name free for the next try, and so does a
 commit that fails after both; a removal that fails is logged and the step's
 own error is raised; the list is read as the organiser, each contest with
-its state and dates, none of them for one whose settings do not read.
+its state and dates, none of them for one whose settings do not read, and
+one contest reads as the list tells it.
 """
 
 import logging
@@ -24,6 +25,7 @@ from forge.domain.names import Named
 from forge.domain.roles import Role, Scope
 from forge.runtime.setup import Setup
 from forge.services import contests, making, names
+from forge.services.may import PlaceMay
 from forge.testing import logged
 from tests.services.conftest import (
     ACME,
@@ -33,6 +35,15 @@ from tests.services.conftest import (
     forge_state,
     organiser,
     write_contest,
+)
+
+ADMIN_MAY = PlaceMay(
+    manage=True,
+    edit_admin_settings=True,
+    locked_keys=(),
+    see_people=True,
+    manage_people=True,
+    give_admin=True,
 )
 
 
@@ -280,6 +291,7 @@ async def test_each_listed_contest_carries_its_state_and_dates_as_its_settings_s
             State.DRAFT,
             datetime(2026, 10, 3, 12, 0, tzinfo=UTC),
             datetime(2026, 10, 3, 17, 0, tzinfo=UTC),
+            ADMIN_MAY,
         ),
         contests.Listed(
             SPRING,
@@ -287,6 +299,7 @@ async def test_each_listed_contest_carries_its_state_and_dates_as_its_settings_s
             State.PUBLISHED,
             datetime(2026, 9, 26, 10, 0, tzinfo=UTC),
             datetime(2026, 9, 26, 15, 0, tzinfo=UTC),
+            ADMIN_MAY,
         ),
     )
 
@@ -298,4 +311,27 @@ async def test_a_contest_whose_settings_do_not_read_is_listed_without_state_or_d
 
     (listed,) = await contests.list_contests(setup, acme.ada, ACME)
 
-    assert listed == contests.Listed(SPRING, "spring", None, None, None)
+    assert listed == contests.Listed(SPRING, "spring", None, None, None, ADMIN_MAY)
+
+
+async def test_a_contest_reads_as_the_list_tells_it_as_the_organiser(
+    setup: Setup, acme: Acme, spring: ContestId
+) -> None:
+    await write_contest(acme.fake, RUNNING.format(visibility="everyone"))
+
+    (listed,) = await contests.list_contests(setup, acme.ada, ACME)
+    acme.fake.calls.clear()
+
+    assert await contests.read(setup, acme.ada, SPRING) == listed
+    (call,) = acme.fake.calls_to("read_file")
+    assert call.identity == acme.ada.identity
+
+
+async def test_a_contest_whose_settings_do_not_read_reads_without_state_or_dates(
+    setup: Setup, acme: Acme, spring: ContestId
+) -> None:
+    await write_contest(acme.fake, "name: Spring\nstart: not a time\n")
+
+    read = await contests.read(setup, acme.ada, SPRING)
+
+    assert read == contests.Listed(SPRING, "spring", None, None, None, ADMIN_MAY)

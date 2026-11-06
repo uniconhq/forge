@@ -44,7 +44,7 @@ from forge.domain.run_task import (
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.types import Type
 from forge.domain.workflow_definition import parse_run_workflow
-from forge.domain.yaml_models import InvalidDefinition
+from forge.domain.yaml_models import InvalidDefinition, path_text
 from forge.services.entrant_view import shown_now
 from forge.testing import PLACEHOLDER_DIGEST, RUN_WORKFLOWS
 from tests.conftest import sibling
@@ -349,7 +349,7 @@ def ok(found: RunTaskCheck) -> RunTask:
 
 def at(found: RunTaskCheck, path: str) -> list[str]:
     assert found.task is None
-    return [problem["message"] for problem in found.problems if problem["path"] == path]
+    return [problem["message"] for problem in found.problems if path_text(problem["path"]) == path]
 
 
 def keys(task: RunTask) -> list[tuple[str, dict[str, object]]]:
@@ -606,7 +606,8 @@ def test_a_tuple_must_give_each_input_of_its_axis(row: str, path: str, words: st
     with pytest.raises(InvalidDefinition) as raised:
         parse_task(text)
     assert any(
-        problem["path"] == path and words in problem["message"] for problem in raised.value.errors
+        path_text(problem["path"]) == path and words in problem["message"]
+        for problem in raised.value.errors
     )
 
 
@@ -1077,6 +1078,18 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "scoring.values.total",
             "already a group",
         ),
+        (
+            "st1_tests: {input: [tests/3.in]}",
+            "St1-tests: {input: [tests/3.in]}",
+            "scoring.groups.St1-tests",
+            "only lower case letters, digits and underscores",
+        ),
+        (
+            "    st1: {block: min",
+            "    1st: {block: min",
+            "scoring.values.1st",
+            "only lower case letters, digits and underscores",
+        ),
         ("{value: st1}", "{value: st9}", "scoring.values.total.of[0].of[1]", "no value called st9"),
         ("{runs: st1_tests}", "{runs: st9}", "scoring.values.st1.over", "no group called st9"),
         (
@@ -1412,7 +1425,7 @@ def test_every_result_a_leaderboard_reads_of_a_task_is_listed_in_show_by_its_nam
     before = shown_under(_scoring(text), ISLANDS_KEYS)
     assert hidden_again(before, _scoring(text.replace("[compiled]", "[]")), ISLANDS_KEYS) == [
         {
-            "path": "scoring.show",
+            "path": ("scoring", "show"),
             "message": "Entrants have been shown compiled as soon as a grading ends, and what they "
             "have been shown may have been seen or kept; it would now be hidden or shown "
             "later.",
@@ -1545,7 +1558,7 @@ def test_a_run_field_is_compared_run_by_run_whichever_entry_shows_it() -> None:
     assert before.shown[("runs", "r3", "score")] == {AFTER_DEADLINE}
     assert hidden_again(before, _scoring(moved), ISLANDS_KEYS) == [
         {
-            "path": "scoring.show",
+            "path": ("scoring", "show"),
             "message": f"Entrants have been shown {name} of 2 runs after the deadline, and what "
             "they have been shown may have been seen or kept; it would now be hidden or shown "
             "later.",
@@ -1572,24 +1585,24 @@ def test_what_was_shown_cannot_be_hidden_or_shown_later() -> None:
 
     assert problems == [
         {
-            "path": "scoring.show.after_deadline",
+            "path": ("scoring", "show", "after_deadline"),
             "message": "Entrants have been shown sample_time as soon as a grading ends, and what "
             "they have been shown may have been seen or kept; it would now be hidden or shown "
             "later.",
         },
         {
-            "path": "scoring.show.after_deadline",
+            "path": ("scoring", "show", "after_deadline"),
             "message": "Entrants have been shown score of 2 runs as soon as a grading ends, and "
             "what they have been shown may have been seen or kept; it would now be hidden or "
             "shown later.",
         },
         {
-            "path": "scoring.show",
+            "path": ("scoring", "show"),
             "message": "Entrants have been shown total after the deadline, and what they have "
             "been shown may have been seen or kept; it would now be hidden or shown later.",
         },
         {
-            "path": "scoring.show",
+            "path": ("scoring", "show"),
             "message": "Entrants have been shown time_limit after the deadline, and what they "
             "have been shown may have been seen or kept; it would now be hidden or shown later.",
         },
@@ -1802,7 +1815,7 @@ def test_a_value_shown_during_the_contest_may_not_read_fewer_of_the_runs_left(
 
     assert fewer_runs([(shown, reads)], fewer) == [
         {
-            "path": "scoring.values.sample_score",
+            "path": ("scoring", "values", "sample_score"),
             "message": "Entrants have been shown sample_score during the contest over 2 runs the "
             "task still has, and it would now read 1 fewer. What they have been shown may have "
             "been seen or kept; those runs would now be hidden.",
@@ -1969,7 +1982,7 @@ def test_a_malformed_exec_block_is_one_problem_never_a_crash(
 
     assert found.task is None
     [problem] = found.problems
-    assert problem["path"] == path
+    assert path_text(problem["path"]) == path
     if words is not None:
         assert problem["message"] == words
 
@@ -2087,7 +2100,9 @@ def test_a_check_needs_something_to_expect() -> None:
     with pytest.raises(InvalidDefinition) as raised:
         parse_task(f"{ISLANDS}checks:\n  - {{submit: {{code: checks/good}}, expect: {{}}}}\n")
 
-    assert any(problem["path"] == "checks[0].expect" for problem in raised.value.extra["errors"])
+    assert any(
+        path_text(problem["path"]) == "checks[0].expect" for problem in raised.value.extra["errors"]
+    )
 
 
 def test_a_file_only_a_check_names_is_never_shown_even_in_public() -> None:

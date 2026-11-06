@@ -59,7 +59,7 @@ from forge.domain.ids import ContestId, TaskId, VersionId
 from forge.domain.names import Named, validate_contest_or_task_name
 from forge.domain.publication_record import Publication
 from forge.domain.release import NONE, due_of
-from forge.domain.roles import Role, contest_id_of, contest_scope, task_scope
+from forge.domain.roles import Role, contest_id_of, contest_scope, holds, task_scope
 from forge.domain.yaml_models import InvalidDefinition, Problem
 from forge.log import get_logger
 from forge.runtime.actions import action
@@ -67,6 +67,7 @@ from forge.runtime.context import Context
 from forge.services import (
     entrant_view,
     making,
+    may,
     names,
     pipelines,
     results,
@@ -74,6 +75,7 @@ from forge.services import (
     task_save,
 )
 from forge.services.access import Organiser, require
+from forge.services.may import PlaceMay
 from forge.services.results import ResultsState
 from forge.services.taking_out import TakeOut
 
@@ -100,6 +102,7 @@ class TaskState:
     opening checklist asks of each task (M57); `head_statement_written`
     says the same of the head. `results` says whether the task's results
     are released now, with every release and take-back, who and when.
+    `may` is what the reader may do at the task.
     """
 
     head: VersionId
@@ -109,6 +112,7 @@ class TaskState:
     statement_written: bool
     head_statement_written: bool
     results: ResultsState
+    may: PlaceMay
     toolchains: dict[str, Toolchain] = field(default_factory=dict)
 
 
@@ -266,8 +270,11 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
         )
         for language, entry in (locked.platforms.get("linux-64", {}) if locked else {}).items()
     }
+    allowed = may.at_place(organiser.grants, task_scope(task))
     if latest is not None and latest.version == head.version:
-        return TaskState(head.version, latest, False, (), written, written, results_now, toolchains)
+        return TaskState(
+            head.version, latest, False, (), written, written, results_now, allowed, toolchains
+        )
     checked = await task_save.check(ctx, organiser.identity, task, head, {})
     published_written = latest is not None and await entrant_view.statement_written_at(
         ctx, task, latest.version, latest.id
@@ -280,6 +287,7 @@ async def state(ctx: Context, organiser: Organiser, task: TaskId) -> TaskState:
         published_written,
         written,
         results_now,
+        allowed,
         toolchains,
     )
 
@@ -344,11 +352,30 @@ def _timeline(settings: ContestDefinition, entry: ContestTask) -> Timeline:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ListedTask:
+    """A task in its contest's list, by its id and name, and whether the
+    reader manages it.
+    """
+
+    id: str
+    name: str
+    may_manage: bool
+
+
 @action
-async def list_tasks(ctx: Context, organiser: Organiser, contest: ContestId) -> tuple[Named, ...]:
+async def list_tasks(
+    ctx: Context, organiser: Organiser, contest: ContestId
+) -> tuple[ListedTask, ...]:
     """Every task in the contest with its name, by name, read as the
     organiser, so they see the ones the forge lets them read. Needs the
     observer role at the contest.
     """
     require(organiser, contest_scope(contest), Role.OBSERVER)
-    return await names.named(ctx, await ctx.forge.content.list_tasks(organiser.identity, contest))
+    found = await names.named(ctx, await ctx.forge.content.list_tasks(organiser.identity, contest))
+    return tuple(
+        ListedTask(
+            task.id, task.name, holds(organiser.grants, task_scope(TaskId(task.id)), Role.MANAGER)
+        )
+        for task in found
+    )

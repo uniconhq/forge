@@ -93,7 +93,7 @@ async def test_the_environment_cap_is_checked_before_downloading(
     tmp_path: Path,
 ) -> None:
     asked = Environment.model_validate({"python": {"packages": ["numpy"]}})
-    with pytest.raises(TooLarge, match="total"):
+    with pytest.raises(TooLarge, match=r"come to .*, more than 1 B"):
         async with EnvironmentResolver(tmp_path, registry=Registry()).prepare(asked, cap=1):
             pytest.fail("an oversized environment cannot be prepared")
 

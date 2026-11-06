@@ -35,7 +35,7 @@ from forge.services.task_save.records import CHANGED_CONTENT, DEFINITION_KEPT, C
 
 def _unopened(ref: WorkflowRef) -> Problem:
     return Problem(
-        path="workflow",
+        path=("workflow",),
         message=f"Unicon cannot open the workflow {ref}: there is no such version, or it is not "
         "shared with you. Check its name and version, or ask its owner to share it.",
     )
@@ -161,7 +161,7 @@ async def _workflow(ctx: Context, as_: Identity, ref: WorkflowRef) -> _Opened:
             f"The workflow {ref} is written in an older form that Unicon no longer reads, so "
             f"its owner needs to make a new version of it. {invalid.detail}"
         )
-        return _Opened(None, pins, [Problem(path="workflow", message=message)])
+        return _Opened(None, pins, [Problem(path=("workflow",), message=message)])
     return _Opened(_Found(definition, workflow, at), pins, [])
 
 
@@ -179,7 +179,7 @@ async def _moved_workflows(
             continue
         problems.append(
             Problem(
-                path="workflow",
+                path=("workflow",),
                 message=(
                     f"{name} is now a different workflow from the one this task was published "
                     "with, as happens when its owner is renamed and someone else takes the name. "
@@ -220,7 +220,7 @@ async def _yanked_workflows(ctx: Context, task: TaskId, pinned: Mapping[str, str
         if mark is not None and (key, version) not in allowed:
             problems.append(
                 Problem(
-                    path="workflow",
+                    path=("workflow",),
                     message=(
                         f"{ref} is not for new tasks. Its owner stopped new use of this "
                         f"version: {mark.reason}"
@@ -246,7 +246,7 @@ async def _primitives(
             if problem is not None:
                 problems.append(
                     Problem(
-                        path="scoring",
+                        path=("scoring",),
                         message=f"A value's exec program cannot run: {problem}",
                     )
                 )

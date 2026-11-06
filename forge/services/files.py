@@ -252,7 +252,7 @@ async def write(
     refuse_pointer(path, content)
     notes: list[str] = []
     if path == CONTEST_FILE:
-        after = parse_contest(content, saved=True)
+        after = parse_contest(content)
         await timelines.hold_rules(ctx, contest)
         try:
             current = await ctx.forge.content.read_file(organiser.identity, contest, path)

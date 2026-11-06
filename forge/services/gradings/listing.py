@@ -74,6 +74,7 @@ async def list_gradings(
     limits = await retry_limits(ctx, [row for row in rows if row.id in last], gone)
     return await entries(
         ctx,
+        organiser,
         contest_id_of(task_scope(task)),
         [
             record(
@@ -166,7 +167,7 @@ async def feed(
         if len(rows) < size:
             break
         after = (rows[-1].queued_at, rows[-1].id)
-    return await entries(ctx, contest, kept[:size])
+    return await entries(ctx, organiser, contest, kept[:size])
 
 
 @action
@@ -277,7 +278,7 @@ def _workspace(ctx: Context, contest: ContestId, owner: EntrantOwner) -> Workspa
 
 
 async def entries(
-    ctx: Context, contest: ContestId, records: Sequence[GradingRecord]
+    ctx: Context, organiser: Organiser, contest: ContestId, records: Sequence[GradingRecord]
 ) -> tuple[FeedEntry, ...]:
     """Each grading with whose it is and its task's name and label: the
     names and the entrants read first, and the usernames and the contest's
@@ -292,6 +293,7 @@ async def entries(
             by[found.id],
             task_name=(name := tasks.get(found.task)),
             label=settings.label_of(name) if settings is not None and name is not None else None,
+            may_manage=holds(organiser.grants, task_scope(found.task), Role.MANAGER),
         )
         for found in records
     )

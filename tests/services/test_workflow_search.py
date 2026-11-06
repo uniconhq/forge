@@ -153,15 +153,14 @@ async def test_an_uploaded_readme_supplies_version_and_backfill_descriptions(
     door = await uploads.door(setup, bob, slot.id, length=len(content))
     acme.fake.uploads.send(door.path, door.authorization, content)
     await workflows.complete_file(setup, bob, "bob", "readme", slot.id)
-    page = await workflows.view(setup, bob, "bob", "readme")
-    assert page.draft is not None
+    draft = await workflows.read_draft(setup, bob, "bob", "readme")
     await workflows.save(
         setup,
         bob,
         "bob",
         "readme",
-        page.draft.text,
-        page.draft.token,
+        draft.text,
+        draft.token,
         changes={
             "README.md": Edit(
                 Uploaded(slot.id),

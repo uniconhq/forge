@@ -12,15 +12,10 @@ from forge.domain.definitions.basics import (
     _yaml_text,
 )
 from forge.domain.definitions.contest import ContestDefinition
-from forge.domain.definitions.retired_keys import (
-    CONTEST_RETIRED,
-    ENTRY_IGNORED_ON_READ,
-    IGNORED_ON_READ,
-    TASK_RETIRED,
-    _old_leaderboards,
-)
+from forge.domain.definitions.retired_keys import CONTEST_RETIRED, TASK_RETIRED
 from forge.domain.definitions.task import FILE_CEILING, Form, TaskDefinition
 from forge.domain.yaml_models import (
+    Path,
     is_number,
     load_mapping,
     mapping_or_empty,
@@ -30,28 +25,11 @@ from forge.domain.yaml_models import (
 )
 
 
-def parse_contest(text: bytes | str, *, saved: bool = False) -> ContestDefinition:
-    """The `contest.yaml` in `text`, read, or, `saved`, as a save of it is
-    checked: a key of `IGNORED_ON_READ`, a task entry's key of
-    `ENTRY_IGNORED_ON_READ`, or leaderboards in the old list form, is
-    ignored on read and refused in a save. Raises
-    `InvalidDefinition` listing every problem with its YAML path.
+def parse_contest(text: bytes | str) -> ContestDefinition:
+    """The `contest.yaml` in `text`. Raises `InvalidDefinition` listing every
+    problem with its YAML path.
     """
     document = load_mapping(CONTEST_FILE, text)
-    if not saved:
-        old = _old_leaderboards(document)
-        document = {
-            key: value
-            for key, value in document.items()
-            if key not in IGNORED_ON_READ and not (old and key == "leaderboards")
-        }
-        if isinstance(tasks := document.get("tasks"), list):
-            document["tasks"] = [
-                {key: value for key, value in each.items() if key not in ENTRY_IGNORED_ON_READ}
-                if isinstance(each, dict)
-                else each
-                for each in tasks
-            ]
     return validate(ContestDefinition, CONTEST_FILE, document, CONTEST_RETIRED)
 
 
@@ -218,7 +196,7 @@ def statement_written(content: bytes | None) -> bool:
 
 def form_problems(
     form: Mapping[str, Any], kind: str, workflow_options: tuple[str, ...] | None
-) -> list[tuple[tuple[str, ...], str]]:
+) -> list[tuple[Path, str]]:
     """What is wrong with a contestant input's form details, given the
     input's type and, for an enum, the workflow's options; each with its
     path below the input.
@@ -226,17 +204,14 @@ def form_problems(
     try:
         details = Form.model_validate(form)
     except ValidationError as error:
-        return [
-            (tuple(problem["path"].split(".")) if problem["path"] else (), problem["message"])
-            for problem in problems_of(error)
-        ]
+        return [(problem["path"], problem["message"]) for problem in problems_of(error)]
     return details_problems(details, kind, workflow_options)
 
 
 def details_problems(
     details: Form, kind: str, workflow_options: tuple[str, ...] | None
-) -> list[tuple[tuple[str, ...], str]]:
-    found: list[tuple[tuple[str, ...], str]] = []
+) -> list[tuple[Path, str]]:
+    found: list[tuple[Path, str]] = []
     allowed = {
         "text": {"label", "default"},
         "number": {"label", "default", "min", "max"},

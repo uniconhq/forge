@@ -91,11 +91,12 @@ forge/api/
                 TaskState state returns, the TaskStanding and Timeline
                 standing returns, the TakeOut and PutBack the last two
                 return, and task_id_of, the id of the task a scope names
-  workflows.py  create, listing, view, read_version, save, create_version,
-                check, set_visibility, share, unshare, copy, box,
+  workflows.py  create, listing, view, read_draft, read_version, save,
+                save_values, create_version, check, check_values,
+                set_visibility, share, unshare, copy, box,
                 draft_download, version_files, version_download, primitives,
                 and the NewWorkflow, WorkflowSummary, WorkflowView, Draft,
-                Box, BoxInput, BoxOutput,
+                VersionDefinition, Box, BoxInput, BoxOutput,
                 PrimitiveVersion and Problem they return
   files.py      read, tree, history, write, rollback, write_upload, download,
                 and the File, TreeEntry, UploadInfo, EntryKind and Change
@@ -616,7 +617,7 @@ hosting process calls are actions, marked `@action` from
 | `gradings` | `cancel`, `retry`, `rejudge`, `list`, `task_of`, `feed`, `queue_depth` |
 | `regrades` | `latest`, `dismiss`, `gradings_of` |
 | `runs` | `config`, `step_job`, `step_uploads`, `step_file`, `step_admits`, `step_done`, `step_report` |
-| `workflows` | `create`, `listing`, `view`, `read_version`, `save`, `create_version`, `check`, `set_visibility`, `share`, `unshare`, `copy`, `box`, `draft_download`, `version_files`, `version_download` |
+| `workflows` | `create`, `listing`, `view`, `read_draft`, `read_version`, `save`, `save_values`, `create_version`, `check`, `check_values`, `set_visibility`, `share`, `unshare`, `copy`, `box`, `draft_download`, `version_files`, `version_download` |
 | `primitives` | `listing` |
 
 A hosting process reaches them through `forge.api`. An action is one unit of
@@ -807,10 +808,14 @@ as them, so the forge's own check is underneath. Reading is the forge's to
 decide, as the person: `view` and `read_version` answer a workflow they may
 not read as `NotFound` in the same words as one that is not there.
 `listing` is every workflow the person reaches, each saying whether they
-may edit it. `view` gives the editor the draft with its token and the
-people it is shared with; anyone else gets the workflow without them. A
-`save` writes whatever it is given, problems and all, up to 256 KB, since a
-draft may stop half done; `Conflict` when the file moved since it was read.
+may edit it. `view` gives the editor the people it is shared with; anyone
+else gets the workflow without them. `read_draft` gives the editor the
+draft as values with its token, or, when it does not read, why and its
+text; `read_version` gives a version's text and values. A `save` writes
+whatever text it is given, problems and all, up to 256 KB, since a draft
+may stop half done; `save_values` writes values into the draft as it is,
+keeping its comments, as a settings form's save does; either is `Conflict`
+when the file moved since it was read.
 `create_version` takes a name that is `v` and a whole number from 1 with
 no leading zero (`v1`, `v2`, `v10`) and refuses any other as `InvalidName`;
 a tag already at the forge under another name is still read. It reads the
@@ -822,7 +827,8 @@ a draft with problems and never changes after; given the token the person
 saved with, it is `Conflict` when someone has saved since, so a version is
 of the save they made. A port with no value is a problem at its own
 `steps[n].with.<port>`. `check` runs the same checks
-over a text without writing anything, the editor's validate. A workflow is
+over a text without writing anything, the editor's validate, and
+`check_values` over values. A workflow is
 private, shared or public: shared is private with a list of readers, and
 reads back as shared once the list holds someone; `set_visibility` to
 private or public empties the list, and `share` is refused while it is
@@ -1823,9 +1829,7 @@ attempt is a `system_error` it is `delayed` to its contestant and is left
 out of `submissions.max`. Every `GradingRecord` of a latest attempt that has not finished
 with a result carries `last_good`, the latest earlier attempt that did,
 the one its submission counts meanwhile. The contest's `on_system_error`
-is retired: a save that has it is refused at it, saying why, and a stored
-file that still holds it reads with it ignored (`IGNORED_ON_READ`), since
-nothing took its place. Migration 0019
+is retired: a file that has it is refused at it, saying why. Migration 0019
 drops the `falls_back` column and adds `automatic` (below).
 
 **The first `max` to get a result count.** A delayed submission holds no

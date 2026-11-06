@@ -40,24 +40,29 @@ stop half done; a version is made only of a draft that passes every check a
 version must (TASK-FORMAT.md section 1.3), and a version never changes.
 """
 
+import asyncio
 import codecs
 import uuid
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 
 from forge.db.tables import WorkflowYank
 from forge.domain.content import (
+    UNTOKENED_FILE,
+    UNTOKENED_REMOVAL,
+    VALUES_ONLY,
     ConflictToken,
     Edit,
     EntryKind,
     File,
     TreeEntry,
     Uploaded,
+    Values,
     WrittenEdit,
     check_path,
 )
@@ -74,12 +79,13 @@ from forge.domain.errors import (
 from forge.domain.identity import PLATFORM, AsUser, Identity, User
 from forge.domain.ids import OrgId, VersionId, WorkflowId
 from forge.domain.names import validate_name
-from forge.domain.port_values import natural, stray_units
+from forge.domain.port_values import accepted_types, natural, stray_units
 from forge.domain.primitives import Port
-from forge.domain.roles import Role, Scope, holds
+from forge.domain.roles import Role, RoleGrant, Scope, holds
 from forge.domain.run_plan import once_steps
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.sessions import Session
+from forge.domain.settings_values import MAX_FILE, NotValues, values_of, written_values
 from forge.domain.types import Type
 from forge.domain.uploads import (
     Door,
@@ -91,7 +97,7 @@ from forge.domain.uploads import (
     refuse_pointer,
     upload_info,
 )
-from forge.domain.workflow_boxes import placed
+from forge.domain.workflow_boxes import placed, port_of
 from forge.domain.workflow_definition import (
     WORKFLOW_FILE,
     RunInput,
@@ -106,7 +112,7 @@ from forge.domain.workflow_definition import (
 )
 from forge.domain.workflow_description import description_of
 from forge.domain.workflows import Visibility, Workflow, Yanked
-from forge.domain.yaml_models import InvalidDefinition, Problem
+from forge.domain.yaml_models import InvalidDefinition, Problem, YAMLError, load_yaml
 from forge.log import get_logger
 from forge.port.uploads import WorkflowPlace
 from forge.runtime.actions import action
@@ -115,9 +121,6 @@ from forge.services import access, making, names, part_uploads, sessions, upload
 
 log = get_logger(__name__)
 
-MAX_DEFINITION = 256 * 1024
-"""The most a `workflow.yaml` holds, in bytes: a definition is a few dozen
-lines, and a page sends it after every change."""
 
 README_PREFIX = 64 * 1024
 """How much of a README its search description is made from, in bytes: the
@@ -125,6 +128,27 @@ description is at most 2,048 characters of its first paragraph, so a
 README of any length gets one from its start."""
 
 EDIT_MESSAGE = "Edit workflow.yaml"
+
+WRITER = Role.MANAGER
+"""The role at an org that makes and changes the workflows it owns."""
+
+
+def owners(
+    grants: Iterable[RoleGrant], username: str, orgs: Iterable[tuple[str, str]]
+) -> list[str]:
+    """Where someone may make a workflow: under their own username, in lower
+    case, unless it cannot name one, and under each of `orgs`, by key and
+    name, where they hold `WRITER` at the org itself.
+    """
+    held = tuple(grants)
+    try:
+        own = [_own_label(username)]
+    except InvalidName:
+        own = []
+    return [
+        *own,
+        *sorted({name for key, name in orgs if holds(held, Scope(OrgId(key)), WRITER)}),
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,31 +187,43 @@ class SearchPage:
 
 @dataclass(frozen=True, slots=True)
 class Draft:
-    """`workflow.yaml` as the workflow holds it now, and the token a save of
-    it carries; none when there is no such file to replace.
+    """`workflow.yaml` as the workflow holds it now: its text, its data as
+    values, or none and why when it does not read, and the token a save of
+    it carries; no token when there is no such file to replace.
     """
 
     text: str
+    values: dict[str, Any] | None
+    unreadable: str | None
     token: ConflictToken | None
     revision: VersionId | None = None
 
 
 @dataclass(frozen=True, slots=True)
+class VersionDefinition:
+    """`workflow.yaml` at a version: its text, and its data as values, or
+    none and why when it does not read."""
+
+    text: str
+    values: dict[str, Any] | None
+    unreadable: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class WorkflowView:
     """A workflow as its page shows it. For someone who may edit it, the
-    draft and the people it is shared with; for anyone else, neither.
+    people it is shared with; for anyone else, none.
     """
 
     summary: WorkflowSummary
-    draft: Draft | None = None
     readers: tuple[User, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class BoxInput:
     """One input of a run workflow drawn as a box: its name, its type, the
-    options an enum takes, whether a task may leave it out, and the form's
-    title and unit.
+    options an enum takes, whether a task may leave it out, the form's
+    title and unit, and the types a wire into it may carry.
     """
 
     name: str
@@ -196,6 +232,7 @@ class BoxInput:
     optional: bool
     title: str | None
     unit: str | None
+    accepts: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,7 +339,7 @@ async def _summaries(
             visibility=workflow.visibility,
             versions=tuple(sorted(workflow.versions, key=natural)),
             editable=(
-                holds(grants, Scope(OrgId(workflow.owner)), Role.MANAGER)
+                holds(grants, Scope(OrgId(workflow.owner)), WRITER)
                 if workflow.owner in labels
                 else workflow.owner.lower() == username
             ),
@@ -363,27 +400,34 @@ async def view(ctx: Context, session: Session, owner: str, name: str) -> Workflo
     )
     if writer is None:
         return WorkflowView(summary)
-    try:
-        head, file = await ctx.forge.workflows.read_workflow_draft(
-            writer.identity, workflow, WORKFLOW_FILE
-        )
-        draft = Draft(file.content.decode("utf-8", errors="replace"), file.token, head)
-    except NotFound:
-        draft = Draft("", None)
     readers = await ctx.forge.workflows.workflow_readers(writer.identity, workflow)
-    return WorkflowView(summary, draft, readers)
+    return WorkflowView(summary, readers)
 
 
 @action
-async def read_version(ctx: Context, session: Session, ref: str) -> str:
-    """The `workflow.yaml` of `<owner>/<name>@<version>`, read as the person
-    signed in, so the forge says whether they may: the owner, someone it is
-    shared with, or anyone when it is public. `NotFound`, in the same words,
-    when there is no such version or they may not read it.
+async def read_draft(ctx: Context, session: Session, owner: str, name: str) -> Draft:
+    """The draft of `<owner>/<name>` as values with the token a save carries,
+    for the person it is named for or a manager of its org; `Forbidden` for
+    anyone else.
+    """
+    writer = await _writer(ctx, session, owner)
+    workflow = await _place(ctx, owner, name)
+    current = await _current_draft(ctx, writer, workflow)
+    return current if current is not None else _draft(b"", None, None)
+
+
+@action
+async def read_version(ctx: Context, session: Session, ref: str) -> VersionDefinition:
+    """The `workflow.yaml` of `<owner>/<name>@<version>` as text and values,
+    read as the person signed in, so the forge says whether they may: the
+    owner, someone it is shared with, or anyone when it is public.
+    `NotFound`, in the same words, when there is no such version or they
+    may not read it.
     """
     found = parse_workflow_ref(ref)
     text = await _read_at(ctx, await _as_user(ctx, session), found)
-    return text
+    values, unreadable = _values(text)
+    return VersionDefinition(text, values, unreadable)
 
 
 @action
@@ -400,11 +444,50 @@ async def save(
     """Write `text` as the workflow's `workflow.yaml`, as the caller, with
     the token it was read with. Whatever it holds saves, problems and all,
     since a draft may stop half done. `Conflict` when the file has changed
-    since it was read; `Rejected` for one over `MAX_DEFINITION`.
+    since it was read; `Rejected` for one over `MAX_FILE`.
     """
     writer = await _writer(ctx, session, owner)
-    content = _sized(text)
     workflow = await _place(ctx, owner, name)
+    return await _save(ctx, session, writer, workflow, name, _sized(text), token, changes)
+
+
+@action
+async def save_values(
+    ctx: Context,
+    session: Session,
+    owner: str,
+    name: str,
+    values: Mapping[str, Any],
+    token: ConflictToken | None,
+    *,
+    changes: Mapping[str, Edit] | None = None,
+) -> Draft:
+    """Write `values` into the draft's `workflow.yaml` as it is, keeping its
+    comments, as `save` writes text. `Conflict` when the draft has changed
+    since `token` was read; `InvalidDefinition` when the values cannot be
+    written into it.
+    """
+    writer = await _writer(ctx, session, owner)
+    workflow = await _place(ctx, owner, name)
+    current = await _current_draft(ctx, writer, workflow)
+    if (current.token if current is not None else None) != token:
+        raise _moved(writer, name)
+    old = current.text.encode() if current is not None else b""
+    written = await asyncio.to_thread(written_values, "workflow", old, values)
+    content = _sized(written.decode())
+    return await _save(ctx, session, writer, workflow, name, content, token, changes)
+
+
+async def _save(
+    ctx: Context,
+    session: Session,
+    writer: _Writer,
+    workflow: WorkflowId,
+    name: str,
+    content: bytes,
+    token: ConflictToken | None,
+    changes: Mapping[str, Edit] | None,
+) -> Draft:
     try:
         resolved = await _file_edits(ctx, writer.identity, workflow, changes or {})
         resolved[WORKFLOW_FILE] = WrittenEdit(content, token)
@@ -418,12 +501,40 @@ async def save(
             writer.identity, workflow, revision, WORKFLOW_FILE
         )
     except Conflict:
-        raise Conflict(
-            f"The workflow {writer.label}/{name} has changed since you opened it. Reload it, "
-            "then make your changes again."
-        ) from None
+        raise _moved(writer, name) from None
     log.info("workflows.saved", workflow=workflow, user_id=session.user_id)
-    return Draft(text, file.token, revision)
+    return _draft(content, file.token, revision)
+
+
+async def _current_draft(ctx: Context, writer: _Writer, workflow: WorkflowId) -> Draft | None:
+    try:
+        head, file = await ctx.forge.workflows.read_workflow_draft(
+            writer.identity, workflow, WORKFLOW_FILE
+        )
+    except NotFound:
+        return None
+    return _draft(file.content, file.token, head)
+
+
+def _draft(content: bytes, token: ConflictToken | None, revision: VersionId | None) -> Draft:
+    text = content.decode("utf-8", errors="replace")
+    values, unreadable = _values(text)
+    return Draft(text, values, unreadable, token, revision)
+
+
+def _values(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    """A `workflow.yaml` as values, or none and why it does not read."""
+    try:
+        return values_of("workflow", load_yaml(text)), None
+    except (YAMLError, NotValues) as error:
+        return None, str(error)
+
+
+def _moved(writer: _Writer, name: str) -> Conflict:
+    return Conflict(
+        f"The workflow {writer.label}/{name} has changed since you opened it. Reload it, "
+        "then make your changes again."
+    )
 
 
 @action
@@ -584,6 +695,24 @@ async def check(
         own = await names.workflow_place(ctx, owner, name)
     files = WorkflowFiles(frozenset(paths)) if paths is not None else None
     return tuple(await _problems(ctx, await _as_user(ctx, session), definition, files, own=own))
+
+
+@action
+async def check_values(
+    ctx: Context,
+    session: Session,
+    values: Mapping[str, Any],
+    *,
+    owner: str | None = None,
+    name: str | None = None,
+    paths: Sequence[str] | None = None,
+) -> tuple[Problem, ...]:
+    """`check` of the definition `values` give, as a save writes them."""
+    try:
+        text = (await asyncio.to_thread(written_values, "workflow", b"", values)).decode()
+    except InvalidDefinition as invalid:
+        return tuple(invalid.errors)
+    return await check(ctx, session, text, owner=owner, name=name, paths=paths)
 
 
 @action
@@ -758,6 +887,7 @@ def _box_input(name: str, declared: RunInput) -> BoxInput:
         declared.optional,
         declared.title,
         declared.unit,
+        tuple(found.value for found in accepted_types(port_of(declared))),
     )
 
 
@@ -869,8 +999,8 @@ async def _place(ctx: Context, owner: str, name: str) -> WorkflowId:
 
 def _sized(text: str) -> bytes:
     content = text.encode()
-    if len(content) > MAX_DEFINITION:
-        raise Rejected(f"A workflow can be at most {MAX_DEFINITION // 1024} KB. Make it smaller.")
+    if len(content) > MAX_FILE:
+        raise Rejected(f"A workflow can be at most {MAX_FILE // 1024} KB. Make it smaller.")
     return content
 
 
@@ -891,13 +1021,13 @@ async def _writer(ctx: Context, session: Session, owner: str) -> _Writer:
     """
     org = await names.org_id(ctx, owner)
     if org is not None:
-        organiser = await access.organiser(ctx, session, Scope(org, label=owner), Role.MANAGER)
+        organiser = await access.organiser(ctx, session, Scope(org, label=owner), WRITER)
         return _Writer(owner, organiser.identity, org)
     username = await _username_now(ctx, session)
     if owner.lower() != username.lower():
-        log.info("access.refused", user_id=session.user_id, owner=owner, role=Role.MANAGER.value)
+        log.info("access.refused", user_id=session.user_id, owner=owner, role=WRITER.value)
         raise Forbidden(
-            f"This needs the {Role.MANAGER.value} role at {owner}. Ask an admin of {owner} if "
+            f"This needs the {WRITER.value} role at {owner}. Ask an admin of {owner} if "
             "you need it."
         )
     return _Writer(_own_label(username), await _as_user(ctx, session), username)
@@ -1136,7 +1266,9 @@ async def _file_edits(
         _file_path(path)
         content = edit.content
         if content is None and edit.token is None:
-            raise InvalidInputs("Removing a file needs the token it was read with.")
+            raise InvalidInputs(
+                UNTOKENED_REMOVAL, errors=[{"input": path, "message": UNTOKENED_FILE}]
+            )
         if isinstance(content, Uploaded):
             row = rows.get(content.upload)
             if (
@@ -1155,6 +1287,8 @@ async def _file_edits(
                 )
             row.status = UploadStatus.CONSUMED
             content = pointer_text(row.digest, row.size)
+        elif isinstance(content, Values):
+            raise InvalidInputs(VALUES_ONLY, errors=[{"input": path, "message": VALUES_ONLY}])
         elif content is not None:
             refuse_pointer(path, content)
         resolved[path] = WrittenEdit(content, edit.token)

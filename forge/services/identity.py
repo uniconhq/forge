@@ -10,13 +10,14 @@ from dataclasses import dataclass
 
 from forge.domain.errors import Forbidden, SessionExpired, Unavailable
 from forge.domain.identity import AsUser, User
+from forge.domain.names import ScopeNames
 from forge.domain.roles import HeldRole
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import ActionSetup, Context
 from forge.runtime.held import setup_or_held
-from forge.services import names, sessions
+from forge.services import names, sessions, workflows
 
 log = get_logger(__name__)
 
@@ -24,13 +25,21 @@ log = get_logger(__name__)
 @dataclass(frozen=True, slots=True)
 class Me:
     """The signed-in user and their roles at every scope, each with the names
-    of where it is held. `degraded` is set when the host did not answer and
-    the identity comes from the session alone.
+    of where it is held; the orgs a role of theirs reaches, at the org or
+    inside it, by name; the contests a role of theirs is held at or inside,
+    and the tasks one is held at, by name only, for the pages to name where
+    a list they may not read is; and the owners they may make a workflow
+    under (`workflows.owners`). `degraded` is set when the host did not
+    answer and the identity comes from the session alone.
     """
 
     user: User
     roles: tuple[HeldRole, ...]
     degraded: bool
+    orgs: tuple[str, ...]
+    workflow_owners: tuple[str, ...]
+    contests: tuple[ScopeNames, ...] = ()
+    tasks: tuple[ScopeNames, ...] = ()
 
 
 @action
@@ -44,12 +53,27 @@ async def whoami(ctx: Context, session: Session) -> Me:
         sessions.revoke_at_end(ctx, session.id)
         raise SessionExpired("Your session has ended. Sign in again.") from exc
     except Unavailable:
-        return Me(user=User(id=session.user_id, username=session.username), roles=(), degraded=True)
+        user = User(id=session.user_id, username=session.username)
+        return Me(user, (), True, (), tuple(workflows.owners((), user.username, ())))
     try:
         roles = await ctx.forge.orgs.roles_of(AsUser(user.id, credential))
     except Unavailable:
-        return Me(user=user, roles=(), degraded=True)
-    return Me(user=user, roles=await names.held_roles(ctx, roles), degraded=False)
+        return Me(user, (), True, (), tuple(workflows.owners((), user.username, ())))
+    held = await names.held_roles(ctx, roles)
+    orgs = {each.scope.org: each.names.org for each in held}
+    contests = {
+        ScopeNames(each.names.org, each.names.contest) for each in held if each.names.contest
+    }
+    tasks = {each.names for each in held if each.names.task}
+    return Me(
+        user,
+        held,
+        False,
+        orgs=tuple(sorted(set(orgs.values()))),
+        workflow_owners=tuple(workflows.owners(roles, user.username, orgs.items())),
+        contests=tuple(sorted(contests, key=lambda each: each.path)),
+        tasks=tuple(sorted(tasks, key=lambda each: each.path)),
+    )
 
 
 async def current(session_id: uuid.UUID, *, setup: ActionSetup | None = None) -> Session:

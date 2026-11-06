@@ -38,7 +38,7 @@ from forge.domain.run_plan import FileFact, RunPlan
 from forge.domain.run_task import RUNS_PATH, RunsFile
 from forge.domain.submissions import SubmittedInput
 from forge.domain.workflows import Visibility
-from forge.domain.yaml_models import InvalidDefinition
+from forge.domain.yaml_models import InvalidDefinition, path_text
 from forge.runtime.setup import Setup
 from forge.services import (
     contest_home,
@@ -163,7 +163,7 @@ def _plan(acme: Acme) -> RunPlan:
 
 def _errors(result: Published | Draft | Preparing) -> list[tuple[str, str]]:
     assert isinstance(result, Draft), result
-    return [(error["path"], error["message"]) for error in result.errors]
+    return [(path_text(error["path"]), error["message"]) for error in result.errors]
 
 
 @pytest.mark.parametrize(
@@ -542,7 +542,7 @@ async def test_a_contest_gives_a_run_task_a_due_and_a_leaderboard_but_no_worth_o
             await files.write(
                 setup, acme.ada, SPRING, "contest.yaml", content.encode(), current.token
             )
-        assert [error["path"] for error in refused.value.errors] == [path]
+        assert [path_text(error["path"]) for error in refused.value.errors] == [path]
     # seconds_late reads a due, so a task may have one.
     due = DRAFT + "    due: 2026-09-26T14:00:00Z\n"
     assert await files.write(setup, acme.ada, SPRING, "contest.yaml", due.encode(), current.token)

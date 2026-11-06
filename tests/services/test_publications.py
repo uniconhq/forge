@@ -46,6 +46,7 @@ from forge.domain.save_effect import SaveEffect
 from forge.domain.submissions import SubmittedInput
 from forge.domain.workflow_definition import WORKFLOW_FILE
 from forge.domain.workflows import Visibility
+from forge.domain.yaml_models import path_text
 from forge.runtime.setup import Setup
 from forge.services import gradings, submissions, task_save, tasks, timelines
 from forge.services.access import Organiser
@@ -280,7 +281,7 @@ async def test_a_save_another_landed_under_is_kept_as_a_draft_and_not_published(
 
     assert isinstance(result, Draft)
     assert result.version == repo.head
-    assert [problem["path"] for problem in result.errors] == [""]
+    assert [path_text(problem["path"]) for problem in result.errors] == [""]
     assert acme.fake.calls_to("publish") == []
     assert repo.versions == {}
 
@@ -424,11 +425,11 @@ async def test_a_run_naming_files_the_task_lacks_is_a_draft_and_the_state_recomp
     assert isinstance(draft, Draft)
     assert draft.errors == (
         {
-            "path": "repeat[0].tuples[1][0]",
+            "path": ("repeat", 0, "tuples", 1, 0),
             "message": "The task has no file tests/2.in. Add it, or give another file.",
         },
         {
-            "path": "repeat[0].tuples[1][1]",
+            "path": ("repeat", 0, "tuples", 1, 1),
             "message": "The task has no file tests/2.ans. Add it, or give another file.",
         },
     )
@@ -464,7 +465,7 @@ async def test_removing_a_file_a_run_names_is_a_draft_naming_it(
     draft = await _save(setup, acme, sum_task, {"tests/1.ans": None})
 
     assert isinstance(draft, Draft)
-    assert [(error["path"], error["message"]) for error in draft.errors] == [
+    assert [(path_text(error["path"]), error["message"]) for error in draft.errors] == [
         (
             "repeat[0].tuples[0][1]",
             "The task has no file tests/1.ans. Add it, or give another file.",
@@ -604,7 +605,7 @@ async def test_a_workflow_the_organiser_cannot_read_is_an_error_at_its_line_nami
 
     assert isinstance(draft, Draft)
     (error,) = draft.errors
-    assert error["path"] == "workflow"
+    assert path_text(error["path"]) == "workflow"
     assert "Unicon cannot open the workflow" in error["message"]
     assert named in error["message"]
     assert acme.fake.calls_to("publish") == []
@@ -626,7 +627,7 @@ async def test_a_workflow_in_an_old_format_is_refused_at_its_line_for_its_owner_
 
     assert isinstance(draft, Draft)
     (error,) = draft.errors
-    assert error["path"] == "workflow"
+    assert path_text(error["path"]) == "workflow"
     assert error["message"].startswith(
         "The workflow unicon/old@v1 is written in an older form that Unicon no longer reads, so "
         "its owner needs to make a new version of it. There are "
@@ -649,12 +650,14 @@ async def test_a_workflow_that_does_not_check_as_a_version_is_refused_at_its_lin
     )
 
     assert isinstance(draft, Draft)
-    assert draft.errors
-    assert {error["path"] for error in draft.errors} == {"workflow"}
-    assert all(
-        error["message"].startswith("The workflow unicon/broken@v1 has a problem (")
-        for error in draft.errors
-    )
+    assert [(path_text(error["path"]), error["message"]) for error in draft.errors] == [
+        (
+            "workflow",
+            "The workflow unicon/broken@v1 has a problem (steps[1].with.files.output): The step "
+            "solution has no output called nothing. Choose another version of it, or ask its "
+            "owner to fix it.",
+        )
+    ]
 
 
 @pytest.mark.parametrize(
@@ -692,7 +695,9 @@ async def test_a_step_whose_use_is_no_primitive_the_organiser_reads_is_an_error_
     )
 
     assert isinstance(draft, Draft)
-    assert [(error["path"], error["message"]) for error in draft.errors] == [("workflow", said)]
+    assert [(path_text(error["path"]), error["message"]) for error in draft.errors] == [
+        ("workflow", said)
+    ]
     reads = acme.fake.calls_to("read_declaration")
     assert reads and {call.identity for call in reads} == {acme.ada.identity}
     assert acme.fake.calls_to("publish") == []
@@ -715,7 +720,7 @@ async def test_a_primitive_in_an_old_format_is_refused_naming_it(
 
     assert isinstance(draft, Draft)
     (error,) = draft.errors
-    assert error["path"] == "workflow"
+    assert path_text(error["path"]) == "workflow"
     assert error["message"].startswith(
         "In the workflow unicon/custom@v1, the step solution cannot run: The primitive "
         "unicon/odd@v1 is written in an older form that Unicon no longer reads. Use a later "
@@ -736,7 +741,9 @@ async def test_an_invalid_task_yaml_and_an_uncovered_input_are_drafts_with_their
     ]
 
     paths = [
-        [error["path"] for error in draft.errors] for draft in drafts if isinstance(draft, Draft)
+        [path_text(error["path"]) for error in draft.errors]
+        for draft in drafts
+        if isinstance(draft, Draft)
     ]
     assert paths == [
         ["inputs.time_limit"],

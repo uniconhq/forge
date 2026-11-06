@@ -44,7 +44,7 @@ from forge.domain.run_plan import (
 from forge.domain.run_task import check_run_task
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.workflow_definition import parse_run_workflow
-from forge.domain.yaml_models import load_yaml, one_line
+from forge.domain.yaml_models import load_yaml, one_line, path_text
 from forge.testing import PLACEHOLDER_DIGEST
 from tests.conftest import sibling
 from tests.test_program_manifest import primitive
@@ -205,7 +205,7 @@ def refused(found: RunPlanCheck) -> dict[str, list[str]]:
     assert found.plan is None
     problems: dict[str, list[str]] = {}
     for problem in found.problems:
-        problems.setdefault(problem["path"], []).append(problem["message"])
+        problems.setdefault(path_text(problem["path"]), []).append(problem["message"])
     return problems
 
 
@@ -878,7 +878,7 @@ def test_a_step_reading_one_done_more_often_is_refused_naming_both() -> None:
 
     assert problems == [
         {
-            "path": "workflow",
+            "path": ("workflow",),
             "message": "The step compile runs once per grading, and reads solution, which runs "
             "once per run of each grading, so compile would run before what it reads exists.",
         }

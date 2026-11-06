@@ -60,7 +60,7 @@ def order_problems(
             if gives[0] > wants[0] or gives[1] > wants[1]:
                 problems.append(
                     Problem(
-                        path="workflow",
+                        path=("workflow",),
                         message=f"The step {reader} runs {CLASS_WORDS[classes[reader]]}, and "
                         f"reads {each}, which runs {CLASS_WORDS[classes[each]]}, so {reader} "
                         f"would run before what it reads exists.",
@@ -77,7 +77,7 @@ def cache_problems(checked: RunWorkflowCheck) -> list[Problem]:
     """
     return [
         Problem(
-            path="workflow",
+            path=("workflow",),
             message=f"The step {step.id} uses {step.use}, which reads the task's files "
             "through the machine's cache, but only primitives that run programs in boxes "
             "may, such as unicon/exec.",

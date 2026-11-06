@@ -392,6 +392,9 @@ class _Checker:
 
     def check(self) -> None:
         leaderboard = self.leaderboard
+        if not leaderboard.columns:
+            self.refuse(self.at("columns"), "Give the leaderboard at least one column.")
+            return
         if len(leaderboard.columns) > MOST_COLUMNS:
             self.refuse(
                 self.at("columns"),

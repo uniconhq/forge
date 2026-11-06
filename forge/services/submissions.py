@@ -151,7 +151,13 @@ from forge.domain.uploads import (
     read_pointer,
 )
 from forge.domain.workflow_definition import RUN_NAMES
-from forge.domain.yaml_models import InvalidDefinition, Problem, joined, problems_of
+from forge.domain.yaml_models import (
+    InvalidDefinition,
+    Problem,
+    joined,
+    problems_of,
+    size_in_words,
+)
 from forge.log import get_logger
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
@@ -264,7 +270,7 @@ async def submit(
     """
     if not isinstance(idempotency_key, str) or not rules.key_is_valid(idempotency_key):
         raise InvalidIdempotencyKey(
-            "A submit carries an idempotency key of 8 to 128 letters, digits, - and _."
+            "This submission could not be sent as it was. Reload the page and submit again."
         )
     person = await submitters.person(ctx, session, task, submitting=True)
     workspace = person.workspace
@@ -664,7 +670,7 @@ async def _chosen(
         if _size(row) > limit:
             which = f"{entry.id} part {number}" if number is not None else entry.id
             raise TooLarge(
-                f"A file for {which} is larger than the {limit} bytes allowed. "
+                f"A file for {which} is larger than the {size_in_words(limit)} allowed. "
                 "Choose a smaller file.",
                 limit=limit,
                 input=entry.id,
@@ -999,7 +1005,7 @@ async def preview(
     if view is None:
         raise InvalidDefinition(
             TASK_FILE,
-            [Problem(path="moment", message=f"Preview at {joined(list(PREVIEW_MOMENTS))}.")],
+            [Problem(path=("moment",), message=f"Preview at {joined(list(PREVIEW_MOMENTS))}.")],
         )
     contest = contest_id_of(task_scope(task))
     settings = await entrant_view.contest(ctx, contest)
@@ -1046,7 +1052,7 @@ def _with_show(
         raise InvalidDefinition(
             TASK_FILE,
             [
-                Problem(path=_under_show(problem["path"]), message=problem["message"])
+                Problem(path=("scoring", "show", *problem["path"]), message=problem["message"])
                 for problem in problems_of(error)
             ],
         ) from None
@@ -1076,13 +1082,6 @@ def _with_show(
     if problems:
         raise InvalidDefinition(TASK_FILE, problems)
     return definition.model_copy(update={"scoring": scoring})
-
-
-def _under_show(path: str) -> str:
-    """A path below a draft `show`, as `task.yaml` has it."""
-    if not path:
-        return "scoring.show"
-    return f"scoring.show{path}" if path.startswith("[") else f"scoring.show.{path}"
 
 
 @action

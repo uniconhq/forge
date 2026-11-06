@@ -56,7 +56,8 @@ lapsed invite can do neither; the person's list leaves lapsed ones out.
 """
 
 import uuid
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, or_, select, update
@@ -82,7 +83,7 @@ from forge.domain.ids import ContestId
 from forge.domain.invites import Grant, InviteStatus, MailStatus
 from forge.domain.names import ScopeNames
 from forge.domain.registration import REGISTERED, Status
-from forge.domain.roles import Role, Scope, ScopeKind, contest_id_of, holds
+from forge.domain.roles import Role, RoleGrant, Scope, ScopeKind, contest_id_of, holds
 from forge.domain.sessions import Session
 from forge.log import get_logger
 from forge.port.mail import Mail
@@ -115,7 +116,8 @@ class Invite:
     it grants, the entrant it asks
     someone into, if any, by its id and the name it is shown under, who it
     names, who sent it, where it stands, when it lapses, and what became of
-    its mail. `expired` is a pending invite past its expiry.
+    its mail. `expired` is a pending invite past its expiry. `may_change`
+    says whether the organiser reading it may send it again or withdraw it.
     """
 
     id: uuid.UUID
@@ -134,6 +136,7 @@ class Invite:
     decided_at: datetime | None
     mail_status: MailStatus
     mailed_at: datetime | None
+    may_change: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,9 +192,10 @@ async def create(
         await _refuse_held(ctx, named.user, scope, grants, entrant)
     if entrant is not None:
         await _refuse_full_entrant(ctx, contest_id_of(scope), entrant)
-    return await make(
+    made = await make(
         ctx, scope, grants, named, invited_by=organiser.user.id, entrant=entrant, lifetime=standing
     )
+    return _as_read_by(organiser, made)
 
 
 async def target(ctx: Context, username: str | None, email: str | None) -> Target:
@@ -269,7 +273,7 @@ async def at(ctx: Context, organiser: Organiser, scope: Scope) -> tuple[Invite, 
             .limit(LISTED_MAX)
         )
     ).scalars()
-    return await _views(ctx, list(rows))
+    return tuple(_as_read_by(organiser, invite) for invite in await _views(ctx, list(rows)))
 
 
 @action
@@ -302,7 +306,7 @@ async def send_again(ctx: Context, organiser: Organiser, scope: Scope, invite: u
     await ctx.db.flush()
     _mail_later(ctx, row, token)
     log.info("invites.sent_again", invite=str(row.id), by_user_id=organiser.user.id)
-    return await view(ctx, row)
+    return _as_read_by(organiser, await view(ctx, row))
 
 
 @action
@@ -319,7 +323,7 @@ async def withdraw(ctx: Context, organiser: Organiser, scope: Scope, invite: uui
     row.decided_at = ctx.now
     await ctx.db.flush()
     log.info("invites.withdrawn", invite=str(row.id), by_user_id=organiser.user.id)
-    return await view(ctx, row)
+    return _as_read_by(organiser, await view(ctx, row))
 
 
 @action
@@ -440,13 +444,25 @@ async def accepted_places(ctx: Context, user_id: int) -> frozenset[str]:
     return frozenset(found.scalars())
 
 
+def may_invite(grants: Iterable[RoleGrant], scope: Scope, offered: Grant) -> bool:
+    """Whether these grants may make, send again or withdraw an invite
+    offering `offered` at the scope: a manager may, and only an admin for
+    an admin.
+    """
+    return roles.may_change(grants, scope, offered.role or Role.MANAGER)
+
+
+def _as_read_by(organiser: Organiser, invite: Invite) -> Invite:
+    return replace(invite, may_change=may_invite(organiser.grants, invite.scope, invite.grants))
+
+
 def _require_to_grant(organiser: Organiser, scope: Scope, grants: Grant) -> None:
     """What making or changing an invite needs: manager at the scope, admin
     for an admin, and a place in a contest, or a member's in an entrant,
     only at a contest.
     """
     require(organiser, scope, Role.MANAGER)
-    if grants is Grant.ADMIN and not holds(organiser.grants, scope, Role.ADMIN):
+    if not may_invite(organiser.grants, scope, grants):
         raise Forbidden(f"Only an admin of {scope.name} can invite another admin there.")
     if grants.role is None and scope.kind is not ScopeKind.CONTEST:
         raise InvalidInvite("An invite to enter a contest is made from that contest.")

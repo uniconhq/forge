@@ -308,7 +308,7 @@ MORE = {
             "This input takes exactly one file.",
         ),
         ({"submission": SubmittedInput(uploads=(W2,))}, "submission", "another input"),
-        ({"submission": SubmittedInput(uploads=(BIG,))}, "submission", "1024 bytes allowed"),
+        ({"submission": SubmittedInput(uploads=(BIG,))}, "submission", "1 KB allowed"),
         ({"weights": SubmittedInput()}, "weights", "This input needs at least one file."),
         (
             {"weights": SubmittedInput(uploads=(W2, TWIN))},
@@ -391,7 +391,7 @@ def test_a_folders_files_together_are_within_its_size() -> None:
     assert errors == [
         {
             "input": "weights",
-            "message": "The files of this input come to more than the 1024 bytes allowed. "
+            "message": "The files of this input come to more than the 1 KB allowed. "
             "Make them smaller.",
         }
     ]
@@ -509,7 +509,7 @@ def test_a_folder_part_is_held_to_its_own_size_not_the_largest_parts() -> None:
     def given(number: int) -> dict[str, SubmittedInput]:
         return {"maps": SubmittedInput(parts={number: SubmittedInput(uploads=(a, b))})}
 
-    with pytest.raises(InvalidInputs, match=r"Part 1: .*more than the 15 bytes"):
+    with pytest.raises(InvalidInputs, match=r"Part 1: .*more than the 15 B allowed"):
         lay_out_runs((maps,), {"maps": 2}, given(1), files)
     laid = lay_out_runs((maps,), {"maps": 2}, given(2), files)
     assert sorted(laid.files) == ["files/maps/2/maps/a.txt", "files/maps/2/maps/b.txt"]

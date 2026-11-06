@@ -2,12 +2,12 @@
 10.2, the leaderboards note's 6.3): a visitor and an entrant read a leaderboard
 for everyone with each row's values as that row's entrant is shown them,
 and only their own row of the gradebook; a withdrawn task's columns are
-listed to no entrant, and a header tells a task's bounds only once it is
-released; the hold keeps every row but the viewer's own as it stood at
-its `from`, counting the rest held, until its `until` or a manager of the
-contest ends it early, asked first, the end kept with who and when, a
-hold written again with a later `from` holding afresh; and the contest
-home shows an entrant their own row of each leaderboard they read.
+listed to no entrant, and only staff are told a header's bounds; the hold
+keeps every row but the viewer's own as it stood at its `from`, counting
+the rest held, until its `until` or a manager of the contest ends it
+early, asked first, the end kept with who and when, a hold written again
+with a later `from` holding afresh; and the contest home shows an entrant
+their own row of each leaderboard they read.
 """
 
 import uuid
@@ -214,11 +214,9 @@ async def test_a_withdrawn_tasks_columns_are_listed_to_no_entrant_and_read_nothi
     assert [cell.number for cell in staffs.rows[0].cells] == [0, 0, 0]
 
 
-async def test_a_header_gives_anyone_but_staff_only_the_bounds_of_what_they_are_shown(
+async def test_only_staff_are_told_a_headers_bounds_and_that_they_are_staff(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
-    # Item 126: total is shown after the close, so before it only staff
-    # read its bounds; sample's read what is shown now.
     clock.set(at(13, 0))
     islands = await _checked(setup, acme, contest=OPEN)
     entrant = await _entrant(setup, acme, islands, 20)
@@ -227,17 +225,44 @@ async def test_a_header_gives_anyone_but_staff_only_the_bounds_of_what_they_are_
     def bounds(leaderboard: LeaderboardView) -> list[tuple[str, Fraction | None, Fraction | None]]:
         return [(each.name, each.at_least, each.at_most) for each in leaderboard.headers]
 
-    clock.set(BEFORE_CLOSE)
-    assert bounds(await _standings(setup, None)) == [
-        ("sample", 0, 1),
-        ("total", None, None),
-        ("tries", 0, 50),
-    ]
-    assert bounds(await _standings(setup, entrant)) == bounds(await _standings(setup, None))
-    total = ("total", Fraction(0), Fraction(100))
-    assert bounds(await _standings(setup, staff))[1] == total
-    clock.set(AFTER_CLOSE)
-    assert bounds(await _standings(setup, None))[1] == total
+    none = [("sample", None, None), ("total", None, None), ("tries", None, None)]
+    for moment in (BEFORE_CLOSE, AFTER_CLOSE):
+        clock.set(moment)
+        for viewer in (None, entrant):
+            seen = await _standings(setup, viewer)
+            assert (bounds(seen), seen.staff) == (none, False)
+        staffs = await _standings(setup, staff)
+        assert bounds(staffs) == [
+            ("sample", 0, 1),
+            ("total", Fraction(0), Fraction(100)),
+            ("tries", 0, 50),
+        ]
+        assert staffs.staff
+
+
+MARKED = OPEN.replace(
+    "      tries: {block: count, over: {results: islands}}\n",
+    "      tries: {block: count, over: {results: islands}}\n"
+    "      marked: {block: max, over: {results: islands}, of: {value: [islands, marked]}}\n",
+).replace("display: [sample, total, tries]", "display: [sample, total, tries, marked]")
+"""The standings with a column that reads a fact, bounded whatever the task's values."""
+
+
+async def test_only_staff_are_told_the_bounds_of_a_column_over_a_fact(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(at(13, 0))
+    islands = await _checked(setup, acme, contest=MARKED)
+    entrant = await _entrant(setup, acme, islands, 20)
+    staff = await _staff(setup, acme)
+
+    def marked(leaderboard: LeaderboardView) -> tuple[Fraction | None, Fraction | None]:
+        (header,) = [each for each in leaderboard.headers if each.name == "marked"]
+        return header.at_least, header.at_most
+
+    for viewer in (None, entrant):
+        assert marked(await _standings(setup, viewer)) == (None, None)
+    assert marked(await _standings(setup, staff)) == (Fraction(0), Fraction(1))
 
 
 MIXED = """\
@@ -262,11 +287,9 @@ leaderboards:
 released at 13:00."""
 
 
-async def test_a_task_not_yet_released_gives_a_header_no_bounds_but_to_staff(
+async def test_staff_are_told_the_bounds_of_a_task_not_yet_released(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
-    # Item 126: neither b's submissions.max nor its values' bounds are
-    # told before its release, so a column reading it has none.
     clock.set(at(12, 0))
     await _workflows(acme)
     await write_contest(acme.fake, BASE + MIXED)
@@ -284,10 +307,10 @@ async def test_a_task_not_yet_released_gives_a_header_no_bounds_but_to_staff(
         return [(each.name, each.at_least, each.at_most) for each in leaderboard.headers]
 
     every = [("tries", Fraction(0), Fraction(100)), ("best", Fraction(0), Fraction(2))]
-    assert await bounds(None) == [("tries", None, None), ("best", None, None)]
     assert await bounds(staff) == every
     clock.set(at(13, 0))
-    assert await bounds(None) == every
+    assert await bounds(staff) == every
+    assert await bounds(None) == [("tries", None, None), ("best", None, None)]
 
 
 async def _held_contest(setup: Setup, acme: Acme, clock: FakeClock, contest: str) -> Any:

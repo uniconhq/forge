@@ -20,6 +20,7 @@ from forge.domain.ids import TaskId, WorkflowId
 from forge.domain.plan_basics import PLAN_PATH, Snapshot
 from forge.domain.run_plan import RunPlan, steps_run_again
 from forge.domain.workflows import Visibility
+from forge.domain.yaml_models import path_text
 from forge.runtime.setup import Setup
 from forge.services import steps, task_save
 from forge.services.task_save import Draft, Published
@@ -417,7 +418,8 @@ async def test_an_inner_workflow_renamed_under_its_owner_is_refused(
 
     assert isinstance(again, Draft), again
     assert any(
-        error["path"] == "workflow" and "bob/judge is now a different workflow" in error["message"]
+        path_text(error["path"]) == "workflow"
+        and "bob/judge is now a different workflow" in error["message"]
         for error in again.errors
     )
 

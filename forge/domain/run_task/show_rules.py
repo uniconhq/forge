@@ -10,7 +10,7 @@ from forge.domain.port_values import scalar_to_text
 from forge.domain.run_task.records import OPENNESS, RELEASED_OPENNESS, SHOWN_WORDS
 from forge.domain.run_task.task_helpers import key_json
 from forge.domain.workflow_definition import RUN_NAMES, TEXT_OUTPUTS
-from forge.domain.yaml_models import Path, Problem, is_number, joined, path_text
+from forge.domain.yaml_models import Path, Problem, is_number, joined
 
 KINDS = ("values", "inputs", "outputs")
 """The lists of a moment of `show` that name things by name alone."""
@@ -380,9 +380,7 @@ def draft_problems(
                     found.append(((moment, "outputs", index), problem))
     found += once_problems(show, names.outputs, once)
     found += read_later(scoring, values, names.columns)
-    return [
-        Problem(path=path_text(("scoring", "show", *at)), message=message) for at, message in found
-    ]
+    return [Problem(path=("scoring", "show", *at), message=message) for at, message in found]
 
 
 def members(of: str, scoring: Scoring, keys: Mapping[str, Mapping[str, object]]) -> list[str]:
@@ -488,7 +486,7 @@ def hidden_again(
         entry = f"{name} of {count} {'run' if count == 1 else 'runs'}" if kind == "runs" else name
         problems.append(
             Problem(
-                path=path_text(("scoring", "show", was)) if was else "scoring.show",
+                path=("scoring", "show", was) if was else ("scoring", "show"),
                 message=f"Entrants have been shown {entry} {SHOWN_WORDS[then]}, and what they "
                 "have been shown may have been seen or kept; it would now be hidden or shown "
                 "later.",

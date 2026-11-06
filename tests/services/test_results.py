@@ -32,6 +32,7 @@ from forge.domain.ids import TaskId
 from forge.domain.live import Nudge, NudgeKind
 from forge.domain.roles import Role, Scope, task_scope
 from forge.domain.run_plan import RELEASE_MOVED
+from forge.domain.yaml_models import path_text
 from forge.runtime.context import Context
 from forge.runtime.setup import Setup
 from forge.services import (
@@ -324,7 +325,7 @@ async def _try_save(
 
 def _errors(result: Published | Draft | Preparing) -> list[tuple[str, str]]:
     assert isinstance(result, Draft), result
-    return [(error["path"], error["message"]) for error in result.errors]
+    return [(path_text(error["path"]), error["message"]) for error in result.errors]
 
 
 async def _warn_save(setup: Setup, acme: Acme, task: TaskId, text: str) -> tuple[str, ...]:

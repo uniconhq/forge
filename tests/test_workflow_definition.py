@@ -24,7 +24,7 @@ from forge.domain.workflow_definition import (
     references,
     whole_reference,
 )
-from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line
+from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_line, path_text
 from forge.testing import CLASSIC, RUN_WORKFLOWS
 from tests.conftest import sibling
 
@@ -42,7 +42,7 @@ def refused(document: dict[str, Any]) -> list[Problem]:
 
 
 def paths(problems: list[Problem]) -> list[str]:
-    return [problem["path"] for problem in problems]
+    return [path_text(problem["path"]) for problem in problems]
 
 
 def held(folder: Path) -> dict[str, bytes]:
@@ -73,7 +73,10 @@ def test_a_new_workflow_starts_empty_with_one_problem() -> None:
     with pytest.raises(InvalidDefinition) as raised:
         parse_run_workflow(files[WORKFLOW_FILE])
     assert raised.value.errors == [
-        {"path": "steps", "message": "A workflow needs at least one step. Add one from the tray."}
+        {
+            "path": ("steps",),
+            "message": "A workflow needs at least one step. Add one from the tray.",
+        }
     ]
 
 
@@ -134,7 +137,7 @@ def test_a_missing_key_is_refused_at_its_path() -> None:
     document = classic()
     del document["steps"]
 
-    assert refused(document) == [{"path": "steps", "message": "This is required."}]
+    assert refused(document) == [{"path": ("steps",), "message": "This is required."}]
 
 
 def test_a_key_given_twice_is_refused() -> None:
@@ -184,7 +187,7 @@ def test_only_a_number_takes_a_unit_and_the_refusal_names_the_input(kind: str, w
 
     assert stray_units(parse_run_workflow(one_line(document))) == [
         {
-            "path": "inputs.checker.unit",
+            "path": ("inputs", "checker", "unit"),
             "message": f"Only a number takes a unit, and checker is {words}. "
             "Remove the unit, or make checker a number.",
         }

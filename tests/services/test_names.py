@@ -19,6 +19,7 @@ from forge.domain.names import Named, ScopeNames
 from forge.domain.roles import Role, Scope, contest_id_of, task_id_of
 from forge.domain.workflow_definition import parse_workflow_ref
 from forge.domain.workflows import Visibility
+from forge.domain.yaml_models import path_text
 from forge.runtime.setup import Setup
 from forge.services import contests, identity, names, orgs, roles, task_save, tasks
 from forge.services.task_save import Draft, Published
@@ -58,9 +59,10 @@ async def test_an_org_a_contest_and_a_task_are_filed_under_keys_and_named_by_lab
         Named(each.id, each.name)
         for each in await contests.list_contests(setup, ada, OrgId(task.org))
     ] == [Named(contest_id_of(contest), "spring")]
-    assert await tasks.list_tasks(setup, ada, contest_id_of(contest)) == (
-        Named(task_id_of(task), "sum"),
-    )
+    assert [
+        Named(each.id, each.name)
+        for each in await tasks.list_tasks(setup, ada, contest_id_of(contest))
+    ] == [Named(task_id_of(task), "sum")]
     listed = fake.state.repos[(task.org, f"{task.contest}.contest")].files["contest.yaml"]
     assert b"id: sum" in listed
 
@@ -177,7 +179,7 @@ async def test_a_workflow_name_that_comes_to_mean_another_workflow_is_refused_at
 
     assert isinstance(again, Draft)
     (error,) = again.errors
-    assert error["path"] == "workflow"
+    assert path_text(error["path"]) == "workflow"
     assert "bob/sorting is now a different workflow" in error["message"]
 
 

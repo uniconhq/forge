@@ -286,7 +286,7 @@ class Deferred:
     whether that report gives a unit.
     """
 
-    path: str
+    path: Path
     step: str
     program: str | None
     report: str
@@ -302,7 +302,7 @@ class InputUse:
     raises a limit, and a secret given anywhere but whole to a secret port.
     """
 
-    path: str
+    path: Path
     port: Port
     raises_limit: bool
     whole: bool
@@ -317,7 +317,7 @@ class TimeLimitOrder:
     being a number or an input's id, for the task's save to compare.
     """
 
-    path: str
+    path: Path
     step: str
     longer: str
     longer_limit: int | Decimal | str
@@ -479,7 +479,7 @@ class _Checker:
     def refuse(self, at: Path, message: str) -> None:
         if not message:
             return  # a reference to a step already refused at its `use:`
-        self.problems.append(Problem(path=path_text(at), message=message))
+        self.problems.append(Problem(path=at, message=message))
 
     # Steps
 
@@ -633,9 +633,7 @@ class _Checker:
                 raise Refused(
                     f"This takes {type_in_words(port.type)}, and a report is a number or text."
                 )
-            self.deferred.append(
-                Deferred(path_text(at), kind.step, kind.program, kind.report, port)
-            )
+            self.deferred.append(Deferred(at, kind.step, kind.program, kind.report, port))
             return
         if raises_limit and kind.source in ("step", "text"):
             raise Refused("This value raises a limit, so it must be known when the task is saved.")
@@ -647,9 +645,7 @@ class _Checker:
             raise Refused("That input is optional, so it can be given only to an optional port.")
         check_value_fits_port(kind, port, raw)
         for name, whole in written:
-            self.uses.setdefault(name, []).append(
-                InputUse(path_text(at), port, raises_limit, whole)
-            )
+            self.uses.setdefault(name, []).append(InputUse(at, port, raises_limit, whole))
 
     def _raw_kind(self, raw: object) -> tuple[Kind | _Pending, list[tuple[str, bool]]]:
         """What `raw` is, and each input it gives, whole or written into
@@ -814,7 +810,7 @@ class _Checker:
         if kind.optional:
             raise Refused("That may be missing, and a named file must be there.")
         if found.kind == "inputs":
-            self.uses.setdefault(found.name, []).append(InputUse(path_text(at), port, False, True))
+            self.uses.setdefault(found.name, []).append(InputUse(at, port, False, True))
 
     def _programs(
         self,
@@ -975,7 +971,7 @@ class _Checker:
             read = parse_program(text, found.name, own_names=names)
         except InvalidDefinition as invalid:
             for problem in invalid.errors:
-                where = f", at {problem['path']}" if problem["path"] else ""
+                where = f", at {path_text(problem['path'])}" if problem["path"] else ""
                 self.refuse(at, f"{found.name}{where}: {problem['message']}")
             return WorkflowManifest(found.name, None, names)
         return WorkflowManifest(found.name, read, names)
@@ -1013,7 +1009,7 @@ class _Checker:
                     )
                 elif isinstance(first, str) or isinstance(second, str):
                     self.time_limits.append(
-                        TimeLimitOrder(path_text(where), step_id, longer, first, shorter, second)
+                        TimeLimitOrder(where, step_id, longer, first, shorter, second)
                     )
                 elif first <= second:
                     self.refuse(
@@ -1067,9 +1063,7 @@ class _Checker:
             return
         program, report = found.program, found.output
         if port is None:
-            self.deferred.append(
-                Deferred(path_text(at), step.id, program, report, None, unit is not None)
-            )
+            self.deferred.append(Deferred(at, step.id, program, report, None, unit is not None))
             pending = step.programs.get(program) if program is not None else step.program
             self.reports[name] = ResolvedReport(
                 name, step.id, program, report, None, title, unit, pending

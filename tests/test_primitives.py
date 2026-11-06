@@ -27,7 +27,7 @@ from forge.domain.primitives import (
 from forge.domain.roles import PRIMITIVE_OWNER
 from forge.domain.run_plan import retired
 from forge.domain.types import Type
-from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml
+from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, path_text
 from forge.testing import PLACEHOLDER_DIGEST, PRIMITIVES
 from tests.conftest import released, sibling
 
@@ -138,7 +138,7 @@ def test_a_primitive_and_its_ports_say_what_they_are_for() -> None:
     ],
 )
 def test_a_title_or_description_is_one_line_of_text(extra: str, path: str) -> None:
-    assert path in [problem["path"] for problem in refused(BASE + OUTCOME + extra)]
+    assert path in [path_text(problem["path"]) for problem in refused(BASE + OUTCOME + extra)]
 
 
 def test_each_seeded_primitive_says_what_each_outcome_it_reports_means() -> None:
@@ -220,7 +220,7 @@ def test_outcomes_that_are_not_a_steps_each_with_a_line_are_refused(
 ) -> None:
     problems = refused(BASE + f"outputs:\n  outcome: {{type: outcome, outcomes: {outcomes}}}\n")
 
-    assert [problem["path"] for problem in problems] == [path]
+    assert [path_text(problem["path"]) for problem in problems] == [path]
     assert message in problems[0]["message"]
 
 
@@ -238,7 +238,9 @@ def test_outcomes_on_any_port_but_the_outcome_are_refused(ports: str, path: str)
     problems = refused(BASE + ports)
 
     assert len(problems) == 1
-    assert problems[0]["path"].startswith(path) and problems[0]["path"].endswith(".outcomes")
+    assert path_text(problems[0]["path"]).startswith(path) and path_text(
+        problems[0]["path"]
+    ).endswith(".outcomes")
     assert problems[0]["message"] == (
         "Only the outcome port says what each outcome means. Remove this."
     )
@@ -261,7 +263,7 @@ def test_a_file_or_folder_port_without_runs_is_refused_naming_it(kind: str) -> N
 
     assert problems == [
         {
-            "path": "inputs.data",
+            "path": ("inputs", "data"),
             "message": f"data is a {kind} port. Say whether the primitive runs it as a "
             "program, with runs: true or runs: false.",
         }
@@ -269,9 +271,10 @@ def test_a_file_or_folder_port_without_runs_is_refused_naming_it(kind: str) -> N
 
 
 def test_a_port_given_by_its_types_name_alone_still_says_runs() -> None:
-    assert [problem["path"] for problem in refused(BASE + "inputs:\n  data: file\n" + OUTCOME)] == [
-        "inputs.data"
-    ]
+    assert [
+        path_text(problem["path"])
+        for problem in refused(BASE + "inputs:\n  data: file\n" + OUTCOME)
+    ] == ["inputs.data"]
 
 
 @pytest.mark.parametrize("kind", ["text", "number", "boolean", "enum, options: [a]"])
@@ -280,7 +283,7 @@ def test_runs_on_a_scalar_port_is_refused(kind: str) -> None:
 
     assert problems == [
         {
-            "path": "inputs.k.runs",
+            "path": ("inputs", "k", "runs"),
             "message": "This applies only to a file, folder or named_files port.",
         }
     ]
@@ -289,12 +292,16 @@ def test_runs_on_a_scalar_port_is_refused(kind: str) -> None:
 def test_runs_on_an_output_is_refused() -> None:
     problems = refused(BASE + "outputs:\n  outcome: outcome\n  out: {type: file, runs: true}\n")
 
-    assert problems == [{"path": "outputs.out.runs", "message": "This applies only to an input."}]
+    assert problems == [
+        {"path": ("outputs", "out", "runs"), "message": "This applies only to an input."}
+    ]
 
 
 def test_secret_on_an_output_is_refused_and_on_an_input_is_kept() -> None:
     problems = refused(BASE + "outputs:\n  outcome: outcome\n  log: {type: text, secret: true}\n")
-    assert problems == [{"path": "outputs.log.secret", "message": "This applies only to an input."}]
+    assert problems == [
+        {"path": ("outputs", "log", "secret"), "message": "This applies only to an input."}
+    ]
 
     declared = parse_primitive(
         BASE
@@ -334,14 +341,14 @@ def test_secret_on_an_output_is_refused_and_on_an_input_is_kept() -> None:
 def test_every_primitive_declares_its_outcome(outputs: str, path: str, message: str) -> None:
     problems = refused(BASE + outputs)
 
-    assert [problem["path"] for problem in problems] == [path]
+    assert [path_text(problem["path"]) for problem in problems] == [path]
     assert message in problems[0]["message"]
 
 
 def test_an_input_port_is_one_of_the_input_types() -> None:
     assert refused(BASE + "inputs:\n  k: outcome\n" + OUTCOME) == [
         {
-            "path": "inputs.k.type",
+            "path": ("inputs", "k", "type"),
             "message": "An input must be text, a number, true or false, an enum, a file, a "
             "folder, named files, programs or links.",
         }
@@ -373,7 +380,7 @@ def test_an_input_port_is_one_of_the_input_types() -> None:
 def test_a_retired_key_or_word_is_refused_at_its_path(text: str, path: str, sentence: str) -> None:
     problems = refused(text)
 
-    assert [problem["path"] for problem in problems] == [path]
+    assert [path_text(problem["path"]) for problem in problems] == [path]
     assert sentence in problems[0]["message"]
 
 
@@ -402,7 +409,7 @@ def test_a_retired_key_or_word_is_refused_at_its_path(text: str, path: str, sent
     ],
 )
 def test_a_declaration_that_breaks_the_format_is_refused_at_its_path(extra: str, path: str) -> None:
-    assert path in [problem["path"] for problem in refused(BASE + extra + OUTCOME)]
+    assert path in [path_text(problem["path"]) for problem in refused(BASE + extra + OUTCOME)]
 
 
 @pytest.mark.parametrize(
@@ -417,14 +424,14 @@ def test_the_six_limits_are_all_given(limits: str, path: str) -> None:
     text = BASE.replace(
         "{time_ms: 1, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1, gpus: 0}", limits
     )
-    assert [problem["path"] for problem in refused(text + OUTCOME)] == [path]
+    assert [path_text(problem["path"]) for problem in refused(text + OUTCOME)] == [path]
 
 
 def test_an_image_is_named_by_its_digest() -> None:
     local = BASE.replace("ghcr.io/uniconhq", "localhost:5000")
     assert parse_primitive(local + OUTCOME).image.startswith("localhost:5000/")
     problems = refused(BASE.replace(f"@{DIGEST}", ":latest") + OUTCOME)
-    assert [problem["path"] for problem in problems] == ["image"]
+    assert [path_text(problem["path"]) for problem in problems] == ["image"]
 
 
 # Contract 6
@@ -555,7 +562,9 @@ def test_every_primitive_deploy_pins_reads_as_it_did() -> None:
                 assert parse_primitive(with_image).schema_version == 6
                 continue
             assert version == "v1"
-            assert {"name", "version"} <= {problem["path"] for problem in refused(with_image)}
+            assert {"name", "version"} <= {
+                path_text(problem["path"]) for problem in refused(with_image)
+            }
 
 
 @pytest.mark.parametrize(
@@ -575,10 +584,12 @@ def test_the_runners_example_declarations_parse(example: str) -> None:
 def test_a_declaration_says_schema_version_6() -> None:
     assert parse_primitive(BASE + OUTCOME).schema_version == 6
     unnamed = BASE.replace("schema_version: 6\n", "")
-    assert [problem["path"] for problem in refused(unnamed + OUTCOME)] == ["schema_version"]
+    assert [path_text(problem["path"]) for problem in refused(unnamed + OUTCOME)] == [
+        "schema_version"
+    ]
     for other in ("4", "5", "7", "'6'", "true", "6.0"):
         assert refused(f"schema_version: {other}\n" + unnamed + OUTCOME) == [
-            {"path": "schema_version", "message": "This must be 6."}
+            {"path": ("schema_version",), "message": "This must be 6."}
         ]
 
 
@@ -799,8 +810,10 @@ def test_a_contract_6_declaration_that_breaks_a_rule_is_refused_saying_which(
 
     problems = refused(changed)
 
-    assert path in [problem["path"] for problem in problems]
-    assert message in next(problem["message"] for problem in problems if problem["path"] == path)
+    assert path in [path_text(problem["path"]) for problem in problems]
+    assert message in next(
+        problem["message"] for problem in problems if path_text(problem["path"]) == path
+    )
 
 
 ONCE = (
@@ -879,8 +892,10 @@ def test_once_that_breaks_a_rule_is_refused_saying_which(
 
     problems = refused(changed)
 
-    assert path in [problem["path"] for problem in problems]
-    assert message in next(problem["message"] for problem in problems if problem["path"] == path)
+    assert path in [path_text(problem["path"]) for problem in problems]
+    assert message in next(
+        problem["message"] for problem in problems if path_text(problem["path"]) == path
+    )
 
 
 def test_the_time_a_batch_step_takes_once_is_a_limit_of_its_own() -> None:
@@ -893,16 +908,17 @@ def test_the_time_a_batch_step_takes_once_is_a_limit_of_its_own() -> None:
     assert declared.limits is not None and declared.limits.once_time_ms == 40000
     assert parse_primitive(ONCE).limits.once_time_ms is None  # type: ignore[union-attr]
     assert "limits.once_time_ms" in [
-        problem["path"] for problem in refused(timed.replace("40000", "0"))
+        path_text(problem["path"]) for problem in refused(timed.replace("40000", "0"))
     ]
 
 
 def test_a_programs_port_is_called_programs() -> None:
     problems = refused(PROGRAMS_V6.replace("  programs:\n    type", "  players:\n    type"))
 
-    assert {"path": "inputs.players", "message": "A programs port must be called programs."} in (
-        problems
-    )
+    assert {
+        "path": ("inputs", "players"),
+        "message": "A programs port must be called programs.",
+    } in (problems)
 
 
 _LIMITS = "{time_ms: 1, cpu_ms: 1, memory_mb: 1, pids: 1, output_mb: 1, gpus: 0}"
@@ -937,7 +953,7 @@ def test_a_two_form_declaration_parses() -> None:
 def test_a_form_key_at_the_top_beside_forms_is_refused() -> None:
     assert refused(FORMS + f"limits: {_LIMITS}\n") == [
         {
-            "path": "limits",
+            "path": ("limits",),
             "message": "A primitive with forms gives this on each form, not here.",
         }
     ]
@@ -951,14 +967,14 @@ def test_a_fifth_form_is_refused() -> None:
             "    outputs:\n      outcome: outcome\n"
         )
     assert refused(FORMS + extra) == [
-        {"path": "forms", "message": "A primitive has at most 4 forms."}
+        {"path": ("forms",), "message": "A primitive has at most 4 forms."}
     ]
 
 
 def test_a_form_name_must_be_a_port_name() -> None:
     text = FORMS.replace("  one:\n", "  One:\n")
     [problem] = refused(text)
-    assert problem["path"] == "forms.One"
+    assert path_text(problem["path"]) == "forms.One"
     assert problem["message"].startswith("A form's name may use only")
 
 
@@ -973,7 +989,7 @@ def test_two_forms_that_each_declare_every_input_either_requires_are_refused() -
     )
     assert refused(text) == [
         {
-            "path": "forms.several",
+            "path": ("forms", "several"),
             "message": "A step giving bundle, program fits both one and several. Give one of "
             "them a required input the other does not declare.",
         }

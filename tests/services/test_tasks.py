@@ -32,7 +32,7 @@ from forge.domain.identity import PLATFORM, User
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.names import Named
 from forge.domain.roles import Role, RoleGrant, Scope
-from forge.domain.yaml_models import InvalidDefinition
+from forge.domain.yaml_models import InvalidDefinition, path_text
 from forge.runtime.setup import Setup
 from forge.services import making, names, reconcile, task_save, tasks
 from forge.services.access import Organiser
@@ -318,14 +318,17 @@ async def test_a_task_made_in_full_removes_nothing(
     assert logged(caplog, "tasks.undone") == []
 
 
-async def test_the_tasks_of_a_contest_are_listed_as_the_organiser(
+async def test_the_tasks_of_a_contest_are_listed_with_whether_the_reader_manages_each(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
     await tasks.create(setup, acme.ada, SPRING, "product")
 
     listed = await tasks.list_tasks(setup, acme.ada, SPRING)
 
-    assert listed == (Named("acme/spring/product", "product"), Named(SUM, "sum"))
+    assert listed == (
+        tasks.ListedTask("acme/spring/product", "product", may_manage=True),
+        tasks.ListedTask(SUM, "sum", may_manage=True),
+    )
     (call,) = acme.fake.calls_to("list_tasks")
     assert call.identity == acme.ada.identity
 
@@ -438,7 +441,7 @@ async def test_settings_that_do_not_read_are_told_with_their_errors(
         await tasks.standing(setup, observer, SPRING)
 
     assert invalid.value.detail.startswith("There are 4 problems with the contest's settings.")
-    assert {problem["path"] for problem in invalid.value.errors} >= {"start"}
+    assert {path_text(problem["path"]) for problem in invalid.value.errors} >= {"start"}
     with pytest.raises(NotFound):
         await tasks.standing(setup, observer, ContestId("acme/autumn"))
 

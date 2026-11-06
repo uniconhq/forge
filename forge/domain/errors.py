@@ -8,6 +8,9 @@ structured members of the refusal.
 registration being refused is not something a user can act on. `NotReady`
 is what a readiness check fails with. Everything else is a `ServiceError`,
 raised by the services.
+
+One raised inside an adapter speaks of hosts, repos and paths, so a person
+is told its code's fixed sentence instead (`said`).
 """
 
 from typing import Any
@@ -609,3 +612,31 @@ class MarkLimit(ServiceError):
     """
 
     code = "mark_limit"
+
+
+REFUSED = "This was refused. Try again, or tell whoever runs Unicon."
+ADAPTER_SAID = {
+    "not_found": "This could not be found. It may have been removed: reload the page to see "
+    "what is there now.",
+    "forbidden": REFUSED,
+    "conflict": "This changed while it was being saved. Reload the page and try again.",
+    "rejected": REFUSED,
+}
+
+
+def said(error: UniconError) -> str:
+    """What a person is told of `error`: its detail, or its code's fixed
+    sentence for a port error an adapter raised, whose detail is for the log.
+    """
+    sentence = ADAPTER_SAID.get(error.code)
+    return error.detail if sentence is None or not _from_adapter(error) else sentence
+
+
+def _from_adapter(error: BaseException) -> bool:
+    """Whether `error` was raised inside `forge.adapters`."""
+    trace = error.__traceback__
+    if trace is None:
+        return False
+    while trace.tb_next is not None:
+        trace = trace.tb_next
+    return str(trace.tb_frame.f_globals.get("__name__", "")).startswith("forge.adapters.")

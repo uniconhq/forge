@@ -20,7 +20,7 @@ from forge.domain.run_plan import RETIRED
 from forge.domain.sessions import Session
 from forge.domain.workflow_definition import WORKFLOW_FILE, parse_workflow_ref
 from forge.domain.workflows import Visibility
-from forge.domain.yaml_models import InvalidDefinition
+from forge.domain.yaml_models import InvalidDefinition, path_text
 from forge.runtime.setup import Setup
 from forge.services import primitives, workflows
 from forge.testing import CLASSIC, PRIMITIVES, RUN_WORKFLOWS
@@ -67,16 +67,16 @@ async def test_the_owner_reads_the_draft_saves_it_and_versions_it(setup: Setup, 
     bob = await _own(setup, acme)
 
     page = await workflows.view(setup, bob, "bob", "tuned")
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
     assert page.summary.editable is True
     assert page.summary.visibility is Visibility.PRIVATE
     assert page.summary.versions == ()
-    assert page.draft is not None
-    edited = page.draft.text.replace("time_limit: 3\n", "time_limit: 4\n", 1)
-    assert edited != page.draft.text
-    saved = await workflows.save(setup, bob, "bob", "tuned", edited, page.draft.token)
+    edited = draft.text.replace("time_limit: 3\n", "time_limit: 4\n", 1)
+    assert edited != draft.text
+    saved = await workflows.save(setup, bob, "bob", "tuned", edited, draft.token)
 
     assert saved.text == edited
-    assert saved.token != page.draft.token
+    assert saved.token != draft.token
     repo = acme.fake.state.repos[("bob", "tuned.workflow")]
     assert repo.files["workflow.yaml"] == edited.encode()
     assert repo.history[-1].author_id == 8
@@ -84,34 +84,32 @@ async def test_the_owner_reads_the_draft_saves_it_and_versions_it(setup: Setup, 
     later = edited.replace("time_limit: 4", "time_limit: 5", 1)
     await workflows.save(setup, bob, "bob", "tuned", later, saved.token)
 
-    assert await workflows.read_version(setup, bob, "bob/tuned@v1") == edited
+    assert (await workflows.read_version(setup, bob, "bob/tuned@v1")).text == edited
     assert (await workflows.view(setup, bob, "bob", "tuned")).summary.versions == ("v1",)
 
 
 async def test_a_save_with_a_stale_token_is_a_conflict(setup: Setup, acme: Acme) -> None:
     bob = await _own(setup, acme)
-    page = await workflows.view(setup, bob, "bob", "tuned")
-    assert page.draft is not None
-    await workflows.save(setup, bob, "bob", "tuned", page.draft.text + "\n", page.draft.token)
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
+    await workflows.save(setup, bob, "bob", "tuned", draft.text + "\n", draft.token)
 
     with pytest.raises(Conflict, match="has changed since you opened it"):
-        await workflows.save(setup, bob, "bob", "tuned", page.draft.text, page.draft.token)
+        await workflows.save(setup, bob, "bob", "tuned", draft.text, draft.token)
 
 
 async def test_a_draft_with_problems_saves_and_its_version_is_refused_at_each_path(
     setup: Setup, acme: Acme
 ) -> None:
     bob = await _own(setup, acme)
-    page = await workflows.view(setup, bob, "bob", "tuned")
-    assert page.draft is not None
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
 
-    await workflows.save(setup, bob, "bob", "tuned", BROKEN_REFERENCE, page.draft.token)
+    await workflows.save(setup, bob, "bob", "tuned", BROKEN_REFERENCE, draft.token)
     with pytest.raises(InvalidDefinition) as refused:
         await workflows.create_version(setup, bob, "bob", "tuned", "v1")
 
     assert refused.value.errors == [
         {
-            "path": "steps[1].with.files.output",
+            "path": ("steps", 1, "with", "files", "output"),
             "message": "There is no step called solver before this one.",
         }
     ]
@@ -122,14 +120,13 @@ async def test_a_version_of_a_draft_that_does_not_parse_is_refused(
     setup: Setup, acme: Acme
 ) -> None:
     bob = await _own(setup, acme)
-    page = await workflows.view(setup, bob, "bob", "tuned")
-    assert page.draft is not None
-    await workflows.save(setup, bob, "bob", "tuned", "test: {}\nsteps: []\n", page.draft.token)
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
+    await workflows.save(setup, bob, "bob", "tuned", "test: {}\nsteps: []\n", draft.token)
 
     with pytest.raises(InvalidDefinition) as refused:
         await workflows.create_version(setup, bob, "bob", "tuned", "v1")
 
-    assert {error["path"] for error in refused.value.errors} == {"test", "steps"}
+    assert {path_text(error["path"]) for error in refused.value.errors} == {"test", "steps"}
 
 
 @pytest.mark.parametrize(
@@ -201,7 +198,7 @@ async def test_a_bad_step_reference_is_named_at_its_path(setup: Setup, acme: Acm
 
     assert found == (
         {
-            "path": "steps[1].with.files.output",
+            "path": ("steps", 1, "with", "files", "output"),
             "message": "There is no step called solver before this one.",
         },
     )
@@ -212,18 +209,17 @@ async def test_a_unit_on_an_input_that_is_no_number_is_refused_by_a_check_and_a_
     setup: Setup, acme: Acme
 ) -> None:
     bob = await _own(setup, acme)
-    page = await workflows.view(setup, bob, "bob", "tuned")
-    assert page.draft is not None
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
     stray = WORKFLOW.replace(b"title: Language}", b"title: Language, unit: words}")
     assert stray != WORKFLOW
     refusal = {
-        "path": "inputs.language.unit",
+        "path": ("inputs", "language", "unit"),
         "message": "Only a number takes a unit, and language is one of a list. Remove the "
         "unit, or make language a number.",
     }
 
     found = await workflows.check(setup, bob, stray.decode())
-    await workflows.save(setup, bob, "bob", "tuned", stray.decode(), page.draft.token)
+    await workflows.save(setup, bob, "bob", "tuned", stray.decode(), draft.token)
     with pytest.raises(InvalidDefinition) as refused:
         await workflows.create_version(setup, bob, "bob", "tuned", "v1")
 
@@ -235,17 +231,16 @@ async def test_a_unit_on_a_reported_text_is_refused_by_a_check_and_a_version(
     setup: Setup, acme: Acme
 ) -> None:
     bob = await _own(setup, acme)
-    page = await workflows.view(setup, bob, "bob", "tuned")
-    assert page.draft is not None
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
     stray = WORKFLOW.replace(b"title: Compile log}", b"title: Compile log, unit: lines}")
     assert stray != WORKFLOW
     refusal = {
-        "path": "outputs.log.unit",
+        "path": ("outputs", "log", "unit"),
         "message": "Only a number takes a unit, and log is text. Remove the unit.",
     }
 
     found = await workflows.check(setup, bob, stray.decode())
-    await workflows.save(setup, bob, "bob", "tuned", stray.decode(), page.draft.token)
+    await workflows.save(setup, bob, "bob", "tuned", stray.decode(), draft.token)
     with pytest.raises(InvalidDefinition) as refused:
         await workflows.create_version(setup, bob, "bob", "tuned", "v1")
 
@@ -260,7 +255,7 @@ async def test_a_definition_that_does_not_parse_is_answered_with_its_paths(
 
     found = await workflows.check(setup, bob, "test: {input: file}\nsteps: []\nname: x\n")
 
-    assert {problem["path"] for problem in found} == {"test", "steps", "name"}
+    assert {path_text(problem["path"]) for problem in found} == {"test", "steps", "name"}
 
 
 # Who reads a workflow
@@ -376,13 +371,16 @@ async def test_an_orgs_manager_edits_its_workflow_and_its_observer_only_reads_it
 
     managed = await workflows.view(setup, ada, "acme", "tuned")
     observed = await workflows.view(setup, bob, "acme", "tuned")
+    draft = await workflows.read_draft(setup, ada, "acme", "tuned")
 
     assert managed.summary.editable is True
-    assert managed.draft is not None
     assert observed.summary.editable is False
-    assert observed.draft is None
     with pytest.raises(Forbidden, match="manager role at acme"):
-        await workflows.save(setup, bob, "acme", "tuned", "x", managed.draft.token)
+        await workflows.read_draft(setup, bob, "acme", "tuned")
+    with pytest.raises(Forbidden, match="manager role at acme"):
+        await workflows.save(setup, bob, "acme", "tuned", "x", draft.token)
+    with pytest.raises(Forbidden, match="manager role at acme"):
+        await workflows.save_values(setup, bob, "acme", "tuned", {"steps": []}, draft.token)
 
 
 # Copying
@@ -401,9 +399,8 @@ async def test_a_copy_is_the_sources_file_at_a_version_private_and_marked(
     assert repo.marked == "workflow"
     assert repo.files == CLASSIC
     assert repo.history[-1].author_id == 8
-    page = await workflows.view(setup, bob, "bob", "mine")
-    assert page.draft is not None
-    await workflows.save(setup, bob, "bob", "mine", "test: {}\n", page.draft.token)
+    draft = await workflows.read_draft(setup, bob, "bob", "mine")
+    await workflows.save(setup, bob, "bob", "mine", "test: {}\n", draft.token)
     source = acme.fake.state.repos[("unicon", "classic.workflow")]
     assert source.files == CLASSIC
 
@@ -411,10 +408,9 @@ async def test_a_copy_is_the_sources_file_at_a_version_private_and_marked(
 async def test_a_copy_takes_the_version_named_not_the_draft(setup: Setup, acme: Acme) -> None:
     bob = await _own(setup, acme)
     await workflows.create_version(setup, bob, "bob", "tuned", "v1")
-    first = await workflows.read_version(setup, bob, "bob/tuned@v1")
-    page = await workflows.view(setup, bob, "bob", "tuned")
-    assert page.draft is not None
-    await workflows.save(setup, bob, "bob", "tuned", first + "# later\n", page.draft.token)
+    first = (await workflows.read_version(setup, bob, "bob/tuned@v1")).text
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
+    await workflows.save(setup, bob, "bob", "tuned", first + "# later\n", draft.token)
 
     await workflows.copy(setup, bob, "bob/tuned@v1", "bob", "again")
 
@@ -511,7 +507,7 @@ async def test_a_tag_under_another_name_is_read_but_never_offered_as_newer(
         on_v1 = await workflows.newer_version(ctx, as_bob, parse_workflow_ref("bob/tuned@v1"))
         on_beta = await workflows.newer_version(ctx, as_bob, parse_workflow_ref("bob/tuned@beta"))
 
-    assert read == repo.files["workflow.yaml"].decode()
+    assert read.text == repo.files["workflow.yaml"].decode()
     assert listed.versions == ("beta", "v1")
     assert on_v1 is None
     assert on_beta is None
@@ -521,12 +517,9 @@ async def test_a_version_is_of_the_save_the_person_made_or_not_made(
     setup: Setup, acme: Acme
 ) -> None:
     bob = await _own(setup, acme)
-    page = await workflows.view(setup, bob, "bob", "tuned")
-    assert page.draft is not None
-    mine = await workflows.save(
-        setup, bob, "bob", "tuned", page.draft.text + "\n", page.draft.token
-    )
-    await workflows.save(setup, bob, "bob", "tuned", page.draft.text + "\n\n", mine.token)
+    draft = await workflows.read_draft(setup, bob, "bob", "tuned")
+    mine = await workflows.save(setup, bob, "bob", "tuned", draft.text + "\n", draft.token)
+    await workflows.save(setup, bob, "bob", "tuned", draft.text + "\n\n", mine.token)
 
     with pytest.raises(Conflict, match="has been saved again since your save"):
         await workflows.create_version(setup, bob, "bob", "tuned", "v1", mine.token)
@@ -591,7 +584,7 @@ async def test_a_retired_primitive_version_is_listed_with_why_and_refused_by_a_c
     for use in ("unicon/compile@v3", "unicon/exec@v1", "unicon/exec@v3"):
         retired = WORKFLOW.replace(b"use: unicon/exec@v4", f"use: {use}".encode(), 1)
         assert await workflows.check(setup, bob, retired.decode()) == (
-            {"path": "steps[0].use", "message": RETIRED},
+            {"path": ("steps", 0, "use"), "message": RETIRED},
         )
 
 
@@ -675,7 +668,7 @@ async def test_a_manifest_over_the_largest_size_is_refused_unread(setup: Setup, 
         await workflows.create_version(setup, bob, "bob", "tuned", "v1")
 
     assert refused.value.errors == [
-        {"path": "steps[1].with.manifest", "message": f"diff/program.yaml: {TOO_LARGE}"}
+        {"path": ("steps", 1, "with", "manifest"), "message": f"diff/program.yaml: {TOO_LARGE}"}
     ]
     assert acme.fake.calls_to("read_workflow_at") == []
 
@@ -695,9 +688,9 @@ async def test_a_run_workflows_path_its_commit_lacks_is_refused_by_a_version_alo
         await workflows.create_version(setup, bob, "bob", "tuned", "v1")
 
     assert refused.value.errors == [
-        {"path": "steps[1].with.source", "message": "The workflow has no folder diff/."},
+        {"path": ("steps", 1, "with", "source"), "message": "The workflow has no folder diff/."},
         {
-            "path": "steps[1].with.manifest",
+            "path": ("steps", 1, "with", "manifest"),
             "message": "The workflow has no file diff/program.yaml.",
         },
     ]
@@ -721,7 +714,7 @@ async def test_a_manifest_listed_but_not_read_as_a_file_is_refused_at_its_port(
 
     assert refused.value.errors == [
         {
-            "path": "steps[1].with.manifest",
+            "path": ("steps", 1, "with", "manifest"),
             "message": "The workflow has no file diff/program.yaml.",
         }
     ]

@@ -5,13 +5,15 @@ from pydantic import ValidationError
 
 from forge.domain.environment import Environment
 from forge.domain.environment.tools import LANGUAGES, SOURCES, VERSIONS
-from forge.domain.yaml_models import problems_of
+from forge.domain.yaml_models import path_text, problems_of
 
 
 def refusals(entry: dict[str, object]) -> list[tuple[str, str]]:
     with pytest.raises(ValidationError) as caught:
         Environment.model_validate(entry)
-    return [(problem["path"], problem["message"]) for problem in problems_of(caught.value)]
+    return [
+        (path_text(problem["path"]), problem["message"]) for problem in problems_of(caught.value)
+    ]
 
 
 def test_each_language_accepts_one_of_its_versions_and_conda_packages() -> None:

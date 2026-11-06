@@ -20,10 +20,12 @@ is on; with it off the operator creates an org from the command line with
 `create_by_operator`, which makes it the same way.
 """
 
-from forge.domain.errors import Conflict, Forbidden, NotFound, PortError
+from dataclasses import dataclass
+
+from forge.domain.errors import Conflict, Forbidden, InvalidName, NotFound, PortError
 from forge.domain.identity import CiState
 from forge.domain.ids import OrgId
-from forge.domain.names import Named, OrgProfile, service_account_name, validate_org_name
+from forge.domain.names import Named, service_account_name, validate_org_name
 from forge.domain.roles import Role, Scope, holds
 from forge.domain.sessions import Session
 from forge.log import get_logger
@@ -32,10 +34,25 @@ from forge.runtime.context import Context
 from forge.services import making, names, org_accounts
 from forge.services.access import Organiser
 from forge.services.events import EVENTS_PATH
+from forge.services.may import OrgMay, at_org
 from forge.services.passwords import new_password
 from forge.settings import Settings
 
 log = get_logger(__name__)
+
+DISPLAY_NAME_MAX = 100
+
+
+@dataclass(frozen=True, slots=True)
+class Org:
+    """An org as its organisers read it: the name it is shown under, none
+    while it has none of its own, its description, and what the reader may
+    do there.
+    """
+
+    display_name: str | None
+    description: str
+    may: OrgMay
 
 
 @action
@@ -147,12 +164,17 @@ async def update(
             f"This needs the admin role at {named.name}. Ask an admin of {named.name} if you "
             "need it."
         )
+    if display_name is not None and len(display_name) > DISPLAY_NAME_MAX:
+        raise InvalidName(
+            f"An org's display name can be at most {DISPLAY_NAME_MAX} characters. "
+            "Choose a shorter one."
+        )
     await ctx.forge.orgs.update_org(org, description=description, display_name=display_name)
     log.info("orgs.updated", org=org, user_id=organiser.user.id)
 
 
 @action
-async def read(ctx: Context, organiser: Organiser, org: OrgId) -> OrgProfile:
+async def read(ctx: Context, organiser: Organiser, org: OrgId) -> Org:
     """The org's display name and description as they stand at the forge,
     read as the platform, for an organiser holding any role in the org, at
     the org or at anything in it.
@@ -162,7 +184,8 @@ async def read(ctx: Context, organiser: Organiser, org: OrgId) -> OrgProfile:
         raise Forbidden(
             f"This needs a role in {named.name}. Ask an admin of {named.name} if you need one."
         )
-    return await ctx.forge.orgs.read_org(org)
+    profile = await ctx.forge.orgs.read_org(org)
+    return Org(profile.display_name, profile.description, at_org(organiser.grants, Scope(org)))
 
 
 async def _reserve(ctx: Context, name: str) -> OrgId:
