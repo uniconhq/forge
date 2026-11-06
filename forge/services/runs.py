@@ -30,7 +30,7 @@ from forge.domain.errors import (
     VariablesDiffer,
 )
 from forge.domain.grading import InboundAnswer, InboundRequest, PipelineRun, PipelineSpec
-from forge.domain.ids import OrgId
+from forge.domain.ids import OrgId, RunId
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -59,9 +59,11 @@ async def config(ctx: Context, request: InboundRequest) -> InboundAnswer:
     """
     looked_up: list[uuid.UUID] = []
 
-    async def lookup(grading: str | None, org: OrgId) -> tuple[PipelineRun, PipelineSpec]:
+    async def lookup(
+        grading: str | None, org: OrgId, asked: RunId | None
+    ) -> tuple[PipelineRun, PipelineSpec]:
         try:
-            run, spec = await pipelines.lookup(ctx, grading, org)
+            run, spec = await pipelines.lookup(ctx, grading, org, asked)
         except Unavailable as exc:
             raise _ForgeDown(exc) from None
         looked_up.append(run.grading)

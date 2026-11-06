@@ -273,28 +273,31 @@ PIPELINE_SPEC = PipelineSpec(
 )
 
 
-def _dispatch_body(variables: dict[str, str]) -> bytes:
+def _dispatch_body(variables: dict[str, str], number: int = 7) -> bytes:
     return json.dumps(
         {
             "repo": {
+                "id": 6,
                 "owner": "acme",
                 "name": "unicon-dispatch",
                 "full_name": "acme/unicon-dispatch",
                 "clone_url": "http://forgejo:3000/acme/unicon-dispatch.git",
             },
-            "pipeline": {"event": "manual", "number": 7, "variables": variables},
+            "pipeline": {"event": "manual", "number": number, "variables": variables},
         }
     ).encode()
 
 
 def _pipelines(
     run: PipelineRun = PIPELINE,
-    seen: list[tuple[str | None, OrgId]] | None = None,
+    seen: list[tuple[str | None, OrgId, RunId | None]] | None = None,
     spec: PipelineSpec = PIPELINE_SPEC,
 ) -> PipelineLookup:
-    async def lookup(grading: str | None, org: OrgId) -> tuple[PipelineRun, PipelineSpec]:
+    async def lookup(
+        grading: str | None, org: OrgId, asked: RunId | None
+    ) -> tuple[PipelineRun, PipelineSpec]:
         if seen is not None:
-            seen.append((grading, org))
+            seen.append((grading, org, asked))
         return run, spec
 
     return lookup
@@ -310,10 +313,14 @@ async def test_a_signed_request_is_answered_for_the_pipeline_it_asks_about(
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
 
-    seen: list[tuple[str | None, OrgId]] = []
+    seen: list[tuple[str | None, OrgId, RunId | None]] = []
     await woodpecker.grading.answer(_signed(key, _asked()), _pipelines(seen=seen), now=NOW)
+    await woodpecker.grading.answer(
+        _signed(key, _dispatch_body(PIPELINE_VARIABLES, number=0)), _pipelines(seen=seen), now=NOW
+    )
 
-    assert seen == [(str(GRADING), "acme")]
+    # A restart names the old pipeline; a pipeline with no number names none.
+    assert seen == [(str(GRADING), "acme", RunId("6/7")), (str(GRADING), "acme", None)]
     assert recorder.headers("GET", "/api/signature/public-key") == ["Bearer ci-admin"]
 
 
@@ -440,7 +447,9 @@ async def test_what_the_platform_refuses_is_refused_and_nothing_is_answered(
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
 
-    async def refused(grading: str | None, org: OrgId) -> tuple[PipelineRun, PipelineSpec]:
+    async def refused(
+        grading: str | None, org: OrgId, asked: RunId | None
+    ) -> tuple[PipelineRun, PipelineSpec]:
         raise CiRequestRefused("not this one")
 
     with pytest.raises(CiRequestRefused):
@@ -452,7 +461,7 @@ async def test_a_request_that_does_not_verify_is_never_looked_up(
 ) -> None:
     key, other = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
-    seen: list[tuple[str | None, OrgId]] = []
+    seen: list[tuple[str | None, OrgId, RunId | None]] = []
 
     with pytest.raises(Forbidden):
         await woodpecker.grading.answer(_signed(other, _asked()), _pipelines(seen=seen), now=NOW)
@@ -511,7 +520,7 @@ async def test_a_pipeline_is_answered_with_its_checkout_and_each_step_a_plugin(
     """#630: no step carries `depends_on`, so they run in their order."""
     key = Ed25519PrivateKey.generate()
     recorder.on("GET", "/api/signature/public-key", _pem_answer(key))
-    seen: list[tuple[str | None, OrgId]] = []
+    seen: list[tuple[str | None, OrgId, RunId | None]] = []
 
     answer = await woodpecker.grading.answer(
         _signed(key, _dispatch_body(PIPELINE_VARIABLES)),
@@ -523,7 +532,7 @@ async def test_a_pipeline_is_answered_with_its_checkout_and_each_step_a_plugin(
     )
 
     assert answer == again and answer.content_type == "application/json"
-    assert seen == [(str(GRADING), "acme")]
+    assert seen == [(str(GRADING), "acme", RunId("6/7"))]
     [config] = json.loads(answer.body)["configs"]
     assert yaml.safe_load(config["data"]) == {
         "when": [{"event": "manual"}],
