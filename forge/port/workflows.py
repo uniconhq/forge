@@ -187,6 +187,14 @@ class WorkflowPort(Protocol):
         """Read the file's bytes, resolving an upload, refusing more than max_size."""
         ...
 
+    async def read_workflow_media_prefix(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str, *, size: int
+    ) -> bytes:
+        """Read the file's first `size` bytes, resolving an upload, or the
+        whole file when it is shorter. A file of any length is read.
+        """
+        ...
+
     async def read_workflow_file(
         self, as_: Identity, workflow: WorkflowId, version: str, path: str
     ) -> File:

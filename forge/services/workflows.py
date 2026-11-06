@@ -40,6 +40,7 @@ stop half done; a version is made only of a draft that passes every check a
 version must (TASK-FORMAT.md section 1.3), and a version never changes.
 """
 
+import codecs
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -83,6 +84,7 @@ from forge.domain.uploads import (
     Door,
     UploadStatus,
     filename_problem,
+    is_pointer,
     may_be_pointer,
     pointer_text,
     refuse_pointer,
@@ -115,6 +117,11 @@ log = get_logger(__name__)
 MAX_DEFINITION = 256 * 1024
 """The most a `workflow.yaml` holds, in bytes: a definition is a few dozen
 lines, and a page sends it after every change."""
+
+README_PREFIX = 64 * 1024
+"""How much of a README its search description is made from, in bytes: the
+description is at most 2,048 characters of its first paragraph, so a
+README of any length gets one from its start."""
 
 EDIT_MESSAGE = "Edit workflow.yaml"
 
@@ -461,15 +468,21 @@ async def create_version(
 
 
 async def _describe_at(ctx: Context, as_: Identity, workflow: WorkflowId, at: VersionId) -> bool:
+    """Set the workflow's description from the start of its README at `at`,
+    read as UTF-8 with a last character the prefix cut short left out. A
+    README whose upload the forge does not hold reads back as its pointer,
+    and counts as no README.
+    """
     try:
-        content = await ctx.forge.workflows.read_workflow_media(
-            as_, workflow, at, "README.md", max_size=MAX_DEFINITION
+        content = await ctx.forge.workflows.read_workflow_media_prefix(
+            as_, workflow, at, "README.md", size=README_PREFIX
         )
     except NotFound, Rejected:
         return False
-    await ctx.forge.workflows.set_workflow_description(
-        workflow, description_of(content.decode("utf-8", errors="replace"))
-    )
+    if is_pointer(content):
+        return False
+    text = codecs.getincrementaldecoder("utf-8")(errors="replace").decode(content)
+    await ctx.forge.workflows.set_workflow_description(workflow, description_of(text))
     return True
 
 

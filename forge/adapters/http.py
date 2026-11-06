@@ -159,6 +159,30 @@ class Http[C]:
         except httpx.HTTPError as exc:
             raise Unavailable(f"no answer from {path}: {type(exc).__name__}") from exc
 
+    async def read_prefix(self, as_: C, path: str, *, params: Params | None, size: int) -> bytes:
+        """The first `size` bytes of a GET's body as `as_`, or the whole body
+        when it is shorter, asked for as a range. A server may answer the
+        range or the whole body, so the read stops at `size` bytes either way
+        and closes the connection, and a large file is never refused. Not
+        retried.
+        """
+        headers = {"Authorization": await self._auth.header(as_), "Range": f"bytes=0-{size - 1}"}
+        try:
+            async with self._client.stream("GET", path, params=params, headers=headers) as response:
+                if response.status_code >= SERVER_ERROR:
+                    raise Unavailable(f"{path} answered {response.status_code}")
+                if not response.is_success:
+                    await response.aread()
+                    raise refusal(response)
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) >= size:
+                        break
+                return bytes(body[:size])
+        except httpx.HTTPError as exc:
+            raise Unavailable(f"no answer from {path}: {type(exc).__name__}") from exc
+
     async def put_stream(
         self, path: str, content: AsyncIterable[bytes], *, headers: Mapping[str, str]
     ) -> None:

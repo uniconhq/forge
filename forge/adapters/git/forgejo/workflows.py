@@ -254,6 +254,16 @@ class ForgejoWorkflows:
             as_, ref.owner, ref.repo, path, at=str(at), max_size=max_size
         )
 
+    async def read_workflow_media_prefix(
+        self, as_: Identity, workflow: WorkflowId, at: VersionId, path: str, *, size: int
+    ) -> bytes:
+        ref = parse_workflow(workflow)
+        await self._require_mark(as_, ref)
+        _require_commit(at)
+        return await self._repos.read_raw_prefix(
+            as_, ref.owner, ref.repo, path, at=str(at), size=size
+        )
+
     async def read_workflow_file(
         self, as_: Identity, workflow: WorkflowId, version: str, path: str
     ) -> File:
