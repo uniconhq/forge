@@ -253,19 +253,66 @@ class Axis(Model):
         return found
 
 
-class ShowTimes(Model):
-    """A task's `show` (SIMPLER-CORE.md 9.4): the values, groups and
-    task files entrants see as soon as a grading ends, at the reveal, and
-    once staff release the task's results.
+Name = Annotated[str, Field(min_length=1)]
+
+ALWAYS = "always"
+AFTER_DEADLINE = "after_deadline"
+AFTER_RELEASE = "after_release"
+MOMENTS = (ALWAYS, AFTER_DEADLINE, AFTER_RELEASE)
+"""The moments of a task's `show`, in the order it is written: as soon as
+a grading ends, once the task has closed for everyone, and while its
+results are released. The two later ones are not ordered against each
+other, since a release may come before the deadline."""
+
+
+class ShownRuns(Model):
+    """One entry of a moment's `runs`: the runs it picks, `of` a group, `all`
+    or `first_not_passed`, and the `fields` it shows of each, each a run's
+    own input (a `repeat` column) or one of its outputs, by its name.
     """
 
-    now: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
-    after_close: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
-    on_release: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
+    of: Name
+    fields: list[Name] = Field(min_length=1)
 
-    def lists(self) -> dict[str, list[str]]:
-        """Each time's entries, earliest first."""
-        return {"now": self.now, "after_close": self.after_close, "on_release": self.on_release}
+
+class Shown(Model):
+    """What one moment of a task's `show` shows (SIMPLER-CORE.md 9.4): its
+    values by name, its settings (`inputs`), what its steps done once give
+    (`outputs`, `compiled` among them), and the runs it picks, each with the
+    fields it shows. Nothing is shown unless it is named here.
+    """
+
+    values: list[Name] = Field(default_factory=list)
+    inputs: list[Name] = Field(default_factory=list)
+    outputs: list[Name] = Field(default_factory=list)
+    runs: list[ShownRuns] = Field(default_factory=list)
+
+    @property
+    def empty(self) -> bool:
+        """Whether it shows nothing."""
+        return not (self.values or self.inputs or self.outputs or self.runs)
+
+
+class ShowTimes(Model):
+    """A task's `show` (SIMPLER-CORE.md 9.4): what entrants see `always`, as
+    soon as a grading ends and, for inputs, whenever the statement is
+    visible; `after_deadline`, once the task has closed for everyone; and
+    `after_release`, while staff have released the task's results. Each
+    moment shows its own list once it has come, so an entrant sees the
+    lists of every moment that has.
+    """
+
+    always: Shown = Shown()
+    after_deadline: Shown = Shown()
+    after_release: Shown = Shown()
+
+    def moments(self) -> dict[str, Shown]:
+        """Each moment's list, in the order of `MOMENTS`."""
+        return {
+            ALWAYS: self.always,
+            AFTER_DEADLINE: self.after_deadline,
+            AFTER_RELEASE: self.after_release,
+        }
 
 
 class Scoring(Model):

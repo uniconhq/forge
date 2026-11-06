@@ -61,13 +61,13 @@ REVIEWED = (
         "    total:\n",
     )
     .replace(
-        "now: [sample_score, sample_time, sample_tests, samples/]",
-        "now: [sample_score, sample_time, sample_tests, samples/, review, reviewed]",
+        "values: [sample_score, sample_time]",
+        "values: [sample_score, sample_time, review, reviewed]",
     )
 )
 """islands with a reviewer's mark out of 10, and a value reading it, both
-listed under `now`."""
-LATER = REVIEWED.replace("samples/, review, reviewed]", "samples/]")
+listed under `always`."""
+LATER = REVIEWED.replace("sample_time, review, reviewed]", "sample_time]")
 """REVIEWED with the mark and what reads it listed under no time, so a
 save may drop them."""
 CONTEST = Scope("acme", "spring")
@@ -379,7 +379,7 @@ BEST = LIVE + (
 which is shown only after the close."""
 END = datetime(2026, 9, 26, 15, 0, tzinfo=UTC)
 WRONG_LATE = _result({"r3": "accepted", "r4": "wrong_answer"})
-UNSHOWN = REVIEWED.replace("after_close: [st1, st2, total, all]", "after_close: [st1, st2, all]")
+UNSHOWN = REVIEWED.replace("values: [st1, st2, total]", "values: [st1, st2]")
 """REVIEWED with a total no entrant is ever shown."""
 
 
@@ -613,7 +613,7 @@ GIVEN = UNSHOWN.replace(
     "    total:\n",
     "    given: {block: if, test: {value: sample_score}, then: 1, else: {value: review}}\n"
     "    total:\n",
-).replace("samples/, review, reviewed]", "samples/, review, reviewed, given]")
+).replace("sample_time, review, reviewed]", "sample_time, review, reviewed, given]")
 """UNSHOWN with a value that reads the mark only when the sample score is
 0, and is 1 otherwise."""
 LATEST_BY_TOTAL = BEST.replace(

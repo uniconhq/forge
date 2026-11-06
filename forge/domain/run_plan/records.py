@@ -2,6 +2,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, PlainValidator
 
+from forge.domain.definitions import AFTER_RELEASE, ALWAYS
 from forge.domain.plan_basics import FLAT_STEP_ID
 from forge.domain.roles import PRIMITIVE_OWNER
 from forge.domain.run_task import RUN_ID
@@ -59,9 +60,9 @@ _READS: dict[StepClass, tuple[bool, bool]] = {
 }
 """What a step of each class reads: the entrant's inputs, and a repeated
 input."""
-SHOWN_DURING = ("now", "on_release")
-"""The times of `show` that count as during the contest: a release has no
-time, so it is refused as if shown `now`, though it makes no run early."""
+SHOWN_DURING = (ALWAYS, AFTER_RELEASE)
+"""The moments of `show` that count as during the contest: a release has no
+time, so it is refused as if shown `always`, though it makes no run early."""
 BOXED: dict[str, tuple[str, ...]] = {
     "unicon/exec": ("source", "files", "loads"),
 }

@@ -4,8 +4,15 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal
 
+from forge.domain.blocks.catalogue import ALL
 from forge.domain.content import named_by
-from forge.domain.definitions import DEFAULT_MAX_SIZE, Scoring, TaskDefinition
+from forge.domain.definitions import (
+    AFTER_RELEASE,
+    DEFAULT_MAX_SIZE,
+    PUBLIC_FOLDER,
+    Scoring,
+    TaskDefinition,
+)
 from forge.domain.grading import WALL_CEILING, Machine, wall_of
 from forge.domain.plan_basics import ReportEntry, StepLimits
 from forge.domain.port_values import escaped, scalar_to_text
@@ -28,7 +35,14 @@ from forge.domain.run_plan.models import (
     PipelineStep,
     RunStep,
 )
-from forge.domain.run_plan.plan_helpers import _declared, _number, _pages, _references_in, _words
+from forge.domain.run_plan.plan_helpers import (
+    _declared,
+    _number,
+    _pages,
+    _references_in,
+    _words,
+    step_class,
+)
 from forge.domain.run_plan.records import (
     _READS,
     _UNSHOWN,
@@ -49,7 +63,16 @@ from forge.domain.run_plan.records import (
     PipelineKind,
     StepClass,
 )
-from forge.domain.run_task import SHOWN_WORDS, Part, RunTask, file_time, show_names
+from forge.domain.run_task import (
+    FIRST_NOT_PASSED,
+    SHOWN_WORDS,
+    Part,
+    RunTask,
+    listed,
+    once_problems,
+    picks,
+    results,
+)
 from forge.domain.run_workflow import ResolvedStep, RunWorkflowCheck
 from forge.domain.types import FILES, Type
 from forge.domain.workflow_definition import SELF_REPORTED, RunWorkflow, references, whole_reference
@@ -146,12 +169,7 @@ class _Planner:
 
     def bind(self, step_id: str, given: Mapping[str, Any]) -> None:
         resolved = self.checked.steps[step_id]
-        found = _references_in(given.values())
-        read = list(dict.fromkeys(each.name for each in found if each.kind == "steps"))
-        inputs = {each.name for each in found if each.kind == "inputs"}
-        entrant = bool(inputs & self.entrant) or any(_READS[self.classes[s]][0] for s in read)
-        repeated = bool(inputs & self.repeated) or any(_READS[self.classes[s]][1] for s in read)
-        kind = next(name for name, flags in _READS.items() if flags == (entrant, repeated))
+        kind, read = step_class(given, self.entrant, self.repeated, self.classes)
         self.classes[step_id] = kind
         self.reads[step_id] = read
         self.raising[step_id] = self._raising(resolved, given)
@@ -289,7 +307,7 @@ class _Planner:
             assert isinstance(given, str)
             value = {"task": given}
             self.given_by.setdefault(given, name)
-            return value, [value] if self._hidden(given) else []
+            return value, [value] if self._hidden(given, name, run) else []
         return {"value": scalar_to_text(given) if port.type is Type.TEXT else given}, []
 
     def _written(self, raw: str, run: Any) -> dict[str, Any]:
@@ -333,9 +351,24 @@ class _Planner:
             return given
         return _ABSENT
 
-    def _hidden(self, path: str) -> bool:
-        """Whether entrants are not shown a task file during the contest."""
-        return file_time(self.scoring, path) not in SHOWN_DURING
+    def _hidden(self, path: str, name: str, run: Any) -> bool:
+        """Whether entrants are not shown a task file during the contest: one
+        under `public/` is served with the statement, and one the input
+        `name` gives in `run` is shown when `show` shows that input then, as
+        a setting or as a field of a run entry holding `run`. One a run
+        entry of `first_not_passed` may show is hidden, since which run it
+        shows is not known before the grading.
+        """
+        if path.startswith(PUBLIC_FOLDER):
+            return False
+        if name in listed(self.scoring.show, "inputs", SHOWN_DURING):
+            return False
+        if run is None:
+            return True
+        for of, fields in picks(self.scoring.show, SHOWN_DURING).items():
+            if name in fields and of != FIRST_NOT_PASSED and run.id in self.task.groups.get(of, ()):
+                return False
+        return True
 
     def _self_reported(self, resolved: ResolvedStep) -> bool:
         """Whether the entrant's code reaches the step's own program given a
@@ -794,7 +827,7 @@ class _Planner:
     def _early_once(self, any_early: bool, *, released: bool = False) -> set[str]:
         """The steps done once per grading in the early pipeline: every one
         when a run is early, since every run's verdict reads each; when none
-        is but `compiled`, or a value reading it, is shown `now`, those
+        is but `compiled`, or a value reading it, is shown `always`, those
         done once per grading that compile the entrant's code, which
         `compiled` reads, and the steps done once per grading they read; a
         step that compiles it only with the runs is refused then
@@ -1001,22 +1034,22 @@ class _Planner:
             None,
         )
         problems: list[Problem] = []
-        for time, index, entry in self._shown():
-            if tainted is not None and self._runs_read(entry):
+        for time, at, entry, runs in self._shown():
+            if tainted is not None and runs:
                 chain, beside = self._chain(tainted, None)
                 why = "every run reads " + ", which reads ".join(f"`{step}`" for step in chain)
                 why += f", which runs the entrant's code beside {_words(beside)}"
                 why += _UNSHOWN.format(entry=entry)
-            elif self.task.reads_compiled(entry):
-                why = self._compiled_problem(entry, released=time == "on_release")
+            elif at[0] != "runs" and self.task.reads_compiled(entry):
+                why = self._compiled_problem(entry, released=time == AFTER_RELEASE)
             else:
                 continue
             if why:
                 problems.append(
                     Problem(
-                        path=path_text(("scoring", "show", time, index)),
+                        path=path_text(("scoring", "show", time, *at)),
                         message=f"{entry} cannot be shown {SHOWN_WORDS[time]}: {why}. Show "
-                        f"{entry} after_close instead.",
+                        f"{entry} after_deadline instead.",
                     )
                 )
         return problems
@@ -1081,8 +1114,7 @@ class _Planner:
         little about the hidden input through it (15.4).
         """
         found: list[str] = []
-        for _, _, entry in self._shown():
-            runs = self._runs_read(entry)
+        for _, _, entry, runs in self._shown():
             example = next(
                 (
                     (run.id, step.id)
@@ -1122,44 +1154,43 @@ class _Planner:
             assert tainted is not None
         return chain, tainted["beside"]
 
-    def shown_reports(self) -> list[Problem]:
-        """A report `show` lists by itself that a step gives for each run,
-        which is shown with the runs of the groups `show` lists (stage 5
-        section 6 item 30); one a step done once gives, or an output its
-        declaration says is the same for every item, is shown by itself. An
-        entry naming a group or a value names that.
+    def shown_outputs(self) -> list[Problem]:
+        """An output `show` lists under `outputs` that a step gives for each
+        run, and a field of a run entry that is an output given once, by a
+        step done once or as the same for every item (`once_problems`):
+        whether an output is either is known from the steps' classes.
         """
-        names = show_names(self.scoring)
-        problems: list[Problem] = []
-        for time, entries in self.scoring.show.lists().items():
-            for index, entry in enumerate(entries):
-                report = self.checked.reports.get(entry)
-                if (
-                    report is None
-                    or entry in names
-                    or self.classes[report.step] in ONCE
-                    or (report.port is not None and report.port.once is True)
-                ):
-                    continue
-                problems.append(
-                    Problem(
-                        path=path_text(("scoring", "show", time, index)),
-                        message=f"{entry} is reported for each run, so it is shown with the runs "
-                        "of the groups show lists. Remove it.",
-                    )
-                )
-        return problems
+        once = {
+            name
+            for name, report in self.checked.reports.items()
+            if self.classes[report.step] in ONCE
+            or (report.port is not None and report.port.once is True)
+        }
+        return [
+            Problem(path=path_text(("scoring", "show", *at)), message=message)
+            for at, message in once_problems(self.scoring.show, self.checked.reports, once)
+        ]
 
-    def _shown(self) -> Iterable[tuple[str, int, str]]:
-        """Each entry of `show` during the contest, with its time and place."""
-        lists = self.scoring.show.lists()
+    def _shown(self) -> Iterable[tuple[str, Path, str, set[str]]]:
+        """Each value, run entry showing results and `compiled` that `show`
+        lists during the contest, with its moment, where in that moment's
+        lists it is, its name and the runs it reads: a run entry's own, and
+        every run for `first_not_passed`.
+        """
+        columns = self.task.columns
         for time in SHOWN_DURING:
-            for index, entry in enumerate(lists.get(time, [])):
-                yield time, index, entry
+            shown = self.scoring.show.moments()[time]
+            for index, entry in enumerate(shown.values):
+                yield time, ("values", index), entry, self._runs_read(entry)
+            for index, entry in enumerate(shown.outputs):
+                if entry == COMPILED:
+                    yield time, ("outputs", index), entry, set()
+            for index, each in enumerate(shown.runs):
+                if results(each.of, each.fields, columns):
+                    of = ALL if each.of == FIRST_NOT_PASSED else each.of
+                    yield time, ("runs", index), each.of, set(self.task.groups.get(of, ()))
 
     def _runs_read(self, entry: str) -> set[str]:
-        if entry in self.task.groups:
-            return set(self.task.groups[entry])
         if entry in self.task.values.reads:
             groups = self.task.values.through(entry).groups
             return {run for group in groups for run in self.task.groups.get(group, ())}

@@ -6,13 +6,16 @@ run that faulted makes its values wait, told through an early run and not
 through a late one; a run still to come waits, and one never run is
 missing; until the reveal an entrant reads the early row alone, whatever
 the late row does, a run a later save added never waits, and a value a
-save moved to `now` is missing where it read a run the grading ran late;
+save moved to `always` is missing where it read a run the grading ran late;
 the facts
 count from the due and the start, 0 before, and `compiled` reads an
 untainted compile done once, waiting while a row is still to run it;
-what is shown before and after the reveal;
+what is shown before and after the deadline, and with a release, each
+moment apart; a run entry shows the fields it names and nothing else,
+`first_not_passed` the first run that did not pass, and a shared input a
+file by its path;
 an entrant's texts are read by where they are shown, never by the output
-that holds them; a key's file not yet shown is never named; a value
+that holds them; no entrant is sent a run's id; a value
 reading a column the entrant could set is marked; a task with nothing
 shown during the contest says so; and organisers see everything at once,
 a run the live publication dropped among it.
@@ -36,10 +39,11 @@ from forge.domain.run_results import (
     run_grading,
     worked_out,
 )
-from forge.domain.run_showing import Shown, TextAt, addresses, bare, shown, texts
+from forge.domain.run_showing import Shown, TextAt, addresses, bare, shown, shown_file, texts
 from forge.domain.run_task import Run
+from forge.domain.types import Type
 from tests.conftest import released
-from tests.test_run_task import CARTPOLE_TASK, ISLANDS
+from tests.test_run_task import CARTPOLE_TASK, ISLANDS, ISLANDS_AFTER, ISLANDS_ALWAYS
 
 COLUMNS = {
     "score": Column(Better.HIGHER, Fraction(0), Fraction(1)),
@@ -54,12 +58,6 @@ ISLAND_RUNS = (
     Run("r3", {"input": "tests/3.in", "answer": "tests/3.ans"}, False),
     Run("r4", {"input": "tests/4.in", "answer": "tests/4.ans"}, False),
 )
-ISLAND_FILES = frozenset(
-    f"{folder}/{n}.{kind}"
-    for folder, numbers in (("samples", (1, 2)), ("tests", (3, 4)))
-    for n in numbers
-    for kind in ("in", "ans")
-)
 CARTPOLE_RUNS = tuple(
     Run(f"r{n}", {"env": env, "seed": seed}, True)
     for n, (env, seed) in enumerate(
@@ -67,8 +65,12 @@ CARTPOLE_RUNS = tuple(
     )
 )
 LOG = {"output": "0199a2c1-0000-7000-8000-000000000001", "name": "log"}
-LOG_SHOWN = ISLANDS.replace("sample_tests, samples/]", "sample_tests, samples/, log]")
-"""islands showing the compile log with its runs."""
+SAMPLE_FIELDS = "fields: [input, answer, verdict, passed, score, time_ms]"
+LOG_SHOWN = ISLANDS.replace(
+    "      values: [sample_score, sample_time]\n",
+    "      values: [sample_score, sample_time]\n      outputs: [compiled, log]\n",
+).replace(SAMPLE_FIELDS, "fields: [input, answer, verdict, passed, message, score, time_ms]")
+"""islands showing `compiled`, the compile log and each sample's message."""
 
 
 def _scoring(text: str) -> Scoring:
@@ -156,28 +158,32 @@ def _seen(
     scored: Scored,
     *,
     revealed: bool = False,
+    released: bool = False,
     everything: bool = False,
     text: str = ISLANDS,
     runs: Sequence[Run] = ISLAND_RUNS,
-    files: frozenset[str] = ISLAND_FILES,
     self_reported: frozenset[str] = frozenset(),
     late: frozenset[str] = frozenset(),
     titles: Mapping[str, tuple[str | None, ...]] | None = None,
     meanings: Mapping[str, tuple[str | None, str | None]] | None = None,
+    settings: Mapping[str, object] | None = None,
+    kinds: Mapping[str, Type] | None = None,
 ) -> Shown:
     return shown(
         _scoring(text),
         runs,
-        files,
         scored.whole,
         lambda: scored.alone,
         self_reported,
         revealed=revealed,
+        released=released,
         everything=everything,
         late=late,
         titles=titles,
         axes=_axes(text),
         meanings=meanings,
+        settings=settings,
+        kinds=kinds,
     )
 
 
@@ -281,7 +287,7 @@ def test_before_the_reveal_only_nows_entries_are_shown_and_after_it_after_closes
         ("all", 3),
         ("all", 4),
     ]
-    # No entry of show lists tests/, so a run's tuple never names its files.
+    # The entry of all names no input, so its runs' tuples name none.
     assert [run["tuples"] for run in after.runs[4:]] == [
         [{"title": None, "key": {}}],
         [{"title": None, "key": {}}],
@@ -293,18 +299,21 @@ def test_a_run_serves_one_tuple_per_axis_and_each_output_by_its_title() -> None:
         Run("r1", {"env": "cartpole", "seed": 1}, True),
         Run("r2", {"env": "cartpole-wind", "seed": 2}, True),
     )
+    text = CARTPOLE_TASK.replace(
+        "fields: [env, seed, verdict, passed, reward]",
+        "fields: [env, seed, verdict, passed, score, time_ms]",
+    )
     scored = _islands(
         _row({"r1": "accepted", "r2": ("wrong_answer", {})}),
         None,
-        text=CARTPOLE_TASK,
+        text=text,
         runs=runs,
     )
 
     seen = _seen(
         scored,
-        text=CARTPOLE_TASK,
+        text=text,
         runs=runs,
-        files=frozenset(),
         revealed=True,
         titles={"r1": ("Big grid", None)},
         meanings={"time_ms": ("Run time", "ms"), "score": (None, None)},
@@ -352,11 +361,11 @@ def test_a_run_that_faulted_is_told_being_checked_through_an_early_run_only() ->
     seen = _seen(early_fault)
     assert _values(seen) == {"sample_score": "waiting", "sample_time": "waiting"}
     assert [run["verdict"] for run in seen.runs] == ["accepted", "system_error"]
-    # Through a late run: nothing until that run is shown, after the close.
+    # Through a late run: nothing until that run is shown, after the deadline.
     assert _values(_seen(late_fault)) == {"sample_score": 1, "sample_time": 12}
-    # After it, while no group shows r4, st2 and total stay untold.
+    # After it, while no run entry shows r4, st2 and total stay untold.
     unlisted = ISLANDS.replace(
-        "after_close: [st1, st2, total, all]", "after_close: [st1, st2, total]"
+        "      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]\n", ""
     )
     assert _values(_seen(late_fault, revealed=True, text=unlisted)) == {
         "sample_score": 1,
@@ -396,7 +405,6 @@ def test_until_the_reveal_an_entrant_reads_the_early_row_alone_whatever_the_late
         "      - {answer: tests/4.ans, input: tests/4.in}\n      - [samples/5.in, samples/5.ans]",
     )
     runs = (*ISLAND_RUNS, Run("r5", {"input": "samples/5.in", "answer": "samples/5.ans"}, True))
-    files = ISLAND_FILES | {"samples/5.in", "samples/5.ans"}
     early = _row({"r1": "accepted", "r2": "accepted"}, outcomes={"compile": "accepted"}, log=True)
     late_rows: dict[str, Mapping[str, Any] | None] = {
         "pending": None,
@@ -414,7 +422,7 @@ def test_until_the_reveal_an_entrant_reads_the_early_row_alone_whatever_the_late
         waiting = frozenset({"r3", "r4"}) if name in ("pending", "faulted") else frozenset()
         scored = _islands(early, late, waiting=waiting, text=text, runs=runs)
         assert scored.whole.grading.read["r5"].verdict == NOT_RUN
-        seen[name] = _seen(scored, text=text, runs=runs, files=files)
+        seen[name] = _seen(scored, text=text, runs=runs)
 
     first = seen["pending"]
     assert _values(first) == {"sample_score": Fraction(2, 3), "sample_time": None}
@@ -431,14 +439,14 @@ def test_until_the_reveal_an_entrant_reads_the_early_row_alone_whatever_the_late
 MOVED = {
     "groups": {"samples": {"input": "a"}},
     "values": {"total": {"block": "sum", "over": {"runs": "all"}, "of": {"run": ["all", "score"]}}},
-    "show": {"now": ["total", "samples"]},
+    "show": {"always": {"values": ["total"], "runs": [{"of": "samples", "fields": ["verdict"]}]}},
 }
-"""A total over every run, which a save moved to `now` after a grading that
-ran r2 late."""
+"""A total over every run, which a save moved to `always` after a grading
+that ran r2 late."""
 MOVED_RUNS = (Run("r1", {"input": "a"}, True), Run("r2", {"input": "b"}, False))
 
 
-def test_a_value_moved_to_now_is_missing_until_the_reveal_where_it_read_a_late_run() -> None:
+def test_a_value_moved_to_always_is_missing_until_the_reveal_where_it_read_a_late_run() -> None:
     scoring = Scoring.model_validate(MOVED)
     early, late = _row({"r1": "accepted"}), _row({"r2": "accepted"})
 
@@ -452,7 +460,6 @@ def test_a_value_moved_to_now_is_missing_until_the_reveal_where_it_read_a_late_r
         found = shown(
             scoring,
             MOVED_RUNS,
-            (),
             whole,
             lambda: alone,
             (),
@@ -541,29 +548,33 @@ def test_compiled_waits_while_a_row_whose_plan_compiles_is_still_to_give_it() ->
     assert worked(None, set()) == (1, 1, True)
 
 
-def test_compiled_and_the_compile_log_are_shown_once_a_run_is() -> None:
+def test_compiled_and_the_compile_log_are_shown_only_where_outputs_lists_them() -> None:
     scored = _islands(
         _row({"r1": "accepted", "r2": "accepted"}, outcomes={"compile": "accepted"}, log=True),
         _row({"r3": "accepted", "r4": "accepted"}),
     )
-    values_only = LOG_SHOWN.replace(
-        "now: [sample_score, sample_time, sample_tests, samples/, log]", "now: [sample_score, log]"
-    ).replace("after_close: [st1, st2, total, all]", "after_close: [total]")
+    log_alone = (
+        ISLANDS.replace(ISLANDS_ALWAYS, "    always:\n      outputs: [log]\n")
+        .replace(ISLANDS_AFTER, "")
+        .rstrip()
+    )
 
     seen = _seen(scored, text=LOG_SHOWN)
-    unseen = _seen(scored, text=values_only, revealed=True)
+    alone = _seen(scored, text=log_alone, revealed=True)
     unlisted = _seen(scored)
 
     assert (seen.compiled, seen.once["texts"]) == (1, {"log": LOG})
-    assert (unseen.compiled, unseen.once, unseen.runs) == (None, {"reports": {}, "texts": {}}, ())
-    assert texts(unseen.runs, unseen.once) == set()
-    # A report of a step done once that show does not list is never shown,
-    # though `compiled` is, with the runs.
-    assert (unlisted.compiled, unlisted.once) == (1, {"reports": {}, "texts": {}})
-    assert addresses(unlisted.runs, unlisted.once) == {
-        TextAt("sample_tests", 1, "message", None): ("out-r1", "message"),
-        TextAt("sample_tests", 2, "message", None): ("out-r2", "message"),
-    }
+    # Listed alone, the log is shown with no run and no `compiled`.
+    assert (alone.compiled, alone.once, alone.runs) == (
+        None,
+        {"reports": {}, "texts": {"log": LOG}},
+        (),
+    )
+    assert texts(alone.runs, alone.once) == {(LOG["output"], "log")}
+    # What the steps done once gave that outputs does not list is never
+    # shown, nor `compiled`, nor a run's message a run entry does not name.
+    assert (unlisted.compiled, unlisted.once) == (None, {"reports": {}, "texts": {}})
+    assert addresses(unlisted.runs, unlisted.once) == {}
 
 
 def test_an_entrant_reads_a_text_by_where_it_is_shown_and_is_never_sent_its_output() -> None:
@@ -582,7 +593,7 @@ def test_an_entrant_reads_a_text_by_where_it_is_shown_and_is_never_sent_its_outp
     assert (runs[0]["message"], once["texts"]) == ({}, {"log": {}})
     assert "output" not in repr((runs, once))
     # What is not shown has no place to read it from.
-    unseen = _seen(scored, text=LOG_SHOWN.replace("sample_tests, samples/, log]", "samples/, log]"))
+    unseen = _seen(scored)
     assert addresses(unseen.runs, unseen.once) == {}
 
 
@@ -605,7 +616,7 @@ def test_a_value_reading_a_column_the_entrant_could_set_is_marked() -> None:
 
 def test_a_task_with_nothing_shown_during_the_contest_tells_it_until_the_reveal() -> None:
     nothing_early = ISLANDS.replace(
-        "now: [sample_score, sample_time, sample_tests, samples/]", "now: [samples/]"
+        ISLANDS_ALWAYS, "    always:\n      runs: [{of: sample_tests, fields: [input, answer]}]\n"
     )
     scored = _islands(None, _row(dict.fromkeys(("r1", "r2"), "accepted")))
 
@@ -625,7 +636,7 @@ def test_organisers_see_every_value_and_run_at_once_with_what_each_read() -> Non
     total = next(value for value in seen.values if value.name == "total")
     assert (total.number, total.show, total.runs, total.values) == (
         Fraction(40),
-        "after_close",
+        "after_deadline",
         ("r3", "r4"),
         ("st1", "st2"),
     )
@@ -644,3 +655,166 @@ def test_organisers_see_every_value_and_run_at_once_with_what_each_read() -> Non
     assert seen.once["texts"] == {"log": LOG}
     # Organisers read a text by the output that holds it.
     assert ("out-r1", "message") in texts(seen.runs, seen.once)
+
+
+def _plain(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(row) for row in rows]
+
+
+def test_a_run_entry_shows_the_fields_it_names_and_nothing_else() -> None:
+    score_only = ISLANDS.replace(
+        ISLANDS_ALWAYS, "    always:\n      runs: [{of: sample_tests, fields: [score]}]\n"
+    )
+    ran = _row({"r1": "accepted", "r2": "accepted"}, outcomes={"compile": "accepted"}, log=True)
+    for run in ran["runs"]:
+        run["texts"] = {"log": LOG}
+    # A later workflow version gives each run another number and text.
+    more = _row({"r1": "accepted", "r2": "accepted"}, outcomes={"compile": "accepted"}, log=True)
+    for run in more["runs"]:
+        run["reports"] = {**run["reports"], "memory_kb": 300}
+        run["texts"] = {"log": LOG, "hint": LOG}
+    more["once"]["reports"] = {"steps": 3}
+
+    seen = _seen(_islands(ran, None), text=score_only)
+    added = _seen(_islands(more, None), text=score_only)
+
+    assert _plain(seen.runs) == [
+        {
+            "group": "sample_tests",
+            "place": place,
+            "tuples": [{"title": None, "key": {}}],
+            "reports": [{"title": "score", "unit": None, "number": 1}],
+            "texts": {},
+        }
+        for place in (1, 2)
+    ]
+    assert seen.once == {"reports": {}, "texts": {}}
+    assert (seen.values, seen.compiled, seen.inputs) == ((), None, {})
+    # What a workflow version adds is shown only once show names it.
+    assert (added.runs, added.once, added.values) == (seen.runs, seen.once, seen.values)
+
+
+FAILING = ISLANDS.replace(
+    ISLANDS_ALWAYS,
+    "    always:\n      runs: [{of: first_not_passed, fields: [verdict, passed]}]\n",
+)
+"""islands showing, during the contest, the first run that did not pass."""
+EVERY_EARLY = tuple(Run(run.id, run.key, True) for run in ISLAND_RUNS)
+"""The islands runs, every one early, as `first_not_passed` during the
+contest makes them."""
+
+
+def test_first_not_passed_names_the_first_failing_run_the_same_at_the_deadline() -> None:
+    every = {"r1": "accepted", "r2": "accepted", "r3": "wrong_answer", "r4": "time_limit"}
+    scored = _islands(_row(every), None, runs=EVERY_EARLY)
+
+    def picked(revealed: bool) -> list[dict[str, Any]]:
+        seen = _seen(scored, text=FAILING, runs=EVERY_EARLY, revealed=revealed)
+        return [dict(run) for run in seen.runs if run["group"] == "first_not_passed"]
+
+    assert picked(False) == [
+        {
+            "group": "first_not_passed",
+            "place": 1,
+            "tuples": [{"title": None, "key": {}}],
+            "verdict": "wrong_answer",
+            "passed": 0,
+            "reports": [],
+            "texts": {},
+            "labelled": {"group": "st1_tests", "place": 1},
+        }
+    ]
+    assert picked(True) == picked(False)
+    # Every run passed: nothing to name.
+    passed = _islands(_row(dict.fromkeys(every, "accepted")), None, runs=EVERY_EARLY)
+    assert _seen(passed, text=FAILING, runs=EVERY_EARLY).runs == ()
+
+
+def test_a_value_under_both_later_moments_is_shown_at_whichever_comes_first() -> None:
+    both = ISLANDS.replace(
+        ISLANDS_AFTER, ISLANDS_AFTER + "    after_release:\n      values: [total]\n"
+    )
+    scored = _islands(
+        _row({"r1": "accepted", "r2": "accepted"}), _row({"r3": "accepted", "r4": "accepted"})
+    )
+
+    def total(*, revealed: bool, released: bool) -> list[Fraction | str | None]:
+        seen = _seen(scored, text=both, revealed=revealed, released=released)
+        return [number for name, number in _values(seen).items() if name == "total"]
+
+    assert total(revealed=False, released=False) == []
+    assert total(revealed=True, released=False) == [100]
+    assert total(revealed=False, released=True) == [100]
+    # A release before the deadline shows after_release, not after_deadline.
+    released_only = _seen(scored, text=both, released=True)
+    assert set(_values(released_only)) == {"sample_score", "sample_time", "total"}
+
+
+def test_no_entrant_answer_carries_a_run_id_or_a_count_of_hidden_runs() -> None:
+    scored = _islands(
+        _row({"r1": "accepted", "r2": "wrong_answer"}),
+        _row({"r3": "accepted", "r4": "wrong_answer"}),
+    )
+    allowed = {
+        "group",
+        "place",
+        "tuples",
+        "verdict",
+        "passed",
+        "label",
+        "message",
+        "reports",
+        "texts",
+        "labelled",
+    }
+
+    for text in (ISLANDS, LOG_SHOWN, FAILING):
+        for revealed in (False, True):
+            seen = _seen(scored, text=text, revealed=revealed)
+            runs, once = bare(seen.runs, seen.once)
+            for run in runs:
+                assert set(run) <= allowed, run
+            assert "r1" not in repr((runs, once, seen.values))
+    staff = _seen(scored, everything=True)
+    assert [run["id"] for run in staff.runs] == ["r1", "r2", "r3", "r4"]
+
+
+def test_a_shared_input_is_shown_by_name_a_file_by_its_path() -> None:
+    text = ISLANDS.replace(
+        "      values: [sample_score, sample_time]\n",
+        "      values: [sample_score, sample_time]\n      inputs: [time_limit, checker]\n",
+    ).replace(
+        "      values: [st1, st2, total]\n",
+        "      values: [st1, st2, total]\n      inputs: [memory_limit]\n",
+    )
+    settings = {"time_limit": 2, "memory_limit": 256, "checker": "checker/check.py"}
+    kinds = {
+        "time_limit": Type.NUMBER,
+        "memory_limit": Type.NUMBER,
+        "checker": Type.FILE,
+        "input": Type.FILE,
+        "answer": Type.FILE,
+    }
+    scored = _islands(
+        _row({"r1": "accepted", "r2": "accepted"}), _row({"r3": "accepted", "r4": "accepted"})
+    )
+
+    before = _seen(scored, text=text, settings=settings, kinds=kinds)
+    after = _seen(scored, text=text, revealed=True, settings=settings, kinds=kinds)
+
+    assert before.inputs == {"time_limit": 2, "checker": {"file": "checker/check.py"}}
+    assert after.inputs == {**before.inputs, "memory_limit": 256}
+    assert before.runs[0]["tuples"] == [
+        {
+            "title": None,
+            "key": {"input": {"file": "samples/1.in"}, "answer": {"file": "samples/1.ans"}},
+        }
+    ]
+    assert shown_file(before.inputs, before.runs, "checker") == (Type.FILE, "checker/check.py")
+    assert shown_file(before.inputs, before.runs, "input", "sample_tests", 2) == (
+        Type.FILE,
+        "samples/2.in",
+    )
+    # What the answer does not show is no file to serve.
+    assert shown_file(before.inputs, before.runs, "time_limit") is None
+    assert shown_file(before.inputs, before.runs, "input", "all", 3) is None

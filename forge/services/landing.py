@@ -13,10 +13,13 @@ through this process shows there at once, and through another within that
 time.
 """
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from forge.domain import release as rules
+from forge.domain import run_showing
 from forge.domain.definitions import ContestDefinition
 from forge.domain.errors import NotFound
 from forge.domain.ids import ContestId, TaskId
@@ -25,7 +28,7 @@ from forge.domain.roles import contest_id_of, contest_scope, task_scope
 from forge.runtime.actions import action
 from forge.runtime.context import Context
 from forge.services import entrant_view, names, timelines
-from forge.services.entrant_view import PublicFile, PublishedTask
+from forge.services.entrant_view import PublicFile, PublishedTask, ShownInput
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,10 +61,15 @@ class PublicContest:
 
 @dataclass(frozen=True, slots=True)
 class PublicStatement:
-    """A released task of a public contest with its statement."""
+    """A released task of a public contest with its statement, and the
+    runs and shared inputs its `show` shows now, as `TaskPage` gives them
+    (`run_showing.task_inputs`).
+    """
 
     task: PublicTask
     statement: str
+    runs: tuple[Mapping[str, Any], ...] = ()
+    shown_inputs: Mapping[str, Any] = field(default_factory=dict)
 
 
 @action
@@ -95,11 +103,42 @@ async def statement(ctx: Context, task: TaskId) -> PublicStatement:
     """The statement of a released task of a public contest. `NotFound` for any
     other task.
     """
-    found = await _released(ctx, task)
+    contest = contest_id_of(task_scope(task))
+    settings = await _public_settings(ctx, contest, entrant_view.NO_SUCH_TASK)
+    found = await _released(ctx, task, settings)
+    shown = await entrant_view.task_inputs(
+        ctx, found, revealed=await timelines.revealed(ctx, settings, found)
+    )
     return PublicStatement(
         PublicTask(found.id, found.name, found.label or found.name, found.definition.name),
         await entrant_view.statement(ctx, found),
+        shown.runs,
+        shown.inputs,
     )
+
+
+@action
+async def shown_input(
+    ctx: Context,
+    task: TaskId,
+    name: str,
+    group: str | None = None,
+    place: int | None = None,
+    path: str | None = None,
+) -> ShownInput:
+    """An input a released task of a public contest shows that is a file
+    or a folder, for whoever may read its statement, as
+    `contest_home.shown_input` finds it. `NotFound` for any other task, and
+    for an input not shown now.
+    """
+    contest = contest_id_of(task_scope(task))
+    settings = await _public_settings(ctx, contest, entrant_view.NO_SUCH_TASK)
+    found = await _released(ctx, task, settings)
+    shown = await entrant_view.task_inputs(
+        ctx, found, revealed=await timelines.revealed(ctx, settings, found)
+    )
+    named = run_showing.shown_file(shown.inputs, shown.runs, name, group, place)
+    return await entrant_view.shown_input(ctx, found, named, path)
 
 
 @action
@@ -114,8 +153,7 @@ async def public_file(ctx: Context, task: TaskId, path: str) -> PublicFile:
     contest = contest_id_of(task_scope(task))
     settings = await _public_settings(ctx, contest, entrant_view.NO_SUCH_TASK)
     found = await _released(ctx, task, settings)
-    reveal = await timelines.reveal(ctx, contest, settings, found.name)
-    return await entrant_view.public_file(ctx, found, path, reveal=reveal)
+    return await entrant_view.public_file(ctx, found, path)
 
 
 async def _released(

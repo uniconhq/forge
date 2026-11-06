@@ -90,7 +90,7 @@ def plan_runs(
     problems = [
         *cache_problems(checked),
         *order_problems(planner.classes, planner.reads),
-        *planner.shown_reports(),
+        *planner.shown_outputs(),
         *planner.once_problems(),
     ]
     if any(step.use == EXEC_USE for step in checked.steps.values()):

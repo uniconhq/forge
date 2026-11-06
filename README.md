@@ -1033,8 +1033,8 @@ is removing each file under it, named one by one.
    and the leaderboards counted again ("Every result is scored again, and
    the leaderboard Standings with it.", "The leaderboard Standings is
    counted again."), or "No score changes."; and `reading`, the task's
-   title, "The statement changes." and the files its `show` lists, or
-   "Nothing entrants read changes.". Results change when the save grades a
+   title, "The statement changes.", the files under `public/` and the
+   inputs its `show` lists, or "Nothing entrants read changes.". Results change when the save grades a
    submission again, or when the task has a graded submission and the save
    moves what a value works out; the submission limits
    change only what entrants may still submit (a lowered `max` takes no

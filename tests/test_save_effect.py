@@ -11,7 +11,7 @@ import pytest
 
 from forge.domain.definitions import TaskDefinition, parse_contest, parse_task
 from forge.domain.save_effect import ReadChanges, SaveEffect, effect_of
-from tests.test_run_task import ISLANDS
+from tests.test_run_task import ISLANDS, ISLANDS_AFTER
 
 CONTEST = parse_contest(
     """\
@@ -272,30 +272,32 @@ def test_a_value_gone_a_group_gone_and_what_is_shown_when_are_each_said() -> Non
             "    st1: {block: min, over: {runs: st1_tests}, of: {run: [st1_tests, score]}}\n", ""
         )
         .replace("of: [40, {value: st1}]", "of: [40, 1]")
-        .replace("after_close: [st1, st2, total, all]", "after_close: [st2, all]")
-        .replace("now: [sample_score,", "now: [total, sample_score,")
+        .replace("values: [st1, st2, total]", "values: [st2]")
+        .replace("values: [sample_score,", "values: [total, sample_score,")
     )
 
     assert effect.scores == (
         "The group st1_tests is gone.",
         "The value total is worked out another way.",
         "The value st1 is gone.",
-        "Entrants see total as soon as a grading ends (was at the reveal).",
-        "Entrants no longer see st1 (was at the reveal).",
+        "Entrants see total as soon as a grading ends (was after the deadline).",
+        "Entrants no longer see st1 (was after the deadline).",
         "Every result is scored again, and the leaderboard Standings with it.",
     )
 
 
 def test_a_run_task_moving_only_what_is_shown_scores_nothing_again() -> None:
     effect = _run_effect(
-        ISLANDS.replace("after_close: [st1, st2, total, all]", "on_release: [st1, st2, total, all]")
+        ISLANDS.replace(ISLANDS_AFTER, ISLANDS_AFTER.replace("after_deadline", "after_release"))
     )
     untouched = _run_effect(ISLANDS)
     ungraded = _run_effect(ISLANDS.replace("[40,", "[30,"), graded=False)
     first = _run_effect(ISLANDS, before=None)
 
     assert effect.results_change
-    assert effect.scores[0] == "Entrants see st1 once results are released (was at the reveal)."
+    assert effect.scores[0] == (
+        "Entrants see st1 once results are released (was after the deadline)."
+    )
     assert not any("scored again" in line for line in effect.scores)
     assert (untouched.results_change, untouched.scores) == (False, ("No score changes.",))
     assert not ungraded.results_change
@@ -341,33 +343,38 @@ def test_a_leaderboard_reading_the_task_through_another_leaderboards_column_is_n
     )
 
 
-def test_a_task_file_shown_at_another_time_is_said_under_what_entrants_read_alone() -> None:
+def test_a_run_input_shown_at_another_time_is_said_under_what_entrants_read_alone() -> None:
     later = ISLANDS.replace(
-        "now: [sample_score, sample_time, sample_tests, samples/]",
-        "now: [sample_score, sample_time, sample_tests]",
+        "{of: sample_tests, fields: [input, answer, verdict, passed, score, time_ms]}",
+        "{of: sample_tests, fields: [verdict, passed, score, time_ms]}",
     ).replace(
-        "after_close: [st1, st2, total, all]", "after_close: [st1, st2, total, all, samples/]"
+        "      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]\n",
+        "      runs:\n"
+        "        - {of: all, fields: [verdict, passed, score, time_ms]}\n"
+        "        - {of: sample_tests, fields: [input]}\n",
     )
     effect = _run_effect(later)
-    gone = _run_effect(later.replace(", samples/]", "]"))
+    gone = _run_effect(later.replace("        - {of: sample_tests, fields: [input]}\n", ""))
 
     assert (effect.results_change, effect.summary) == (False, "Nobody's result changes.")
     assert effect.scores == ("No score changes.",)
     assert effect.reading == (
-        "Entrants can read samples/ from the reveal (was during the contest).",
+        "Entrants read input of sample_tests after the deadline (was with the statement).",
+        "Entrants no longer read answer of sample_tests (was with the statement).",
     )
-    assert gone.reading == ("Entrants can no longer read samples/ (was during the contest).",)
-
-
-def test_a_file_only_a_check_names_is_never_said_to_be_shown() -> None:
-    checked = ISLANDS.replace(
-        "submissions:",
-        "checks:\n  - submit: {code: checks/good}\n    expect: {verdict: accepted}\nsubmissions:",
-    )
-    effect = _run_effect(
-        checked.replace("samples/]", "samples/, checks/good/]"),
-        before=checked,
+    assert gone.reading == (
+        "Entrants no longer read input of sample_tests (was with the statement).",
+        "Entrants no longer read answer of sample_tests (was with the statement).",
     )
 
-    assert effect.reading == ("Nothing entrants read changes.",)
+
+def test_a_setting_newly_shown_is_said_under_what_entrants_read() -> None:
+    shown = ISLANDS.replace(
+        "      values: [sample_score, sample_time]\n",
+        "      values: [sample_score, sample_time]\n      inputs: [time_limit]\n",
+    )
+
+    effect = _run_effect(shown)
+
+    assert effect.reading == ("Entrants now read time_limit with the statement.",)
     assert effect.scores == ("No score changes.",)

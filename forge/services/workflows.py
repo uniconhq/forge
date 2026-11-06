@@ -42,7 +42,7 @@ version must (TASK-FORMAT.md section 1.3), and a version never changes.
 
 import codecs
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import Literal
@@ -77,6 +77,7 @@ from forge.domain.names import validate_name
 from forge.domain.port_values import natural, stray_units
 from forge.domain.primitives import Port
 from forge.domain.roles import Role, Scope, holds
+from forge.domain.run_plan import once_steps
 from forge.domain.run_workflow import WorkflowFiles, check_run_workflow
 from forge.domain.sessions import Session
 from forge.domain.types import Type
@@ -203,6 +204,11 @@ class BoxOutput:
     `type` and the number's meaning are none while that port is not known,
     as an output of a manifest the task gives is not. `title` and `unit` are
     the words the workflow gave the output, and a unit only on a number.
+    `once` is whether it is given once for every run, which `show` lists
+    under `outputs`, rather than for each run, which a run entry shows: so
+    when its port is the same for every item, or its step reads none of the
+    task's repeated inputs, directly or through the steps it reads; none
+    when the port does not say and the repeated inputs were not given.
     """
 
     name: str
@@ -212,6 +218,7 @@ class BoxOutput:
     better: str | None
     at_least: int | Decimal | None
     at_most: int | Decimal | None
+    once: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -688,11 +695,17 @@ async def newer_version(ctx: Context, as_: Identity, ref: WorkflowRef) -> str | 
 
 
 @action
-async def box(ctx: Context, session: Session, ref: str) -> Box:
+async def box(
+    ctx: Context, session: Session, ref: str, repeated: Collection[str] | None = None
+) -> Box:
     """The version `ref`, `<owner>/<name>@<version>`, as a box the editor
     draws: its inputs, and each output as the port it resolves to, checked
-    as the caller. `NotFound`, in the same words as reading the version,
-    when there is no such version or the caller may not read it.
+    as the caller, and whether it is given once (`BoxOutput.once`) for a
+    task whose inputs `repeated` differ per run: each repeated one, the
+    entrant's given in parts among them, as the planner classes its steps
+    (`run_plan.once_steps`). `NotFound`, in the same words as
+    reading the version, when there is no such version or the caller may
+    not read it.
     """
     found = parse_workflow_ref(ref)
     as_ = await _as_user(ctx, session)
@@ -713,8 +726,15 @@ async def box(ctx: Context, session: Session, ref: str) -> Box:
             flat=bool(expanded.flat.boxes),
         )
         resolved = placed(checked, expanded.flat) if expanded.flat.boxes else checked
+        once = None if repeated is None else once_steps(expanded.flat.workflow.steps, repeated)
         outputs = {
-            name: _box_output(name, output.port, output.title, output.unit)
+            name: _box_output(
+                name,
+                output.port,
+                output.title,
+                output.unit,
+                _once(output.port, None if once is None else output.step not in once),
+            )
             for name, output in resolved.outputs.items()
         }
     return Box(
@@ -747,9 +767,11 @@ def _output_words(entry: str | RunOutput) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _box_output(name: str, port: Port | None, title: str | None, unit: str | None) -> BoxOutput:
+def _box_output(
+    name: str, port: Port | None, title: str | None, unit: str | None, once: bool | None = None
+) -> BoxOutput:
     if port is None:
-        return BoxOutput(name, None, title, unit, None, None, None)
+        return BoxOutput(name, None, title, unit, None, None, None, once)
     number = port.type is Type.NUMBER
     return BoxOutput(
         name,
@@ -759,7 +781,17 @@ def _box_output(name: str, port: Port | None, title: str | None, unit: str | Non
         None if port.better is None else port.better.value,
         port.at_least,
         port.at_most,
+        once,
     )
+
+
+def _once(port: Port | None, each_run: bool | None) -> bool | None:
+    """Whether an output is given once: always when its port is the same for
+    every item, else when its step is not done for each run, none when that
+    is not known."""
+    if port is not None and port.once is True:
+        return True
+    return None if each_run is None else not each_run
 
 
 # Building blocks

@@ -34,6 +34,7 @@ from forge.domain.run_plan import (
     RunPlan,
     RunPlanCheck,
     files_named,
+    once_steps,
     order_problems,
     plan_runs,
     run_plan_changes,
@@ -53,6 +54,8 @@ from tests.test_run_task import (
     CARTPOLE_FILES,
     CARTPOLE_TASK,
     ISLANDS,
+    ISLANDS_AFTER,
+    ISLANDS_ALWAYS,
     ISLANDS_PATHS,
     JUDGE_MANIFEST,
     JUDGED,
@@ -400,7 +403,7 @@ def test_a_value_named_as_a_build_of_a_workflow_step_is_refused_naming_that_buil
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     text = MEAN.replace("    mean: {block: exec", "    compare: {block: exec").replace(
-        "total, all, mean]", "total, all, compare]"
+        "total, mean]", "total, compare]"
     )
 
     problems = refused(mean(primitives, text))
@@ -547,7 +550,9 @@ def test_an_entrant_file_is_copied_at_the_most_its_input_may_hold(
 def test_linked_programs_need_a_box_each(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    task = JUDGED_TASK.replace("show: {now: [moves]}", "show: {after_close: [moves]}")
+    task = JUDGED_TASK.replace(
+        "    always:\n      values: [moves]\n", "    after_deadline:\n      values: [moves]\n"
+    )
     plan = ok(
         planned(
             primitives,
@@ -854,7 +859,8 @@ scoring:
   values:
     total: {block: sum, over: {runs: all}, of: {run: [all, time_ms]}}
   show:
-    after_close: [total]
+    after_deadline:
+      values: [total]
 """
 
 
@@ -928,8 +934,10 @@ scoring:
   groups:
     shown: {input: [samples/1.in]}
   show:
-    now: [shown, samples/]
-    after_close: [all]
+    always:
+      runs: [{of: shown, fields: [input, verdict, passed, time_ms]}]
+    after_deadline:
+      runs: [{of: all, fields: [verdict, passed, time_ms]}]
 """
 
 
@@ -979,21 +987,19 @@ def test_compiled_shown_now_with_no_early_run_is_refused_and_with_one_is_early(
     """The entrant's code compiles in solution, once for each batch of runs,
     so `compiled` is known as soon as the early runs are graded, and with no
     early run, only once the hidden runs have run."""
-    alone = ISLANDS.replace(
-        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
-        "    now: [built]\n",
-    ).replace("  values:\n", "  values:\n    built: {fact: compiled}\n")
+    alone = ISLANDS.replace(ISLANDS_ALWAYS, "    always:\n      values: [built]\n").replace(
+        "  values:\n", "  values:\n    built: {fact: compiled}\n"
+    )
     with_samples = ISLANDS.replace(
-        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
-        "    now: [built, sample_score, sample_time, sample_tests, samples/]\n",
+        "values: [sample_score, sample_time]", "values: [built, sample_score, sample_time]"
     ).replace("  values:\n", "  values:\n    built: {fact: compiled}\n")
 
     assert refused(islands(primitives, alone)) == {
-        "scoring.show.now[0]": [
+        "scoring.show.always.values[0]": [
             "built cannot be shown as soon as a grading ends: it reads `compiled`, but "
             "`solution`, which compiles the entrant's code, does so with the runs, and no run is "
             "graded during the contest, so `compiled` is known only once the hidden runs have "
-            "run. Show built after_close instead."
+            "run. Show built after_deadline instead."
         ]
     }
     plan = ok(islands(primitives, with_samples))
@@ -1004,10 +1010,10 @@ def test_nothing_shown_during_the_contest_is_one_late_pipeline(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     text = ISLANDS.replace(
-        "    now: [sample_score, sample_time, sample_tests, samples/]\n"
-        "    after_close: [st1, st2, total, all]\n",
-        "    after_close: [sample_score, sample_time, sample_tests, samples/,\n"
-        "      st1, st2, total, all]\n",
+        ISLANDS_ALWAYS + ISLANDS_AFTER,
+        "    after_deadline:\n"
+        "      values: [sample_score, sample_time, st1, st2, total]\n"
+        "      runs: [{of: all, fields: [input, answer, verdict, passed, score, time_ms]}]\n",
     )
 
     plan = ok(islands(primitives, text))
@@ -1020,12 +1026,27 @@ def test_a_report_given_once_may_be_listed_and_one_given_for_each_run_is_refused
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     # log is solution's compile log, the same for every run of a batch.
-    ok(islands(primitives, ISLANDS.replace("samples/]", "samples/, log]")))
+    listed = "      values: [sample_score, sample_time]\n"
+    ok(islands(primitives, ISLANDS.replace(listed, listed + "      outputs: [log]\n")))
 
-    assert refused(islands(primitives, ISLANDS.replace("samples/]", "samples/, time_ms]"))) == {
-        "scoring.show.now[4]": [
-            "time_ms is reported for each run, so it is shown with the runs of the groups show "
-            "lists. Remove it."
+    assert refused(
+        islands(primitives, ISLANDS.replace(listed, listed + "      outputs: [time_ms]\n"))
+    ) == {
+        "scoring.show.always.outputs[0]": [
+            "time_ms is given for each run, so show it among a run's fields."
+        ]
+    }
+    assert refused(
+        islands(
+            primitives,
+            ISLANDS.replace(
+                "{of: all, fields: [verdict, passed, score, time_ms]}",
+                "{of: all, fields: [verdict, passed, log]}",
+            ),
+        )
+    ) == {
+        "scoring.show.after_deadline.runs[0].fields[2]": [
+            "log is given once for every run, so show it under outputs."
         ]
     }
 
@@ -1063,13 +1084,25 @@ scoring:
   values:
     fast: {block: max, over: {runs: shown}, of: {run: [shown, score]}}
   show:
-    now: [shown, samples/]
-    after_close: [fast, all]
+    always:
+      runs: [{of: shown, fields: [input, verdict, passed, score]}]
+    after_deadline:
+      values: [fast]
+      runs: [{of: all, fields: [verdict, passed, score]}]
 """
 LINKED_PATHS = frozenset({"task.yaml", "grader/grader.h", "samples/1.in", "tests/2.in"})
+LINKED_SHOW = """\
+    always:
+      runs: [{of: shown, fields: [input, verdict, passed, score]}]
+    after_deadline:
+      values: [fast]
+      runs: [{of: all, fields: [verdict, passed, score]}]
+"""
 LINKED_LATE = LINKED_TASK.replace(
-    "    now: [shown, samples/]\n    after_close: [fast, all]\n",
-    "    after_close: [shown, samples/, fast, all]\n",
+    LINKED_SHOW,
+    "    after_deadline:\n"
+    "      values: [fast]\n"
+    "      runs: [{of: all, fields: [input, verdict, passed, score]}]\n",
 )
 WORDS = "every run reads `compile`, which runs the entrant's code beside `grader/`"
 
@@ -1078,16 +1111,86 @@ def linked(primitives: Mapping[str, PrimitiveDeclaration], task: str = LINKED_TA
     return planned(primitives, task, LINKED, {"workflow.yaml": LINKED.encode()}, LINKED_PATHS)
 
 
-def test_a_hidden_grader_with_a_group_shown_now_is_refused_with_its_words(
+def test_the_steps_done_once_are_classed_as_the_planner_classes_them(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    plan = ok(linked(primitives, LINKED_LATE))
+    steps = parse_run_workflow(LINKED).steps
+
+    assert (
+        once_steps(steps, plan.runs[0].key)
+        == {step.id for step in steps if plan.steps[step.id].once}
+        == {"compile"}
+    )
+    # An entrant's input given in parts differs per run, as a repeated one
+    # does, so a step reading it is done for each run.
+    tour = parse_run_workflow(TOUR).steps
+    assert once_steps(tour, ()) == {"check"}
+    assert once_steps(tour, ("route",)) == set()
+
+
+def test_a_hidden_grader_with_a_run_entry_shown_always_is_refused_with_its_words(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     problems = refused(linked(primitives))
 
-    assert list(problems) == ["scoring.show.now[0]"]
-    assert WORDS in problems["scoring.show.now[0]"][0]
+    assert list(problems) == ["scoring.show.always.runs[0]"]
+    assert WORDS in problems["scoring.show.always.runs[0]"][0]
 
 
-def test_a_hidden_grader_with_nothing_shown_now_saves_as_one_late_pipeline(
+def test_a_header_input_shown_always_taints_nothing_and_a_hidden_test_file_still_does(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    """grader/ is a setting the task gives every run: shown under `inputs`,
+    it is no secret for the entrant's code to signal about, while
+    tests/2.in, which no run entry shows during the contest, still taints
+    the run that reads it, as a note on what shows that run."""
+    shown = LINKED_TASK.replace("    always:\n", "    always:\n      inputs: [grader]\n")
+
+    plan = ok(linked(primitives, shown))
+
+    assert plan.steps["compile"].tainted is None
+    assert [run.id for run in plan.runs if run.early] == ["r1"]
+    assert plan.notes == ()
+    hidden = shown.replace(
+        "tuples: [samples/1.in, tests/2.in]", "tuples: [tests/2.in, tests/3.in]"
+    ).replace("shown: {input: [samples/1.in]}", "shown: {input: [tests/2.in]}")
+    unlisted = hidden.replace(
+        "fields: [input, verdict, passed, score]", "fields: [verdict, passed, score]"
+    )
+    paths = frozenset({"task.yaml", "grader/grader.h", "tests/2.in", "tests/3.in"})
+    flow = {"workflow.yaml": LINKED.encode()}
+
+    tainted = ok(planned(primitives, unlisted, LINKED, flow, paths))
+
+    assert tainted.steps["compile"].tainted is None
+    assert [note.split(",")[1] for note in tainted.notes] == [
+        " such as `run` beside `tests/2.in` in the run r1"
+    ]
+    # The same run entry showing the input it reads is no secret either.
+    assert ok(planned(primitives, hidden, LINKED, flow, paths)).notes == ()
+
+
+@pytest.mark.parametrize("fields", ["input, verdict", "input"])
+def test_a_run_entry_of_first_not_passed_showing_the_input_still_hides_it(
+    primitives: dict[str, PrimitiveDeclaration], fields: str
+) -> None:
+    shown = LINKED_TASK.replace("    always:\n", "    always:\n      inputs: [grader]\n").replace(
+        "{of: shown, fields: [input, verdict, passed, score]}",
+        f"{{of: first_not_passed, fields: [{fields}]}}",
+    )
+
+    plan = ok(linked(primitives, shown))
+
+    # Which run it shows is not known before the grading, so even the
+    # sample's input it would show is hidden; and its pick tells a result,
+    # whatever fields it shows.
+    assert [note.split(",")[1] for note in plan.notes] == [
+        " such as `run` beside `samples/1.in` in the run r1"
+    ]
+
+
+def test_a_hidden_grader_with_nothing_shown_during_the_contest_saves_as_one_late_pipeline(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     plan = ok(linked(primitives, LINKED_LATE))
@@ -1108,26 +1211,35 @@ def test_a_hidden_grader_with_nothing_shown_now_saves_as_one_late_pipeline(
     }
 
 
-def test_on_release_makes_no_run_early_but_is_refused_as_if_shown(
+def test_after_release_makes_no_run_early_but_is_refused_as_if_shown(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     task = LINKED_TASK.replace(
-        "    now: [shown, samples/]\n    after_close: [fast, all]\n",
-        "    now: [samples/]\n    after_close: [all]\n    on_release: [shown]\n",
+        LINKED_SHOW,
+        "    always:\n"
+        "      runs: [{of: shown, fields: [input]}]\n"
+        "    after_deadline:\n"
+        "      runs: [{of: all, fields: [verdict, passed, score]}]\n"
+        "    after_release:\n"
+        "      runs: [{of: shown, fields: [verdict, passed, score]}]\n",
     )
 
     problems = refused(linked(primitives, task))
 
-    assert list(problems) == ["scoring.show.on_release[0]"]
-    assert WORDS in problems["scoring.show.on_release[0]"][0]
+    assert list(problems) == ["scoring.show.after_release.runs[0]"]
+    assert WORDS in problems["scoring.show.after_release.runs[0]"][0]
 
 
-def test_on_release_is_noted_over_runs_with_their_own_hidden_input(
+def test_after_release_is_noted_over_runs_with_their_own_hidden_input(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     text = ISLANDS.replace(
-        "    after_close: [st1, st2, total, all]\n",
-        "    after_close: [st2, all]\n    on_release: [st1]\n",
+        ISLANDS_AFTER,
+        "    after_deadline:\n"
+        "      values: [st2]\n"
+        "      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]\n"
+        "    after_release:\n"
+        "      values: [st1]\n",
     )
 
     plan = ok(islands(primitives, text))
@@ -1138,8 +1250,8 @@ def test_on_release_is_noted_over_runs_with_their_own_hidden_input(
         "st1 reads runs whose own steps run the entrant's code beside what entrants are not "
         "shown during the contest, such as `solution` beside `tests/3.in` in the run r3, so "
         "the entrant's code can signal a little about it through what st1 shows.",
-        "all, shown at the reveal, holds runs st1 reads, so entrants see those runs before a "
-        "release shows st1.",
+        "all, shown after the deadline, holds runs st1 reads, so entrants see those runs "
+        "before a release shows st1.",
     )
 
 
@@ -1174,7 +1286,9 @@ scoring:
   values:
     total: {block: sum, over: {runs: all}, of: {run: [all, score]}}
   show:
-    now: [total, samples/]
+    always:
+      values: [total]
+      runs: [{of: all, fields: [input]}]
 """
 SECRET_PATHS = frozenset({"task.yaml", "hidden/key.txt", "samples/1.in"})
 
@@ -1206,7 +1320,7 @@ def test_the_same_file_on_a_port_not_marked_secret_taints(
 
     assert (
         "every run reads `judge`, which runs the entrant's code beside `hidden/key.txt`"
-        in (problems["scoring.show.now[0]"][0])
+        in (problems["scoring.show.always.values[0]"][0])
     )
 
 
@@ -1235,8 +1349,14 @@ BUILT_TASK = LINKED_TASK.replace(
     "    fast: {block: max",
     "    built: {fact: compiled}\n    fast: {block: max",
 ).replace(
-    "    now: [shown, samples/]\n    after_close: [fast, all]\n",
-    "    now: [built, samples/, grader/]\n    after_close: [shown, fast, all]\n",
+    LINKED_SHOW,
+    "    always:\n"
+    "      values: [built]\n"
+    "      inputs: [grader]\n"
+    "      runs: [{of: shown, fields: [input]}]\n"
+    "    after_deadline:\n"
+    "      values: [fast]\n"
+    "      runs: [{of: all, fields: [verdict, passed, score]}]\n",
 )
 LINKC_FLOW = LINKED.replace("acme/link@v1", "acme/linkc@v1")
 LINKC_ONCE = _declared(
@@ -1279,15 +1399,17 @@ def test_compiled_from_a_compile_beside_a_hidden_file_is_refused(
     error could tell of it: `compiled` reads it neither during the contest
     nor after."""
     once = {**primitives, "acme/linkc@v1": LINKC_ONCE}
-    task = BUILT_TASK.replace("now: [built, samples/, grader/]", "now: [built]")
-    later = BUILT_TASK.replace("now: [built, samples/, grader/]\n", "")
+    task = BUILT_TASK.replace("      inputs: [grader]\n", "")
+    later = BUILT_TASK.replace("      values: [built]\n", "").replace(
+        "      inputs: [grader]\n", ""
+    )
 
     assert refused(built(once, task)) == {
-        "scoring.show.now[0]": [
+        "scoring.show.always.values[0]": [
             "built cannot be shown as soon as a grading ends: it reads `compiled`, from "
             "`compile`, which runs the entrant's code beside `grader/`, which entrants are not "
-            "shown during the contest, so built could tell them about it. Show built after_close "
-            "instead."
+            "shown during the contest, so built could tell them about it. Show built "
+            "after_deadline instead."
         ]
     }
     assert ok(built(once, later)).steps["compile"].compiled is None
@@ -1300,60 +1422,52 @@ def test_compiled_with_no_step_saying_its_compile_error_is_once_is_refused(
     every item is not what `compiled` reads, though the step is done once."""
     for workflow in (LINKC_FLOW, LINKED):
         assert refused(built(primitives, BUILT_TASK, workflow)) == {
-            "scoring.show.now[0]": [
+            "scoring.show.always.values[0]": [
                 "built cannot be shown as soon as a grading ends: it reads `compiled`, but no "
                 "step compiles the entrant's code, so `compiled` is known only once the whole "
-                "grading ends, its hidden runs too. Show built after_close instead."
+                "grading ends, its hidden runs too. Show built after_deadline instead."
             ]
         }
 
 
-def test_compiled_under_on_release_is_refused_as_if_shown(
+def test_compiled_under_after_release_is_refused_as_if_shown(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    text = ISLANDS.replace(
-        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
-        "    on_release: [built]\n",
-    ).replace("  values:\n", "  values:\n    built: {fact: compiled}\n")
+    text = ISLANDS.replace(ISLANDS_ALWAYS, "    after_release:\n      values: [built]\n").replace(
+        "  values:\n", "  values:\n    built: {fact: compiled}\n"
+    )
 
     problems = refused(islands(primitives, text))
 
-    assert list(problems) == ["scoring.show.on_release[0]"]
+    assert list(problems) == ["scoring.show.after_release.values[0]"]
     assert (
         "`solution`, which compiles the entrant's code, does so with the runs, and no run is "
-        "graded during the contest" in problems["scoring.show.on_release[0]"][0]
+        "graded during the contest" in problems["scoring.show.after_release.values[0]"][0]
     )
 
 
 def test_compiled_shown_by_its_name_is_refused_as_a_value_reading_it_is(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    alone = ISLANDS.replace(
-        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
-        "    now: [compiled]\n",
-    )
-    with_samples = ISLANDS.replace(
-        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
-        "    now: [compiled, sample_score, sample_time, sample_tests, samples/]\n",
-    )
+    alone = ISLANDS.replace(ISLANDS_ALWAYS, "    always:\n      outputs: [compiled]\n")
+    listed = "      values: [sample_score, sample_time]\n"
+    with_samples = ISLANDS.replace(listed, listed + "      outputs: [compiled]\n")
 
     assert refused(islands(primitives, alone)) == {
-        "scoring.show.now[0]": [
+        "scoring.show.always.outputs[0]": [
             "compiled cannot be shown as soon as a grading ends: `solution`, which compiles the "
             "entrant's code, does so with the runs, and no run is graded during the contest, so "
-            "`compiled` is known only once the hidden runs have run. Show compiled after_close "
-            "instead."
+            "`compiled` is known only once the hidden runs have run. Show compiled "
+            "after_deadline instead."
         ]
     }
     assert laid_out(ok(islands(primitives, with_samples))) == laid_out(ok(islands(primitives)))
-    shown = BUILT_TASK.replace(
-        "now: [built, samples/, grader/]", "now: [compiled, samples/, grader/]"
-    )
+    shown = BUILT_TASK.replace("      values: [built]\n", "      outputs: [compiled]\n")
     assert refused(built(primitives, shown, LINKED)) == {
-        "scoring.show.now[0]": [
+        "scoring.show.always.outputs[0]": [
             "compiled cannot be shown as soon as a grading ends: no step compiles the entrant's "
             "code, so `compiled` is known only once the whole grading ends, its hidden runs too. "
-            "Show compiled after_close instead."
+            "Show compiled after_deadline instead."
         ]
     }
 
@@ -1387,8 +1501,10 @@ scoring:
   values:
     built: {fact: compiled}
   show:
-    now: [built]
-    after_close: [all]
+    always:
+      values: [built]
+    after_deadline:
+      runs: [{of: all, fields: [verdict, passed, score]}]
 """
 
 
@@ -1404,10 +1520,10 @@ def test_compiled_from_a_compile_done_per_run_is_refused(
     )
 
     assert refused(found) == {
-        "scoring.show.now[0]": [
+        "scoring.show.always.values[0]": [
             "built cannot be shown as soon as a grading ends: it reads `compiled`, but "
             "`compile`, which can give a compile error, runs once per run, so `compiled` is "
-            "known only once every run has run, the hidden ones too. Show built after_close "
+            "known only once every run has run, the hidden ones too. Show built after_deadline "
             "instead."
         ]
     }
@@ -1453,7 +1569,8 @@ repeat:
     tuples: [tests/1.in, tests/2.in]
 scoring:
   show:
-    after_close: [all]
+    after_deadline:
+      runs: [{of: all, fields: [verdict, passed, time_ms]}]
 """
 
 
@@ -1562,7 +1679,8 @@ repeat:
     tuples: [tests/1.in, tests/2.in]
 scoring:
   show:
-    after_close: [all]
+    after_deadline:
+      runs: [{of: all, fields: [verdict, passed, time_ms]}]
 """
 
 
@@ -1729,9 +1847,9 @@ def test_a_save_says_what_its_plan_changed(primitives: dict[str, PrimitiveDeclar
     shown = ok(
         islands(
             primitives,
-            ISLANDS.replace(
-                "    after_close: [st1, st2, total, all]\n", "    after_close: [st2, total, all]\n"
-            ).replace("    now: [sample_score,", "    now: [st1, sample_score,"),
+            ISLANDS.replace("values: [st1, st2, total]", "values: [st2, total]").replace(
+                "values: [sample_score,", "values: [st1, sample_score,"
+            ),
         )
     )
 
@@ -1765,9 +1883,9 @@ def test_a_save_says_which_steps_a_submission_runs_again(
     shown = ok(
         islands(
             primitives,
-            ISLANDS.replace(
-                "    after_close: [st1, st2, total, all]\n", "    after_close: [st2, total, all]\n"
-            ).replace("    now: [sample_score,", "    now: [st1, sample_score,"),
+            ISLANDS.replace("values: [st1, st2, total]", "values: [st2, total]").replace(
+                "values: [sample_score,", "values: [st1, sample_score,"
+            ),
         )
     )
     other = FileFact(size=1, sha256="d" * 64)
@@ -1799,8 +1917,13 @@ def test_a_save_says_which_steps_a_submission_runs_again(
 
 
 RELEASING = ISLANDS.replace(
-    "after_close: [st1, st2, total, all]",
-    "after_close: [st1, all]\n    on_release: [st2, st2_tests]",
+    ISLANDS_AFTER,
+    "    after_deadline:\n"
+    "      values: [st1]\n"
+    "      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]\n"
+    "    after_release:\n"
+    "      values: [st2]\n"
+    "      runs: [{of: st2_tests, fields: [verdict, passed, score]}]\n",
 )
 
 
@@ -1912,9 +2035,8 @@ def test_a_values_program_runs_early_when_its_value_is_shown_during_the_contest(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     shown = MEAN.replace(
-        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
-        "    now: [sample_score, sample_time, sample_tests, samples/, mean, all]\n",
-    ).replace("total, all, mean]", "total]")
+        "values: [sample_score, sample_time]", "values: [sample_score, sample_time, mean]"
+    ).replace("total, mean]", "total]")
 
     plan = ok(mean(primitives, shown))
 
@@ -1922,10 +2044,12 @@ def test_a_values_program_runs_early_when_its_value_is_shown_during_the_contest(
     assert "late" not in plan.pipelines
 
 
-def test_a_values_program_under_on_release_runs_early_only_once_released(
+def test_a_values_program_under_after_release_runs_early_only_once_released(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    released = MEAN.replace("total, all, mean]", "total, all]\n    on_release: [mean]")
+    released = MEAN.replace(
+        "      values: [st1, st2, total, mean]\n", "      values: [st1, st2, total]\n"
+    ).replace(ISLANDS_AFTER, ISLANDS_AFTER + "    after_release:\n      values: [mean]\n")
 
     plan = ok(mean(primitives, released))
 

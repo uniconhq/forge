@@ -386,7 +386,7 @@ async def test_a_managers_save_of_everything_else_publishes(
         sum_task,
         {
             "task.yaml": task_yaml.replace(b"time_limit: 2", b"time_limit: 3").replace(
-                b"now: [score, all, public/]", b"now: [score, public/]"
+                b"{of: all, fields: [verdict, passed]}", b"{of: all, fields: [verdict]}"
             ),
             "statement.md": statement,
             "tests/2.in": b"2 2\n",
@@ -754,7 +754,10 @@ async def test_scoring_changes_never_change_grading_and_a_test_or_a_limit_does(
 
     text = await _save(setup, acme, sum_task, {"statement.md": b"Clearer.\n"})
     rules = await _save(
-        setup, acme, sum_task, _with(acme, b"now: [score, all, public/]", b"now: [score, public/]")
+        setup,
+        acme,
+        sum_task,
+        _with(acme, b"{of: all, fields: [verdict, passed]}", b"{of: all, fields: [verdict]}"),
     )
     caps = await _save(
         setup,

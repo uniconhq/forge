@@ -67,9 +67,7 @@ TEXT = REVIEWED.replace(
     "    total:\n",
     "    mean: {block: exec, program: programs/mean/, language: python, over: {runs: all}}\n"
     "    total:\n",
-).replace(
-    "    after_close: [st1, st2, total, all]\n", "    after_close: [st1, st2, total, all, mean]\n"
-)
+).replace("values: [st1, st2, total]", "values: [st1, st2, total, mean]")
 """islands with a reviewer's mark, and the mean score of every run worked
 out by a program of the task, shown after the close."""
 
@@ -315,7 +313,7 @@ async def test_an_early_programs_fault_with_no_retry_by_itself_holds_only_its_va
 
 EARLY = (
     TEXT.replace("over: {runs: all}}", "over: {runs: sample_tests}}")
-    .replace("after_close: [st1, st2, total, all, mean]", "after_close: [st1, st2, total, all]")
+    .replace("values: [st1, st2, total, mean]", "values: [st1, st2, total]")
     .replace("review, reviewed]", "review, reviewed, mean]")
 )
 """The mean over the samples alone, shown during the contest, so its

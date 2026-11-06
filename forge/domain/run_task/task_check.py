@@ -3,43 +3,43 @@ from collections.abc import Collection, Iterable, Mapping
 from forge.domain.blocks.catalogue import EXEC
 from forge.domain.blocks.evaluate import blocks_in
 from forge.domain.checks import check_checks
-from forge.domain.definitions import ENTRANT, TaskDefinition
+from forge.domain.definitions import AFTER_RELEASE, ALWAYS, ENTRANT, TaskDefinition
 from forge.domain.grading import Machine
 from forge.domain.program_manifest import PROGRAM_FILE
 from forge.domain.run_task.binder import _Binder, manifest_inputs
 from forge.domain.run_task.models import Run, RunsFile, RunTask, RunTaskCheck
-from forge.domain.run_task.show_rules import Shown, read_later
+from forge.domain.run_task.show_rules import ShownUnder, read_later
 from forge.domain.run_workflow import RunWorkflowCheck
 from forge.domain.workflow_definition import RunWorkflow
 from forge.domain.yaml_models import Problem, path_text
 
 
 def fewer_runs(
-    before: Iterable[tuple[Shown, Mapping[str, frozenset[str]]]], task: RunTask
+    before: Iterable[tuple[ShownUnder, Mapping[str, frozenset[str]]]], task: RunTask
 ) -> list[Problem]:
-    """A problem for each group or value shown during the contest under an
-    earlier publication, as `before` holds each with the runs its runs file
-    says each name read, that `task` now has read fewer of the runs it
-    still has (SIMPLER-CORE.md 16). Shown during the contest is under
-    `now`, or under `on_release` where `before` still holds it.
+    """A problem for each value shown during the contest under an earlier
+    publication, as `before` holds each with the runs its runs file says
+    each value read, that `task` now has read fewer of the runs it still has
+    (SIMPLER-CORE.md 16). Shown during the contest is `always`, or
+    `after_release` where `before` still holds it.
     """
     present = {run.id for run in task.runs}
     read: dict[str, set[str]] = {}
     for shown, reads in before:
-        for name, time in shown.names.items():
-            if time in ("now", "on_release") and name in reads:
+        for key, moments in shown.shown.items():
+            name = key[-1]
+            if key[0] == "values" and moments & {ALWAYS, AFTER_RELEASE} and name in reads:
                 read.setdefault(name, set()).update(reads[name] & present)
     problems: list[Problem] = []
     for name, then in sorted(read.items()):
         now = task.runs_of(name)
-        if now is None:
+        if now is None or name not in task.values.reads:
             continue
         missing = then - now
         if missing:
-            where = "groups" if name in task.groups else "values"
             problems.append(
                 Problem(
-                    path=path_text(("scoring", where, name)),
+                    path=path_text(("scoring", "values", name)),
                     message=f"Entrants have been shown {name} during the contest over "
                     f"{len(then)} {'run' if len(then) == 1 else 'runs'} the task still has, "
                     f"and it would now read {len(missing)} fewer. What they have been shown "
@@ -100,8 +100,8 @@ def check_run_task(
     groups = binder.groups(runs)
     values = binder.scoring(runs, manifests)
     binder.show(manifests)
-    for at, message in read_later(definition.scoring, values):
-        binder.refuse(at, message)
+    for at, message in read_later(definition.scoring, values, binder.repeated):
+        binder.refuse(("scoring", "show", *at), message)
     programs = binder.programs(groups, manifests, values)
     binder.limits(runs)
     binder.manifests(runs, manifests)

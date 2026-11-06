@@ -1128,7 +1128,11 @@ inputs:
 scoring:
   values:
     time: {block: max, over: {runs: all}, of: {run: [all, time]}}
-  show: {now: [time, all, grids/]}
+  show:
+    always:
+      values: [time]
+      inputs: [grid]
+      runs: [{of: all, fields: [verdict]}]
 """
 
 

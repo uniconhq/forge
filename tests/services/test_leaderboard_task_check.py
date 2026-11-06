@@ -269,9 +269,9 @@ async def test_each_refusal_at_a_tasks_save(
     assert old in MARKED
     changed = MARKED.replace(old, new)
     if old == "    total:\n":
-        changed = changed.replace("st2, total, all]", "st2, overall, all]").replace(
-            "{value: total}", "{value: overall}"
-        )
+        changed = changed.replace(
+            "values: [st1, st2, total]", "values: [st1, st2, overall]"
+        ).replace("{value: total}", "{value: overall}")
 
     saved = await _save(setup, acme, task, changed)
 

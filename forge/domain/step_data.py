@@ -84,6 +84,7 @@ from forge.domain.run_plan import (
     RunStep,
 )
 from forge.domain.run_workflow import STAFF_OUTPUTS
+from forge.domain.workflow_definition import TEXT_OUTPUTS
 
 JOB_VERSION = 1
 """The job shape the door answers, runner's `job.schema.json`."""
@@ -122,7 +123,6 @@ OUTCOMES = frozenset(
         "compile_error",
     }
 )
-TEXT_OUTPUTS = ("label", "message")
 REPORT_STEP = "report"
 """The step Unicon adds to every grading's pipeline, which tells the door
 the pipeline has ended (`workflow_definition.PIPELINE_STEPS`)."""

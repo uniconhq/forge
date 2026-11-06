@@ -8,28 +8,27 @@ from typing import Any
 from forge.domain.blocks.catalogue import ALL, EXEC, EXEC_MEMORY_LIMIT, EXEC_TIME_LIMIT, SHOWN_FACTS
 from forge.domain.blocks.check import ValuesCheck, check_names, check_values
 from forge.domain.blocks.evaluate import blocks_in
-from forge.domain.content import has_path, path_problem
+from forge.domain.content import has_path
 from forge.domain.definitions import (
     DEFAULT_MAX_SIZE,
     ENTRANT,
-    TASK_FILE,
     Form,
     TaskDefinition,
     form_problems,
 )
 from forge.domain.grading import Machine
-from forge.domain.plan_basics import PLANS_FOLDER, SECRET_NAME
-from forge.domain.port_values import is_reserved, scalar_to_text, type_in_words
+from forge.domain.plan_basics import SECRET_NAME
+from forge.domain.port_values import scalar_to_text, type_in_words
 from forge.domain.primitives import PROGRAMS, Port
 from forge.domain.program_manifest import EXEC_OWN_NAMES, PROGRAM_FILE, parse_program
 from forge.domain.run_task.models import EntrantInput, ProgramValue, Run, RunsFile
 from forge.domain.run_task.records import MOST_RUNS, SECRETS_LATER, Part
 from forge.domain.run_task.show_rules import (
+    ShowNames,
     _compiled_later,
-    _under_sooner,
     canonical,
     holds,
-    show_names,
+    show_problems,
 )
 from forge.domain.run_task.task_helpers import (
     _cell,
@@ -360,20 +359,6 @@ class _Binder:
         scoring = self.task.scoring
         for path, message in check_names(scoring.groups, scoring.values):
             self.refuse(("scoring", *path), message)
-        for kind, names in (("groups", scoring.groups), ("values", scoring.values)):
-            for name in names:
-                if name in self.paths or has_path(self.paths, f"{name}/"):
-                    self.refuse(
-                        ("scoring", kind, name),
-                        f"{name} is also a path in the task, so show could not tell them "
-                        "apart. Choose another name.",
-                    )
-        if ALL in self.paths or has_path(self.paths, f"{ALL}/"):
-            self.refuse(
-                ("scoring",),
-                f"{ALL} is a path in the task, and the name of the group of every run, so "
-                "show could not tell them apart. Rename it in the task's files.",
-            )
         columns, texts = self._columns(manifests)
         found = check_values(
             scoring.values,
@@ -518,68 +503,33 @@ class _Binder:
 
     def show(self, manifests: Mapping[str, bytes]) -> None:
         scoring = self.task.scoring
-        names = show_names(scoring)
-        seen: dict[str, str] = {}
-        for time, entries in scoring.show.lists().items():
-            for index, entry in enumerate(entries):
-                at: Path = ("scoring", "show", time, index)
-                if entry in seen:
-                    self.refuse(
-                        at,
-                        f"{entry} is already listed under {seen[entry]}. An entry is shown at "
-                        "one time: list it once."
-                        if seen[entry] != time
-                        else f"{entry} is already listed above. Remove this one.",
-                    )
-                    continue
-                seen[entry] = time
-                if entry in SHOWN_FACTS:
-                    problem = _compiled_later(entry, time, scoring)
+        for at, message in show_problems(scoring.show, self.show_names(manifests)):
+            self.refuse(("scoring", "show", *at), message)
+        for moment, shown in scoring.show.moments().items():
+            for index, name in enumerate(shown.outputs):
+                if name in SHOWN_FACTS:
+                    problem = _compiled_later(moment, scoring, self.repeated)
                     if problem is not None:
-                        self.refuse(at, problem)
-                    continue
-                if entry in names:
-                    continue
-                if entry in self.checked.reports:
-                    report = self.checked.reports[entry]
-                    port = report.port or self._deferred_port(report, manifests)
-                    if port is None or port.type in (Type.NUMBER, Type.TEXT):
-                        if entry in self.paths:
-                            self.refuse(
-                                at,
-                                f"{entry} names both an output of the workflow and a file of the "
-                                "task, so show cannot tell which it lists. Rename the file.",
-                            )
-                        continue
-                problem = self._shown_path_problem(entry)
-                if problem is not None:
-                    self.refuse(at, problem)
-                    continue
-                problem = _under_sooner(entry, time, scoring.show)
-                if problem is not None:
-                    self.refuse(at, problem)
+                        self.refuse(("scoring", "show", moment, "outputs", index), problem)
 
-    def _shown_path_problem(self, entry: str) -> str | None:
-        folder = entry.endswith("/")
-        problem = path_problem(entry, folder=folder)
-        if problem is not None or not (folder or "/" in entry or entry in self.paths):
-            return (
-                f"{entry} names no group, value, output, file or folder of the task. Give a "
-                "group, a value, compiled or an output by its name, a file by its path, or a "
-                "folder with a / at its end."
-            )
-        if is_reserved(entry):
-            return f"Unicon writes the files in {PLANS_FOLDER} itself, and serves none of them."
-        if entry == TASK_FILE:
-            return (
-                f"{TASK_FILE} names the task's hidden files and gives its settings, so it is "
-                "never served. Remove it."
-            )
-        # A folder may hold nothing yet, such as `public/` before the
-        # statement has a picture: it serves what it holds when it is shown.
-        if not folder and not has_path(self.paths, entry):
-            return f"The task has no file {entry}."
-        return None
+    def show_names(self, manifests: Mapping[str, bytes]) -> ShowNames:
+        """What the task's `show` may name, as the task binds its workflow."""
+        outputs: dict[str, bool | None] = {}
+        for name, report in self.checked.reports.items():
+            port = report.port or self._deferred_port(report, manifests)
+            outputs[name] = None if port is None else port.type in (Type.NUMBER, Type.TEXT)
+        scoring = self.task.scoring
+        return ShowNames(
+            values=frozenset(scoring.values),
+            groups=frozenset(scoring.groups),
+            settings=frozenset(self.settings),
+            secrets=frozenset(
+                name for name, value in self.settings.items() if isinstance(value, _Secret)
+            ),
+            entrant=frozenset(self.entrant),
+            columns=frozenset(self.repeated),
+            outputs=outputs,
+        )
 
     # 8.1, kept: limits, secrets, manifests
 

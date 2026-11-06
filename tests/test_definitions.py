@@ -22,6 +22,8 @@ from forge.domain.definitions import (
     InviteWay,
     Locks,
     Registration,
+    Shown,
+    ShownRuns,
     SignupWay,
     State,
     Way,
@@ -105,8 +107,13 @@ scoring:
   values:
     score: {block: count, over: {runs: all}}
   show:
-    now: [samples]
-    after_close: [score]
+    always:
+      runs:
+        - {of: samples, fields: [input, verdict, passed]}
+    after_deadline:
+      values: [score]
+      runs:
+        - {of: all, fields: [verdict, passed]}
 submissions:
   max: 50
   rate: {count: 1, per: 30}
@@ -554,8 +561,41 @@ def test_the_format_documents_example_task_parses() -> None:
     assert [axis.inputs for axis in task.repeat] == [["input", "answer"]]
     assert task.scoring.groups == {"samples": {"input": ["samples/1.in"]}}
     assert list(task.scoring.values) == ["score"]
-    assert (task.scoring.show.now, task.scoring.show.after_close) == (["samples"], ["score"])
+    show = task.scoring.show
+    assert show.always == Shown(
+        runs=[ShownRuns(of="samples", fields=["input", "verdict", "passed"])]
+    )
+    assert show.after_deadline == Shown(
+        values=["score"], runs=[ShownRuns(of="all", fields=["verdict", "passed"])]
+    )
+    assert show.after_release.empty
     assert (task.submissions.max, task.submissions.rate.count) == (50, 1)
+
+
+@pytest.mark.parametrize(
+    ("show", "path"),
+    [
+        ("{now: [score]}", "scoring.show.now"),
+        ("{always: {groups: [all]}}", "scoring.show.always.groups"),
+        ("{always: {runs: [{of: all, fields: []}]}}", "scoring.show.always.runs[0].fields"),
+        ("{always: {runs: [{of: all}]}}", "scoring.show.always.runs[0].fields"),
+        (
+            "{always: {runs: [{of: all, fields: [verdict], when: now}]}}",
+            "scoring.show.always.runs[0].when",
+        ),
+    ],
+)
+def test_show_takes_only_its_three_moments_each_with_its_four_lists(show: str, path: str) -> None:
+    problems = task_problems(f"name: T\nworkflow: unicon/classic@v5\nscoring: {{show: {show}}}\n")
+
+    assert path in paths(problems)
+
+
+def test_a_show_left_out_shows_nothing_at_any_moment() -> None:
+    show = parse_task(task_text()).scoring.show
+
+    assert [shown.empty for shown in show.moments().values()] == [True, True, True]
+    assert list(show.moments()) == ["always", "after_deadline", "after_release"]
 
 
 def test_a_task_leaves_inputs_and_submissions_to_their_defaults() -> None:
@@ -584,7 +624,7 @@ def test_submissions_take_a_count_and_a_rate_of_their_own() -> None:
         ("test_groups: {main: {each: 1}}\n", "test_groups", "scoring's groups"),
         ("credit: fraction\n", "credit", "scoring's values"),
         ("release_at: 2026-06-01T10:00:00Z\n", "release_at", "on the task's timeline"),
-        ("hidden: true\n", "hidden", "scoring's show after_close"),
+        ("hidden: true\n", "hidden", "scoring's show after_deadline"),
         ("limits: {submissions: 50}\n", "limits", "the most submissions"),
         ("subtasks: [{id: s1}]\n", "subtasks", "groups of runs"),
         ("stages: [{id: final}]\n", "stages", "set on each leaderboard"),
@@ -733,7 +773,13 @@ def test_the_starter_task_is_the_formats() -> None:
     assert files["statement.md"] == b"Write the statement entrants read here.\n"
     assert [axis.rows for axis in task.repeat] == [[("tests/1.in", "tests/1.ans")]]
     assert list(task.scoring.values) == ["score"]
-    assert task.scoring.show.now == ["score", "all", "public/"]
+    assert task.scoring.show.always == Shown(
+        values=["score"], runs=[ShownRuns(of="all", fields=["verdict", "passed"])]
+    )
+    assert (task.scoring.show.after_deadline.empty, task.scoring.show.after_release.empty) == (
+        True,
+        True,
+    )
     assert set(files) == {"task.yaml", "statement.md", "tests/1.in", "tests/1.ans"}
     assert files["tests/1.in"] == b"1 2\n"
     assert files["tests/1.ans"] == b"3\n"

@@ -166,10 +166,10 @@ def starter_task(name: str) -> dict[str, bytes]:
     """The files a new task is created with: a `task.yaml` titled `name`
     that runs the entrant's Python with `unicon/classic@v5` on one test,
     `tests/1.in`, `1 2`, whose answer, `tests/1.ans`, is `3`, scored by the
-    share of its tests accepted and shown at once, and a placeholder
-    statement (`STARTER_STATEMENT`), so the first save publishes. It shows
-    `public/` at once too, where the statement editor puts its pictures,
-    since `show` is the only way a file reaches an entrant.
+    share of its tests accepted and shown at once, each run with its
+    verdict, and a placeholder statement (`STARTER_STATEMENT`), so the
+    first save publishes. `public/`, where the statement editor puts its
+    pictures, needs no entry in `show`: it is served with the statement.
     """
     task = f"""\
 # The task's settings. The format is SIMPLER-CORE.md, sections 8 and 9.
@@ -192,7 +192,10 @@ scoring:
         - {{block: sum, over: {{runs: all}}, of: {{run: [all, passed]}}}}
         - {{block: count, over: {{runs: all}}}}
   show:
-    now: [score, all, public/]
+    always:
+      values: [score]
+      runs:
+        - {{of: all, fields: [verdict, passed]}}
 """
     return {
         TASK_FILE: task.encode(),

@@ -1,0 +1,238 @@
+"""The inputs `show` shows, and the staff preview of a draft `show`
+(SIMPLER-CORE.md 9.4): the task's page lists the runs whose inputs are
+shown at a moment that has come, and the shared inputs shown then, each
+file served through the download door by the run's group and place, to a
+visitor of a public contest as to an entrant, and anything not shown now
+not found as one not there; a folder serves only the files it holds;
+the owner of a submission fetches the input of the first run it did not
+pass; and the preview answers what an entrant would read at a moment
+under the draft, checked alone against the publication, with the count
+of runs it hides, to an observer of the task alone.
+"""
+
+import pytest
+
+from forge.domain.errors import Forbidden, NotFound
+from forge.domain.ids import TaskId, WorkspaceId
+from forge.domain.roles import Scope
+from forge.domain.types import Type
+from forge.domain.yaml_models import InvalidDefinition
+from forge.runtime.setup import Setup
+from forge.services import contest_home, entrant_view, landing, submissions
+from forge.testing import FakeClock
+from tests.services.conftest import SPRING, Acme
+from tests.services.test_marks import _observer_of
+from tests.services.test_pipelines import (
+    AFTER_CLOSE,
+    BEFORE_CLOSE,
+    _checked,
+    _graded_both,
+    _rows,
+    _submit,
+)
+from tests.services.test_run_task_saves import TASKS
+from tests.services.test_steps import _batch, _report, _step
+from tests.test_run_task import ISLANDS_ALWAYS
+
+SHOWN = TASKS["islands"][0].replace(
+    ISLANDS_ALWAYS,
+    ISLANDS_ALWAYS + "      inputs: [time_limit]\n",
+)
+"""islands showing its time limit, and its samples' input and answer, as
+soon as a grading ends."""
+FIRST = TASKS["islands"][0].replace(
+    ISLANDS_ALWAYS,
+    "    always:\n      runs: [{of: first_not_passed, fields: [input, verdict]}]\n",
+)
+"""islands showing, of each submission, the input and verdict of the
+first run it did not pass, and nothing else as soon as a grading ends."""
+
+
+async def test_the_task_page_lists_the_runs_and_settings_shown_now_and_serves_their_files(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme, SHOWN)
+    session = await _submit(setup, acme, islands)
+
+    page = await contest_home.task(setup, session, islands.task)
+
+    assert page.shown_inputs == {"time_limit": 2}
+    assert [(run["group"], run["place"]) for run in page.runs] == [
+        ("sample_tests", 1),
+        ("sample_tests", 2),
+    ]
+    assert page.runs[0]["tuples"][0]["key"] == {
+        "input": {"file": "samples/1.in"},
+        "answer": {"file": "samples/1.ans"},
+    }
+    found = await contest_home.shown_input(setup, session, islands.task, "input", "sample_tests", 2)
+    assert found.door is not None and found.files == ()
+    # Saved under its own name, which the run's key above already shows.
+    assert found.name == "2.in"
+    # A run whose input is not shown, a setting given inline, and one not
+    # shown at all are each not found, telling nothing of what is hidden.
+    for name, group, place in (
+        ("input", "all", 3),
+        ("input", "sample_tests", 3),
+        ("time_limit", None, None),
+        ("memory_limit", None, None),
+    ):
+        with pytest.raises(NotFound):
+            await contest_home.shown_input(setup, session, islands.task, name, group, place)
+
+
+async def test_a_visitor_fetches_a_shown_input_and_a_hidden_one_is_as_one_not_there(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme, SHOWN)
+
+    found = await landing.shown_input(setup, islands.task, "input", "sample_tests", 1)
+
+    assert found.door is not None and found.files == ()
+    with pytest.raises(NotFound) as hidden:
+        await landing.shown_input(setup, islands.task, "input", "all", 3)
+    for name, group, place in (("nothing", None, None), ("input", "nowhere", 1)):
+        with pytest.raises(NotFound) as missing:
+            await landing.shown_input(setup, islands.task, name, group, place)
+        assert str(missing.value) == str(hidden.value)
+
+
+async def test_a_shown_folder_serves_the_files_it_holds_and_no_other_path(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme)
+    async with setup.unit_of_work() as ctx:
+        published = await entrant_view.task(
+            ctx, islands.task, await entrant_view.contest(ctx, SPRING)
+        )
+        assert published is not None
+        folder = (Type.FOLDER, "samples")
+
+        listed = await entrant_view.shown_input(ctx, published, folder, None)
+        one = await entrant_view.shown_input(ctx, published, folder, "1.in")
+        for path in ("9.in", "../tests/3.in", "samples/1.in"):
+            with pytest.raises(NotFound, match=r"There is no such file\."):
+                await entrant_view.shown_input(ctx, published, folder, path)
+
+    assert listed.files == ("1.ans", "1.in", "2.ans", "2.in") and listed.door is None
+    assert listed.name is None
+    assert one.door is not None and one.name == "1.in"
+
+
+async def test_the_owner_fetches_the_input_of_the_first_run_their_submission_did_not_pass(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme, FIRST)
+    session = await _submit(setup, acme, islands)
+    [early] = await _rows(setup, "early")
+    await _step(setup, acme, early.id, "early", "solution", _batch({"r3": "wrong_answer"}))
+    await _step(setup, acme, early.id, "early", "compare", _batch(score=True))
+    await _report(setup, early.id, "early")
+    await setup.settle()
+
+    [mine] = await submissions.mine(setup, session, islands.task)
+    assert mine.grading is not None
+    assert [(run["group"], run["place"], run["verdict"]) for run in mine.grading.runs] == [
+        ("first_not_passed", 1, "wrong_answer")
+    ]
+    found = await submissions.shown_input(
+        setup, session, islands.task, 1, "first_not_passed", 1, "input"
+    )
+    assert found.door is not None
+    for group, place, name in (
+        ("first_not_passed", 1, "answer"),
+        ("first_not_passed", 2, "input"),
+        ("all", 3, "input"),
+    ):
+        with pytest.raises(NotFound):
+            await submissions.shown_input(setup, session, islands.task, 1, group, place, name)
+    # The task's page shows no run of first_not_passed: it is a
+    # submission's own.
+    assert (await contest_home.task(setup, session, islands.task)).runs == ()
+
+
+async def test_the_preview_answers_the_entrants_page_at_a_moment_under_the_draft(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands, _ = await _graded_both(setup, acme)
+    clock.set(AFTER_CLOSE)
+    [early] = await _rows(setup, "early")
+    async with setup.unit_of_work() as ctx:
+        owner = ctx.forge.workspaces.owner_of(WorkspaceId(early.workspace_id))
+    draft = {
+        "always": {"values": ["sample_score"]},
+        "after_deadline": {"values": ["st1"]},
+        "after_release": {
+            "values": ["st2"],
+            "runs": [{"of": "st2_tests", "fields": ["input", "score"]}],
+        },
+    }
+
+    before = await submissions.preview(setup, acme.ada, islands.task, draft, "always", owner, 1)
+    released = await submissions.preview(
+        setup, acme.ada, islands.task, draft, "after_release", owner, 1
+    )
+    empty = await submissions.preview(setup, acme.ada, islands.task, draft, "after_release")
+
+    # Each moment is read alone: a release shows st2 and its runs, not
+    # what the deadline shows, though the clock is past it.
+    assert before.result is not None and released.result is not None
+    assert [value.name for value in before.result.run_values] == ["sample_score"]
+    assert (before.result.runs, before.hidden) == ((), 4)
+    assert [value.name for value in released.result.run_values] == ["sample_score", "st2"]
+    assert [(run["group"], run["place"]) for run in released.result.runs] == [
+        ("st2_tests", 1),
+        ("st2_tests", 2),
+    ]
+    assert released.hidden == 2
+    # With no submission, what an entrant would be shown before one.
+    assert empty.result is None and empty.placeholders is not None
+    assert empty.placeholders.values == ("sample_score", "st2")
+    assert len(empty.placeholders.runs) == 2 and empty.hidden == 2
+
+
+async def test_the_preview_is_refused_to_one_who_does_not_observe_the_task(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme)
+    elsewhere = _observer_of(acme, Scope("acme", "spring", "sum"))
+
+    with pytest.raises(Forbidden):
+        await submissions.preview(setup, elsewhere, islands.task, {}, "always")
+
+
+async def test_the_preview_checks_the_draft_alone_and_needs_a_publication(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme)
+
+    with pytest.raises(InvalidDefinition) as refused:
+        await submissions.preview(
+            setup,
+            acme.ada,
+            islands.task,
+            {
+                "always": {"values": ["nothing"], "outputs": ["time_ms"]},
+                "after_deadline": {"values": ["st1"]},
+                "after_release": {"values": ["total"]},
+            },
+            "always",
+        )
+    assert [problem["path"] for problem in refused.value.errors] == [
+        "scoring.show.always.values[0]",
+        "scoring.show.always.outputs[0]",
+        "scoring.show.after_release.values[0]",
+    ]
+    with pytest.raises(InvalidDefinition):
+        await submissions.preview(setup, acme.ada, islands.task, {"now": ["total"]}, "always")
+    with pytest.raises(InvalidDefinition):
+        await submissions.preview(setup, acme.ada, islands.task, {}, "now")
+    with pytest.raises(NotFound, match=r"Publish the task to preview it\."):
+        await submissions.preview(setup, acme.ada, TaskId("acme/spring/later"), {}, "always")

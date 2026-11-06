@@ -13,6 +13,10 @@ from forge.domain.yaml_models import name_rule
 CONTEST_FILE = "contest.yaml"
 TASK_FILE = "task.yaml"
 STATEMENT_FILE = "statement.md"
+PUBLIC_FOLDER = "public/"
+"""The task's folder served with its statement: whoever may read the
+statement may read any file in it, its pictures and any other download,
+such as starter code (SIMPLER-CORE.md 9.4)."""
 
 Flag = Annotated[bool, Field(strict=True)]
 

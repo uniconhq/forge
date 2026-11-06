@@ -88,11 +88,12 @@ refused the submission, in fixed words.
 
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from fractions import Fraction
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import func, select, text
 
 from forge.db.tables import Grading, StepOutput
@@ -101,8 +102,17 @@ from forge.db.tables.gradings import FRONT
 from forge.domain import exact_json, run_showing
 from forge.domain import submissions as rules
 from forge.domain.blocks.catalogue import ENTERED
+from forge.domain.blocks.check import check_values
 from forge.domain.blocks.evaluate import using
-from forge.domain.definitions import ContestDefinition
+from forge.domain.definitions import (
+    AFTER_DEADLINE,
+    AFTER_RELEASE,
+    ALWAYS,
+    TASK_FILE,
+    ContestDefinition,
+    ShowTimes,
+    TaskDefinition,
+)
 from forge.domain.errors import (
     Conflict,
     Forbidden,
@@ -125,7 +135,9 @@ from forge.domain.leaderboards import entries_open
 from forge.domain.names import WorkspaceOwner
 from forge.domain.release import Extension
 from forge.domain.roles import Role, contest_id_of, task_scope
+from forge.domain.run_plan import RunPlan
 from forge.domain.run_showing import TextAt, ValueShown
+from forge.domain.run_task import ShowNames, draft_problems
 from forge.domain.sessions import Session
 from forge.domain.step_data import RESULT_VERSION
 from forge.domain.submission_state import SubmissionState, told
@@ -138,6 +150,8 @@ from forge.domain.uploads import (
     pointer_text,
     read_pointer,
 )
+from forge.domain.workflow_definition import RUN_NAMES
+from forge.domain.yaml_models import InvalidDefinition, Problem, joined, problems_of
 from forge.log import get_logger
 from forge.port.uploads import SubmissionPlace
 from forge.runtime.actions import action
@@ -153,7 +167,7 @@ from forge.services import (
     uploads,
 )
 from forge.services.access import Organiser, require
-from forge.services.entrant_view import PublishedTask
+from forge.services.entrant_view import PublishedTask, ShownInput
 from forge.services.submitters import Person
 
 log = get_logger(__name__)
@@ -186,7 +200,11 @@ class Result:
     log among them, and `compiled`, once a run is shown and none while it
     waits, and, to organisers alone, `facts` (`forge.domain.run_showing`),
     an entrant's texts there with no output named, `texts_at` where each is
-    shown and what holds it, for `read_text` and never served; and
+    shown and what holds it, for `read_text` and never served; `inputs`
+    the task's settings shown to its reader, a file or folder by its path,
+    which `shown_input` serves with each run's; `hidden`, in a staff
+    preview alone (`preview`), how many runs the staff view holds that the
+    answer does not show; and
     `reveal_at`, until then, when the task reveals, when what its entrant
     reads changes with no grading's change to say so, so a page open on it
     reads it again then.
@@ -204,6 +222,8 @@ class Result:
     compiled: int | None = None
     facts: Mapping[str, Fraction] = field(default_factory=dict)
     texts_at: Mapping[TextAt, tuple[str, str]] = field(default_factory=dict)
+    inputs: Mapping[str, Any] = field(default_factory=dict)
+    hidden: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -884,6 +904,189 @@ async def read_text(ctx: Context, session: Session, task: TaskId, number: int, a
 
 
 @action
+async def shown_input(
+    ctx: Context,
+    session: Session,
+    task: TaskId,
+    number: int,
+    group: str,
+    place: int,
+    name: str,
+    path: str | None = None,
+) -> ShownInput:
+    """An input of a run the signed-in person's own submission of the task
+    shows them now that is a file or a folder, the run named by the group
+    it is shown under and its place there, `first_not_passed` and 1 for
+    that row (`run_showing.shown_file`): a folder's files, or with `path`
+    the one below it (`entrant_view.shown_input`). `NotFound` for a run or
+    an input the answer does not show now, and for a submission that is
+    not theirs.
+    """
+    person = await submitters.person(ctx, session, task)
+    workspace = person.workspace
+    found = await _read(ctx, Reading.of(person, workspace), number) if workspace is not None else []
+    if not found:
+        raise NotFound(NO_SUCH_SUBMISSION)
+    grading = found[0].grading
+    named = (
+        run_showing.shown_file(grading.inputs, grading.runs, name, group, place)
+        if grading is not None
+        else None
+    )
+    return await entrant_view.shown_input(ctx, person.published, named, path)
+
+
+@dataclass(frozen=True, slots=True)
+class View:
+    """The moment a staff preview reads a grading at, as its entrant would
+    then: whether the task has closed for every row, and whether its
+    results are released (`PREVIEW_MOMENTS`)."""
+
+    revealed: bool
+    released: bool
+
+
+PREVIEW_MOMENTS = {
+    ALWAYS: View(revealed=False, released=False),
+    AFTER_DEADLINE: View(revealed=True, released=False),
+    AFTER_RELEASE: View(revealed=False, released=True),
+}
+"""What each moment of `show` previews: `always` alone, before the deadline
+and with nothing released; the deadline passed with nothing released; and
+a release before the deadline. The two later moments are apart, as a
+release may come before the deadline or after it."""
+NOT_PUBLISHED = "Publish the task to preview it."
+
+
+@dataclass(frozen=True, slots=True)
+class ShowPreview:
+    """What an entrant would be shown at a moment under a draft `show`: of
+    the submission named, its grading as they would read it (`Result`, with
+    `hidden` the runs the staff view holds that it does not show); with
+    none named, what they would be shown before any submission
+    (`run_showing.placeholders`), with `hidden` the task's runs not among
+    them.
+    """
+
+    moment: str
+    hidden: int
+    result: Result | None = None
+    placeholders: run_showing.Placeholders | None = None
+
+
+@action
+async def preview(
+    ctx: Context,
+    organiser: Organiser,
+    task: TaskId,
+    show: Mapping[str, Any],
+    moment: str,
+    owner: WorkspaceOwner | None = None,
+    number: int | None = None,
+) -> ShowPreview:
+    """The entrant's page at `moment` with the draft `show` in place of the
+    latest publication's, of the submission numbered `number` of the
+    entrant `owner` when both are given (`organised`), so the editor shows
+    exactly what `run_showing` would. The draft is checked alone, against
+    the publication, as its save would word each problem
+    (`run_task.draft_problems`). Needs the observer role at the task.
+    `NotFound` for a task never published, "Publish the task to preview
+    it.", and for a row with no such submission; `InvalidDefinition` for a
+    draft or a moment that does not read.
+    """
+    require(organiser, task_scope(task), Role.OBSERVER)
+    view = PREVIEW_MOMENTS.get(moment)
+    if view is None:
+        raise InvalidDefinition(
+            TASK_FILE,
+            [Problem(path="moment", message=f"Preview at {joined(list(PREVIEW_MOMENTS))}.")],
+        )
+    contest = contest_id_of(task_scope(task))
+    settings = await entrant_view.contest(ctx, contest)
+    found = await entrant_view.task(ctx, task, settings)
+    if found is None:
+        raise NotFound(NOT_PUBLISHED)
+    held = await entrant_view.runs_held(ctx, found)
+    plan = await entrant_view.plan_at(ctx, task, found.publication.version)
+    current = replace(found, definition=_with_show(found.definition, plan, held, show))
+    log.info("submissions.previewed", task=task, moment=moment, user_id=organiser.user.id)
+    if owner is None or number is None:
+        shown = run_showing.placeholders(
+            current.definition.scoring,
+            held.runs,
+            revealed=view.revealed,
+            released=view.released,
+            titles=held.titles,
+            axes=held.axes,
+            settings=held.settings,
+            kinds=held.kinds,
+        )
+        every = {run.id for run in held.runs}
+        return ShowPreview(moment, len(every - shown.ids), placeholders=shown)
+    workspace = ctx.forge.workspaces.workspace_of(contest, owner)
+    read = await _read(ctx, Reading(task, settings, current, workspace), number, view=view)
+    if not read:
+        raise NotFound(NO_SUCH_SUBMISSION)
+    result = read[0].grading
+    return ShowPreview(moment, (result.hidden or 0) if result is not None else 0, result=result)
+
+
+def _with_show(
+    definition: TaskDefinition, plan: RunPlan, held: entrant_view.RunsHeld, show: Mapping[str, Any]
+) -> TaskDefinition:
+    """`definition` with the draft `show` in place of its own, once the
+    draft reads and fits the publication alone: its values, groups,
+    settings and secrets, its entrant and repeated inputs, and its plan's
+    reports, a workflow output the plan does not report being a file.
+    `InvalidDefinition` naming every problem at its path in `task.yaml`.
+    """
+    try:
+        draft = ShowTimes.model_validate(show)
+    except ValidationError as error:
+        raise InvalidDefinition(
+            TASK_FILE,
+            [
+                Problem(path=_under_show(problem["path"]), message=problem["message"])
+                for problem in problems_of(error)
+            ],
+        ) from None
+    scoring = definition.scoring.model_copy(update={"show": draft})
+    columns = frozenset(name for axis in held.axes for name in axis)
+    names = ShowNames(
+        values=frozenset(scoring.values),
+        groups=frozenset(scoring.groups),
+        settings=frozenset(held.settings) | held.secrets,
+        secrets=held.secrets,
+        entrant=frozenset(plan.entrant),
+        columns=columns,
+        outputs={name: name in plan.reports for name in held.outputs},
+    )
+    once = {
+        name
+        for name, report in plan.reports.items()
+        if (step := plan.steps.get(report.step)) is not None
+        and (step.once or name in (step.once_outputs or ()))
+    }
+    values = check_values(
+        scoring.values,
+        groups=scoring.groups,
+        columns=dict.fromkeys((*plan.reports, *RUN_NAMES, *columns)),
+        keys={},
+    )
+    problems = draft_problems(scoring, names, once, values)
+    if problems:
+        raise InvalidDefinition(TASK_FILE, problems)
+    return definition.model_copy(update={"scoring": scoring})
+
+
+def _under_show(path: str) -> str:
+    """A path below a draft `show`, as `task.yaml` has it."""
+    if not path:
+        return "scoring.show"
+    return f"scoring.show{path}" if path.startswith("[") else f"scoring.show.{path}"
+
+
+@action
 async def read_organised_text(
     ctx: Context,
     organiser: Organiser,
@@ -935,11 +1138,17 @@ class Reading:
 
 
 async def _read(
-    ctx: Context, reading: Reading, number: int | None = None, *, everything: bool = False
+    ctx: Context,
+    reading: Reading,
+    number: int | None = None,
+    *,
+    everything: bool = False,
+    view: View | None = None,
 ) -> list[Submission]:
     """The workspace's submissions of the task from their grading rows,
     newest first, or the one numbered `number`; with `everything`, as
-    organisers read them.
+    organisers read them, and with `view`, as its entrant would at a
+    moment a staff preview picks.
     """
     query = select(Grading).where(
         Grading.workspace_id == reading.workspace, Grading.task_id == reading.task, FRONT
@@ -965,6 +1174,7 @@ async def _read(
             gone,
             chosen,
             everything=everything,
+            view=view,
         )
         for found in sorted(grouped, reverse=True)
     ]
@@ -1001,6 +1211,7 @@ async def _submission(
     chosen: leaderboards.Chosen | None = None,
     *,
     everything: bool = False,
+    view: View | None = None,
 ) -> Submission:
     """The submission as its owner reads it, by the attempt of its grading
     that counts (`scores.counted`), with `lost` naming the gradings whose
@@ -1028,6 +1239,7 @@ async def _submission(
         extension,
         chosen,
         everything=everything,
+        view=view,
     )
     return Submission(reading.task, number, at, result)
 
@@ -1043,8 +1255,9 @@ async def _result(
     chosen: leaderboards.Chosen | None = None,
     *,
     everything: bool = False,
+    view: View | None = None,
 ) -> Result:
-    """The grading as its contestant may see it now. A run in
+    """The grading as its contestant may see it now, or at `view`'s moment. A run in
     `system_error` is told as delayed, with nothing of it shown, and one
     staff cancelled as cancelled, with the sentence they gave; but a row
     that failed with the runs it gave is read as one done, its faulted runs
@@ -1067,6 +1280,7 @@ async def _result(
             extension,
             chosen,
             everything=everything,
+            view=view,
         )
     if status is GradingStatus.CANCELLED:
         return Result(row.id, row.attempt, state, row.cancel_reason)
@@ -1086,12 +1300,13 @@ async def _runs(
     chosen: leaderboards.Chosen | None,
     *,
     everything: bool,
+    view: View | None = None,
 ) -> Result:
     """A grading as its reader sees it now, from both its rows
     (11.3): its values worked out on read (`scores.run_scored`) and shown
-    by what the task's latest publication shows now, `on_release` while
+    by what the task's latest publication shows now, `after_release` while
     its results are released (`run_showing.shown`, 9.4), so a group moved
-    to `now` shows its runs even where they ran late. Its values are
+    to `always` shows its runs even where they ran late. Its values are
     worked out as if no mark were entered until a leaderboard cell shown to the
     entrant counted the submission, of those `chosen` gives, and never when
     none did (14), so a mark held back tells nothing a submission with none
@@ -1101,10 +1316,14 @@ async def _runs(
     stands, `grading` or `delayed`; and a task with
     nothing shown during the contest is told as `submitted` until the
     reveal. Organisers read every value and every run of both rows at
-    once, and where each row stands in the gradings routes.
+    once, and where each row stands in the gradings routes. With `view`,
+    it is read as its entrant would at that moment, and `hidden` counts
+    the runs the organisers' reading holds that it does not show.
     """
     late = await scores.late_of(ctx, row)
     revealed = reveal_at is not None and ctx.now >= reveal_at
+    if view is not None:
+        revealed, reveal_at = view.revealed, None
     marks: dict[str, Fraction] | None = None
     if not everything:
         counted = chosen or leaderboards.Chosen()
@@ -1113,22 +1332,32 @@ async def _runs(
             # Worked out with no mark, so it reads as a submission with none.
             marks = {}
     scored = await scores.run_scored(ctx, current, settings, extension, row, late, marks)
-    released = not everything and await entrant_view.results_released(ctx, current.id)
-    seen = run_showing.shown(
-        current.definition.scoring,
-        scored.held.runs,
-        scored.held.files,
-        scored.whole,
-        scored.early,
-        scored.self_reported,
-        revealed=revealed,
-        released=released,
-        everything=everything,
-        late=scored.late,
-        titles=scored.held.titles,
-        axes=scored.held.axes,
-        meanings=scored.held.meanings,
+    released = (
+        view.released
+        if view is not None
+        else not everything and await entrant_view.results_released(ctx, current.id)
     )
+
+    def shown(*, everything: bool) -> run_showing.Shown:
+        return run_showing.shown(
+            current.definition.scoring,
+            scored.held.runs,
+            scored.whole,
+            scored.early,
+            scored.self_reported,
+            revealed=revealed,
+            released=released,
+            everything=everything,
+            late=scored.late,
+            titles=scored.held.titles,
+            axes=scored.held.axes,
+            meanings=scored.held.meanings,
+            settings=scored.held.settings,
+            kinds=scored.held.kinds,
+        )
+
+    seen = shown(everything=everything)
+    hidden = None if view is None else len(shown(everything=True).ids - seen.ids)
     runs, once = seen.runs, seen.once
     texts_at: dict[run_showing.TextAt, tuple[str, str]] = {}
     if not everything:
@@ -1152,6 +1381,8 @@ async def _runs(
         compiled=seen.compiled,
         facts=seen.facts,
         texts_at=texts_at,
+        inputs=seen.inputs,
+        hidden=hidden,
     )
 
 

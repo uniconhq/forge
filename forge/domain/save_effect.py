@@ -5,7 +5,7 @@ publishes (#449), and answer a save that published (M66).
 - The first line says whether anyone's result changes. Results change when
   the save grades a submission again, or when the task has a graded
   submission and the save moves what one shows: its groups, its values or
-  when `show` shows a group or value. A change to the submission limits
+  when `show` shows a value, an output or a run's result. A change to the submission limits
   moves no result: a lowered `max` takes no result away and a raised one
   grades nothing by itself (#445), so they change only what entrants may
   still submit; nor does anything said under what entrants read.
@@ -13,27 +13,35 @@ publishes (#449), and answer a save that published (M66).
   changed how the task grades; which of its steps run again, and that they
   wait for the save's check when it has one.
 - **Scores:** each group and value added, removed or changed, a value
-  changed with what it reads, and each entry `show` shows at another time,
+  changed with what it reads, and each value, output and run's result
+  `show` shows at another moment,
   then each leaderboard counted again with it, then the submission limit
   and rate when they change; a value is named, never written out, since
   the editor shows its tree.
 - **What entrants read:** whether the statement, the task's title or the
-  files beside the statement change, and each task file or folder `show`
-  lists at another time, never one only a check names.
+  files beside the statement, in `public/`, change, and each input `show`
+  shows at another moment, a setting or a run's own.
 
 Every list holds at least one line, a "nothing changes" line when nothing
 does, so a page lays the four parts out as they come. No line names a key
 of a file: a group or a value by its name (M58).
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 from forge.domain.blocks.leaderboard_shape_check import LeaderboardsCheck, check_leaderboards
 from forge.domain.blocks.tree_reads import reached
-from forge.domain.checks import check_only
-from forge.domain.definitions import ContestDefinition, Rate, Scoring, TaskDefinition
-from forge.domain.run_task import SHOWN_WORDS, show_names, shown_times
+from forge.domain.definitions import (
+    AFTER_DEADLINE,
+    AFTER_RELEASE,
+    ALWAYS,
+    ContestDefinition,
+    Rate,
+    Scoring,
+    TaskDefinition,
+)
+from forge.domain.run_task import listed, picks, shown_when
 from forge.domain.yaml_models import joined
 
 RESULTS_CHANGE = "Results change."
@@ -114,7 +122,7 @@ def effect_of(
             *(_program_cost(name, regrades) for name in programs if changes and regrades),
         ),
         scores=tuple(scores) or (NO_SCORE_CHANGES,),
-        reading=_reading(first, before, after, read, _file_moves(before, after)),
+        reading=_reading(first, before, after, read, _input_moves(before, after)),
     )
 
 
@@ -205,7 +213,9 @@ def _scores(
     leaderboards = _titles(contest, checked, checked.reading(task)) if checked is not None else []
     if before is None and unread:
         return [UNREAD_SCORES, _scored_again(leaderboards)], True
-    found, moves = _run_scores(task, before, after.scoring, contest, checked)
+    found, moves = _run_scores(
+        task, before, after.scoring, contest, checked, _columns(before) | _columns(after)
+    )
     if before is None:
         return found, moves
     # What an entrant may still submit moves no result.
@@ -231,11 +241,13 @@ def _run_scores(
     after: Scoring,
     contest: ContestDefinition | None,
     checked: LeaderboardsCheck | None,
+    columns: Collection[str] = (),
 ) -> tuple[list[str], bool]:
     """A task's scoring changes in words: each group and value added,
     removed or changed, a value changed when its tree is or when a group or
-    value it reads, directly or through others, changed; each entry `show`
-    shows at another time; then the leaderboards reading a value that changed,
+    value it reads, directly or through others, changed; each value, output
+    and run's result `show` shows at another moment, `columns` the task's
+    repeated inputs; then the leaderboards reading a value that changed,
     which count again, or at a first publication each leaderboard reading the
     task. Whether any of it moves what a result is or shows. A value is
     named, never written out: the editor shows its tree."""
@@ -262,8 +274,7 @@ def _run_scores(
             found.append(f"The value {name} changes with {joined(sorted(moved[name]))}.")
     found += [f"The value {name} is gone." for name in then.values if name not in after.values]
     rescored = bool(found)
-    names = show_names(then) | show_names(after)
-    shown = _shown_moves(then, after, names)
+    shown = _moves(_shown(then, columns, inputs=False), _shown(after, columns, inputs=False), "see")
     found += shown
     if rescored:
         changed = (
@@ -317,63 +328,81 @@ def _read_names(node: object) -> set[str]:
     return found
 
 
-def _shown_moves(before: Scoring, after: Scoring, names: set[str]) -> list[str]:
-    """Each group or value, of `names`, that `show` shows at another time,
-    or no longer shows."""
-    then = {entry: time for entry, time in shown_times(before.show).items() if entry in names}
-    now = {entry: time for entry, time in shown_times(after.show).items() if entry in names}
+def _columns(definition: TaskDefinition | None) -> set[str]:
+    """The task's repeated inputs, a run's own inputs."""
+    if definition is None:
+        return set()
+    return {name for axis in definition.repeat for name in axis.inputs}
+
+
+def _shown(
+    scoring: Scoring, columns: Collection[str], *, inputs: bool
+) -> dict[str, frozenset[str]]:
+    """Each thing `show` shows, in words, with the moments it shows it at:
+    its values and outputs, and each field of a run entry that is a run's
+    result, as `score of sample`; or, with `inputs`, its settings and each
+    field of a run entry that is one of `columns`, the run's own inputs."""
+    show = scoring.show
+    found = (
+        dict(listed(show, "inputs"))
+        if inputs
+        else {**listed(show, "values"), **listed(show, "outputs")}
+    )
+    for of, fields in picks(show).items():
+        for name, moments in fields.items():
+            if (name in columns) == inputs:
+                found[f"{name} of {of}"] = moments
+    return found
+
+
+def _moves(
+    before: Mapping[str, frozenset[str]],
+    after: Mapping[str, frozenset[str]],
+    verb: str,
+    words: Callable[[frozenset[str]], str] = shown_when,
+) -> list[str]:
+    """Each thing `after` shows at other moments than `before`, or no longer
+    shows, as entrants `verb` it, its moments in `words`."""
     found: list[str] = []
-    for entry, time in now.items():
-        was = then.get(entry)
+    for entry, moments in after.items():
+        was = before.get(entry)
         if was is None:
-            found.append(f"Entrants now see {entry} {SHOWN_WORDS[time]}.")
-        elif was != time:
-            found.append(f"Entrants see {entry} {SHOWN_WORDS[time]} (was {SHOWN_WORDS[was]}).")
+            found.append(f"Entrants now {verb} {entry} {words(moments)}.")
+        elif was != moments:
+            found.append(f"Entrants {verb} {entry} {words(moments)} (was {words(was)}).")
     found += [
-        f"Entrants no longer see {entry} (was {SHOWN_WORDS[was]})."
-        for entry, was in then.items()
-        if entry not in now
+        f"Entrants no longer {verb} {entry} (was {words(was)})."
+        for entry, was in before.items()
+        if entry not in after
     ]
     return found
 
 
-FILE_WORDS = {
-    "now": "during the contest",
-    "after_close": "from the reveal",
-    "on_release": "once results are released",
+INPUT_WORDS = {
+    ALWAYS: "with the statement",
+    AFTER_DEADLINE: "after the deadline",
+    AFTER_RELEASE: "once results are released",
 }
-"""When entrants may read a task file `show` lists, by its time."""
+"""When entrants may read an input `show` lists, by its moment: `always`
+is whenever the statement is visible, since a run's inputs are needed
+before anyone submits."""
 
 
-def _file_moves(before: TaskDefinition | None, after: TaskDefinition) -> list[str]:
-    """Each task file or folder a task's `show` lists at another time,
-    or no longer lists, but one only a check names, which is never shown
-    (`checks.check_only`). What entrants read, never a result."""
+def _input_moves(before: TaskDefinition | None, after: TaskDefinition) -> list[str]:
+    """Each input `show` shows at other moments, or no longer shows: a
+    setting, or a run's own input as a run entry's field. What entrants
+    read, never a result."""
     if before is None:
         return []
-    names = show_names(before.scoring) | show_names(after.scoring)
-
-    def files(definition: TaskDefinition, scoring: Scoring) -> dict[str, str]:
-        return {
-            entry: time
-            for entry, time in shown_times(scoring.show).items()
-            if entry not in names and not check_only(definition, entry)
-        }
-
-    then, now = files(before, before.scoring), files(after, after.scoring)
-    found: list[str] = []
-    for entry, time in now.items():
-        was = then.get(entry)
-        if was is None:
-            found.append(f"Entrants can read {entry} {FILE_WORDS[time]}.")
-        elif was != time:
-            found.append(f"Entrants can read {entry} {FILE_WORDS[time]} (was {FILE_WORDS[was]}).")
-    found += [
-        f"Entrants can no longer read {entry} (was {FILE_WORDS[was]})."
-        for entry, was in then.items()
-        if entry not in now
-    ]
-    return found
+    columns = _columns(before) | _columns(after)
+    return _moves(
+        _shown(before.scoring, columns, inputs=True),
+        _shown(after.scoring, columns, inputs=True),
+        "read",
+        lambda moments: " or ".join(
+            words for moment, words in INPUT_WORDS.items() if moment in moments
+        ),
+    )
 
 
 def _rate_words(rate: Rate) -> str:

@@ -64,6 +64,8 @@ RUN_NAMES = ("verdict", "passed")
 """What Unicon gives every run itself: its verdict, and `passed`, 1 when the
 verdict is `accepted`, else 0 (SIMPLER-CORE.md 7.3). A workflow names no
 input or output with one, nor with one of `RESERVED_NAMES`."""
+TEXT_OUTPUTS = ("label", "message")
+"""The texts a run's steps may give to be shown with its verdict."""
 MAX_USES = 32
 """The most distinct `use:` references one definition holds; each costs a
 read at every check."""

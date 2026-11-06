@@ -662,13 +662,34 @@ async def test_a_run_workflow_version_is_a_box_with_its_inputs_and_outputs(
             BoxInput("note", "text", None, True, "Note", None),
         ),
         (
-            BoxOutput("log", "text", None, None, None, None, None),
+            BoxOutput("log", "text", None, None, None, None, None, True),
             BoxOutput("time_ms", "number", None, None, "lower", 0, None),
         ),
         "v2",
         "Compiles a solution and runs it once,\nunder a second.\n",
     )
     assert later.newer_version is None
+
+
+async def test_an_output_is_once_when_its_port_says_or_its_step_reads_no_repeated_input(
+    setup: Setup, acme: Acme
+) -> None:
+    bob = await _own(setup, acme)
+    await _version(setup, acme, bob, "timed", TIMED)
+
+    alone = await workflows.box(setup, bob, "bob/timed@v1", repeated=())
+    repeated = await workflows.box(setup, bob, "bob/timed@v1", repeated=("note",))
+
+    # The compile log is the same for every item; the run time is the
+    # step's, done for each run once it reads a repeated input.
+    assert [(output.name, output.once) for output in alone.outputs] == [
+        ("log", True),
+        ("time_ms", True),
+    ]
+    assert [(output.name, output.once) for output in repeated.outputs] == [
+        ("log", True),
+        ("time_ms", False),
+    ]
 
 
 async def test_a_box_the_caller_cannot_read_is_not_found(setup: Setup, acme: Acme) -> None:
