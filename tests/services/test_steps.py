@@ -1100,7 +1100,7 @@ inputs:
   grid: file
 steps:
   - id: game
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with:
       programs:
         first:
@@ -1442,9 +1442,25 @@ async def test_a_job_lists_only_its_platforms_environment_pieces(
     lock = EnvironmentLock.model_validate_json(_repo(acme, task.task).files["environment.lock"])
     selected = lock.platforms[platform]["python"]
     expected = {piece.sha256 for piece in selected.conda + selected.pypi}
+    assert len(selected.pypi) == 1
     assert {(file["sha256"], file["cached"]) for file in pieces} == {
         (sha, True) for sha in expected
     }
+    named = next(
+        each["inputs"]["environment"]["file"]
+        for each in job["inputs"]["batch"]
+        if "environment" in each["inputs"]
+    )
+    sha256 = _download(job, named)["url"].rpartition("/files/")[2]
+    document = json.loads(
+        await steps.step_file(setup, row, _named(access), sha256, _bearer(access))
+    )
+    assert (document["version"], document["platform"], set(document["languages"])) == (
+        3,
+        platform,
+        {"python"},
+    )
+    assert set(document["pieces"]) == expected
     async with setup.unit_of_work() as ctx:
         held = await ctx.db.get(PublicationObjects, task.publication)
         assert held is not None

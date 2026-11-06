@@ -20,7 +20,7 @@ RELEASE_MOVED = (
 )
 """The words a save says when it moves only the released split, which
 grades nothing again while the task's results are not released."""
-EXEC_USE = "unicon/exec@v3"
+EXEC_USE = "unicon/exec@v4"
 
 
 def implicit_inputs(use: str) -> frozenset[str]:
@@ -33,8 +33,8 @@ PROGRAM_USES = (EXEC_USE,)
 source of the task's own is checked with at the save, by its `build` form,
 which a save reads when a value has one or the workflow uses it."""
 RETIRED = (
-    f"{PRIMITIVE_OWNER}/compile and {PRIMITIVE_OWNER}/exec@v1 and "
-    f"{PRIMITIVE_OWNER}/exec@v2 are retired; use {EXEC_USE}."
+    f"{PRIMITIVE_OWNER}/compile and {PRIMITIVE_OWNER}/exec@v1, {PRIMITIVE_OWNER}/exec@v2 "
+    f"and {PRIMITIVE_OWNER}/exec@v3 are retired; use {EXEC_USE}."
 )
 """What a step naming a retired primitive is refused with."""
 BUILT = ("source", "language", "entry")
@@ -212,5 +212,5 @@ StepId = Annotated[str, Field(pattern=FLAT_STEP_ID)]
 def retired(owner: str, name: str, version: str) -> bool:
     """Whether a primitive version is one `RETIRED` names."""
     return owner == PRIMITIVE_OWNER and (
-        name == "compile" or (name == "exec" and version in ("v1", "v2"))
+        name == "compile" or (name == "exec" and version in ("v1", "v2", "v3"))
     )

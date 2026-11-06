@@ -13,14 +13,17 @@ of runs it hides, to an observer of the task alone.
 import pytest
 
 from forge.domain.errors import Forbidden, NotFound
+from forge.domain.grading import GradingStatus
+from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId, WorkspaceId
 from forge.domain.roles import Scope
 from forge.domain.types import Type
+from forge.domain.workflows import Visibility
 from forge.domain.yaml_models import InvalidDefinition
 from forge.runtime.setup import Setup
 from forge.services import contest_home, entrant_view, landing, submissions
 from forge.testing import FakeClock
-from tests.services.conftest import SPRING, Acme
+from tests.services.conftest import SPRING, Acme, make_task
 from tests.services.test_marks import _observer_of
 from tests.services.test_pipelines import (
     AFTER_CLOSE,
@@ -31,8 +34,8 @@ from tests.services.test_pipelines import (
     _submit,
 )
 from tests.services.test_run_task_saves import TASKS
-from tests.services.test_steps import _batch, _report, _step
-from tests.test_run_task import ISLANDS_ALWAYS
+from tests.services.test_steps import _batch, _built, _report, _save, _step
+from tests.test_run_task import ISLANDS_ALWAYS, deployed
 
 SHOWN = TASKS["islands"][0].replace(
     ISLANDS_ALWAYS,
@@ -236,3 +239,76 @@ async def test_the_preview_checks_the_draft_alone_and_needs_a_publication(
         await submissions.preview(setup, acme.ada, islands.task, {}, "now")
     with pytest.raises(NotFound, match=r"Publish the task to preview it\."):
         await submissions.preview(setup, acme.ada, TaskId("acme/spring/later"), {}, "always")
+
+
+GAME = """\
+name: Guess
+workflow: unicon/game@v1
+inputs:
+  code: {entrant: {label: Your solution, max_size: 1MB}}
+  language: {entrant: {options: [python, cpp], default: python}}
+  judge: judge/
+  judge_language: python
+  judge_manifest: judge/program.yaml
+  time_limit: 1
+  memory_limit: 256
+  judge_time_limit: 3
+  judge_memory_limit: 256
+repeat:
+  - inputs: [input]
+    tuples: [tests/1.in, tests/2.in]
+scoring:
+  values:
+    solved: {block: min, over: {runs: all}, of: {run: [all, passed]}}
+  show:
+    always:
+      values: [solved]
+"""
+"""A task over `unicon/interactive@v4`, whose `log` is its step's
+`entrant.log`, given once for the batch."""
+
+
+async def test_the_preview_takes_an_output_given_once_under_its_ports_name(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    task = await make_task(setup, acme, "guess")
+    workflow = await acme.fake.workflows.create_workflow(
+        PLATFORM, "unicon", "game", deployed("unicon/interactive@v4")[1], Visibility.PUBLIC
+    )
+    await acme.fake.workflows.create_workflow_version(PLATFORM, workflow, "v1")
+    await _save(
+        setup,
+        acme,
+        task,
+        {
+            "task.yaml": GAME.encode(),
+            "statement.md": b"Guess the number.\n",
+            "judge/judge.py": b"print('judged')\n",
+            "judge/program.yaml": b"reports:\n  guesses: {better: lower, at_least: 0}\n",
+            "tests/1.in": b"1\n",
+            "tests/2.in": b"2\n",
+        },
+    )
+
+    [save] = await _rows(setup, "save")
+    for step in ("build-game-judge", "build-decide"):
+        await _step(setup, acme, save.id, "save", step, _built())
+    assert await _report(setup, save.id, "save") is GradingStatus.DONE
+    await setup.settle()
+
+    shown = await submissions.preview(
+        setup, acme.ada, task, {"always": {"outputs": ["log"]}}, "always"
+    )
+    assert shown.placeholders is not None
+    with pytest.raises(InvalidDefinition) as refused:
+        await submissions.preview(
+            setup,
+            acme.ada,
+            task,
+            {"always": {"runs": [{"of": "all", "fields": ["log"]}]}},
+            "always",
+        )
+    assert [problem["path"] for problem in refused.value.errors] == [
+        "scoring.show.always.runs[0].fields[0]"
+    ]

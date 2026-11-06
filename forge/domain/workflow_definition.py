@@ -70,7 +70,7 @@ MAX_USES = 32
 """The most distinct `use:` references one definition holds; each costs a
 read at every check."""
 
-_REF_EXAMPLE = "such as unicon/classic@v5"
+_REF_EXAMPLE = "such as unicon/classic@v6"
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,11 +531,11 @@ def parse_run_workflow(text: bytes | str) -> RunWorkflow:
 
 
 CLASSIC = Path(__file__).parent / "classic"
-"""A copy of `unicon/classic@v5`'s files, as deploy seeds them."""
+"""A copy of `unicon/classic@v6`'s files, as deploy seeds them."""
 
 
 def classic_files() -> dict[str, bytes]:
-    """`unicon/classic@v5`'s files, by their paths in the workflow."""
+    """`unicon/classic@v6`'s files, by their paths in the workflow."""
     return {
         path.relative_to(CLASSIC).as_posix(): path.read_bytes()
         for path in sorted(CLASSIC.rglob("*"))

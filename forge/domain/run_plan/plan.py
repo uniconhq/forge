@@ -102,11 +102,11 @@ def plan_runs(
     if problems:
         return RunPlanCheck(problems, None)
     pipelines = planner.pipelines()
-    on_release = planner.pipelines(released=True)
+    released_pipelines = planner.pipelines(released=True)
     fitted = planner.fit(pipelines)
     problems = [
         *fitted,
-        *(problem for problem in planner.fit(on_release) if problem not in fitted),
+        *(problem for problem in planner.fit(released_pipelines) if problem not in fitted),
         *planner.refusals(),
     ]
     if problems:
@@ -115,9 +115,13 @@ def plan_runs(
     released = (
         ReleasedSplit(
             early=tuple(run.id for run in task.runs if run.id in early_released),
-            pipelines={kind: on_release[kind] for kind in ("early", "late") if kind in on_release},
+            pipelines={
+                kind: released_pipelines[kind]
+                for kind in ("early", "late")
+                if kind in released_pipelines
+            },
         )
-        if early_released != task.early() or on_release != pipelines
+        if early_released != task.early() or released_pipelines != pipelines
         else None
     )
     copied, save, refused = _check_copies(

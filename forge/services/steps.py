@@ -88,6 +88,7 @@ from forge.domain.checks import VERDICT, keep_runs
 from forge.domain.content import UploadInfo, named_by
 from forge.domain.contracts import violation
 from forge.domain.definitions import TASK_FILE, parse_task
+from forge.domain.environment import PIECES
 from forge.domain.errors import (
     Conflict,
     GradingClosed,
@@ -1350,7 +1351,7 @@ class _Job:
             }
             pieces = {}
             for entry in selected.values():
-                for piece in [*entry.get("conda", []), *entry.get("pypi", [])]:
+                for piece in (each for source in PIECES for each in entry.get(source, [])):
                     digest = piece["sha256"]
                     path = f"cache/pieces/{digest}"
                     pieces[digest] = path
@@ -1368,7 +1369,7 @@ class _Job:
                         )
             content = exact_json.dumps(
                 {
-                    "version": 2,
+                    "version": lock["version"],
                     "prefix": lock["prefix"],
                     "platform": self.platform,
                     "languages": selected,
@@ -1681,7 +1682,7 @@ async def _objects(
                 ports.get("environment", {}).get("environment", {}).get("platforms", {}).values()
             ):
                 for entry in languages.values():
-                    for piece in [*entry.get("conda", []), *entry.get("pypi", [])]:
+                    for piece in (each for source in PIECES for each in entry.get(source, [])):
                         found[piece["sha256"]] = piece["size"]
     task = TaskId(row.task_id)
     listing = await ctx.forge.content.list_files(PLATFORM, task, at=publication.version)

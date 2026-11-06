@@ -47,21 +47,34 @@ def refused(text: str) -> list[Problem]:
 
 
 def test_the_seeded_primitive_parses() -> None:
-    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v3"])
+    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v4"])
 
-    assert list(PRIMITIVES) == ["unicon/exec@v3"]
+    assert list(PRIMITIVES) == ["unicon/exec@v4"]
     assert (exec_.batch, exec_.network, exec_.cache) == (True, False, True)
     assert exec_.image == f"ghcr.io/uniconhq/primitive-exec@{PLACEHOLDER_DIGEST}"
     assert set(exec_.forms) == {"one", "programs", "build"}
     one = exec_.forms["one"]
     assert (one.inputs["source"].type, one.inputs["source"].runs) == (Type.FOLDER, True)
     assert one.inputs["stdin"].runs is False
-    assert one.inputs["language"].options == ("c", "cpp", "java", "python", "ipynb")
+    assert one.inputs["language"].options == (
+        "c",
+        "cpp",
+        "java",
+        "kotlin",
+        "python",
+        "ipynb",
+        "javascript",
+        "typescript",
+        "csharp",
+        "rust",
+        "r",
+        "ruby",
+    )
     assert one.inputs["entry"].optional is True
     assert one.limits is not None and one.limits.as_mapping() == {
         "time_ms": 2000,
         "cpu_ms": 2000,
-        "memory_mb": 1136,
+        "memory_mb": 1648,
         "pids": 160,
         "output_mb": 64,
         "gpus": 0,
@@ -100,7 +113,7 @@ def test_each_seeded_primitive_is_its_repos_own_with_the_image_written_in(
 
 
 def test_a_primitive_and_its_ports_say_what_they_are_for() -> None:
-    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v3"])
+    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v4"])
     plain = parse_primitive(BASE + OUTCOME)
 
     assert exec_.title == "Run programs"
@@ -129,7 +142,7 @@ def test_a_title_or_description_is_one_line_of_text(extra: str, path: str) -> No
 
 
 def test_each_seeded_primitive_says_what_each_outcome_it_reports_means() -> None:
-    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v3"])
+    exec_ = parse_primitive(PRIMITIVES["unicon/exec@v4"])
     said = {name: form.outputs["outcome"].outcomes for name, form in exec_.forms.items()}
 
     assert {name: list(outcomes or {}) for name, outcomes in said.items()} == {
@@ -432,7 +445,7 @@ def mirrored(name: str) -> PrimitiveDeclaration:
 def test_exec_reads_the_cache_names_files_and_takes_outputs_from_a_manifest() -> None:
     formed = mirrored("exec")
     stepped = formed.for_step(
-        ("source", "language", "time_limit", "memory_limit"), "unicon/exec@v3"
+        ("source", "language", "time_limit", "memory_limit"), "unicon/exec@v4"
     )
     assert isinstance(stepped, PrimitiveDeclaration)
     exec_ = stepped
@@ -455,7 +468,7 @@ def test_exec_reads_the_cache_names_files_and_takes_outputs_from_a_manifest() ->
 
 def test_execs_programs_form_runs_programs_linked_and_sizes_its_container() -> None:
     formed = mirrored("exec")
-    several = formed.for_step(("programs",), "unicon/exec@v3")
+    several = formed.for_step(("programs",), "unicon/exec@v4")
     assert isinstance(several, PrimitiveDeclaration)
 
     assert (several.schema_version, several.cache, several.outputs_from) == (
@@ -496,13 +509,13 @@ def test_execs_programs_form_runs_programs_linked_and_sizes_its_container() -> N
     assert several.limits_from["time_ms"] == FromMax(
         max="programs.time_limit", scale=4000, add=6000
     )
-    assert several.limits_from["memory_mb"] == FromSum(sum="programs.memory_limit", add=512)
+    assert several.limits_from["memory_mb"] == FromSum(sum="programs.memory_limit", add=1024)
 
 
 def test_exec_compiles_once_and_gives_its_log_and_a_compile_error_once() -> None:
     formed = mirrored("exec")
     one = formed.forms["one"]
-    built = formed.for_step(("source", "language"), "unicon/exec@v3")
+    built = formed.for_step(("source", "language"), "unicon/exec@v4")
     assert isinstance(built, PrimitiveDeclaration)
 
     assert one.outputs["log"].once is True

@@ -2,7 +2,7 @@
 step's `use:` names, read at its version as the person whose save or check
 needs it, and every primitive the platform holds at each of its versions,
 for the editor's palette. `unicon/compile`, every version, and
-`unicon/exec@v1` are retired, since `unicon/exec@v3` compiles what it runs:
+`unicon/exec@v1` to `v3` are retired, since `unicon/exec@v4` compiles what it runs:
 a step naming one is refused, and the palette lists one a forge that was
 never reset still holds with no declaration and why.
 """

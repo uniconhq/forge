@@ -56,7 +56,7 @@ inputs:
   memory_limit: {type: number, title: Memory limit, unit: MB}
 steps:
   - id: solution
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with:
       source: ${{ inputs.code }}
       language: ${{ inputs.language }}
@@ -142,7 +142,7 @@ async def test_a_first_live_publication_makes_the_places_though_an_earlier_one_w
     assert _made(acme.fake) == []
 
     head = await acme.fake.content.list_files(PLATFORM, sum_task)
-    unchecked = starter.content.replace(b"unicon/classic@v5", b"unicon/unchecked@v1")
+    unchecked = starter.content.replace(b"unicon/classic@v6", b"unicon/unchecked@v1")
     live = await task_save.save(
         setup,
         acme.ada,

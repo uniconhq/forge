@@ -857,10 +857,11 @@ def test_an_exec_blocks_inputs_are_a_folder_a_language_and_limits_above_0() -> N
     )
     for bad in ("mean", "/mean/", "a/../b/", "a//b/", 3):
         assert problems({"v": program(program=bad)}) == [(("values", "v", "program"), folder)]
-    assert problems({"v": program(language="rust")}) == [
+    assert problems({"v": program(language="go")}) == [
         (
             ("values", "v", "language"),
-            "Give the program's language, one of c, cpp, java, python, ipynb.",
+            "Give the program's language, one of c, cpp, java, python, javascript, "
+            "typescript, kotlin, csharp, rust, r, ruby, ipynb.",
         )
     ]
     assert problems({"v": program(time_limit=0, memory_limit=-1)}) == [

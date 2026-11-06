@@ -124,7 +124,7 @@ compile error not declared the same for every item."""
 @pytest.fixture(scope="module")
 def primitives() -> dict[str, PrimitiveDeclaration]:
     return {
-        "unicon/exec@v3": mirrored("exec"),
+        "unicon/exec@v4": mirrored("exec"),
         "acme/link@v1": LINK,
         "acme/judge@v1": JUDGE,
         "acme/linkc@v1": LINKC,
@@ -213,7 +213,7 @@ def refused(found: RunPlanCheck) -> dict[str, list[str]]:
 def islands(
     primitives: Mapping[str, PrimitiveDeclaration], task: str = ISLANDS, **kw: Any
 ) -> RunPlanCheck:
-    workflow, files = deployed("unicon/classic@v5")
+    workflow, files = deployed("unicon/classic@v6")
     return planned(primitives, task, workflow, files, ISLANDS_PATHS, **kw)
 
 
@@ -368,7 +368,7 @@ def test_islands_reads_as_written_step_by_step(primitives: dict[str, PrimitiveDe
 def test_a_classic_task_builds_its_checker_at_the_save_and_grades_with_two_steps(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    """unicon/classic@v5's diff script is the task's own, so the save builds
+    """unicon/classic@v6's diff script is the task's own, so the save builds
     it, and a source of it that does not compile refuses the publication;
     each grading pipeline holds the entrant's solution, compiled with its
     runs, and compare."""
@@ -382,7 +382,7 @@ def test_a_classic_task_builds_its_checker_at_the_save_and_grades_with_two_steps
 def test_a_workflow_step_named_as_a_build_the_planner_adds_is_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    workflow, files = deployed("unicon/classic@v5")
+    workflow, files = deployed("unicon/classic@v6")
     workflow = workflow.replace("id: solution", "id: build-compare").replace(
         "steps.solution.", "steps.build-compare."
     )
@@ -419,7 +419,7 @@ def test_a_step_done_at_the_save_is_not_built_again(
 ) -> None:
     """compare reads only the task's own files here, so it runs at the
     save, where a source of it that does not compile refuses the save."""
-    workflow, files = deployed("unicon/classic@v5")
+    workflow, files = deployed("unicon/classic@v6")
     workflow = workflow.replace(
         "        output: ${{ steps.solution.output }}\n", "        output: ${{ inputs.answer }}\n"
     )
@@ -462,7 +462,7 @@ def test_a_step_takes_the_time_it_compiles_in_once_whatever_runs_it_holds(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     plan = ok(islands(primitives))
-    once = primitives["unicon/exec@v3"].forms["one"].limits
+    once = primitives["unicon/exec@v4"].forms["one"].limits
     assert once is not None and once.once_time_ms == 40000
 
     # Two runs of 3 s each, 2 * (3 * 2000 + 3000) ms, and the compile once;
@@ -505,16 +505,16 @@ def test_a_batch_sums_its_runs_time_and_holds_the_most_of_the_rest(
 
     # Each run: 2 s gives 2 * 2000 + 3000 ms, and the step compiles once
     # before them, in exec's 40 s, which its CPU time does not count. 256 MB
-    # gives 512 MB, less than the 1136 MB exec's container holds with its
+    # gives 512 MB, less than the 1648 MB exec's container holds with its
     # compile box, with the entrant's program, which it compiles into at
     # most 32 MB, on top.
     assert (solution.limits.time_ms, solution.limits.cpu_ms) == (14000 + 40000, 14000)
-    assert solution.limits.memory_mb == 1136 + 32
+    assert solution.limits.memory_mb == 1648 + 32
     assert plan.items_of(solution) == [
         ("r1", (plan.steps["solution"].items or {})["r1"].inputs),
         ("r2", (plan.steps["solution"].items or {})["r2"].inputs),
     ]
-    assert held(plan, "build-compare", "save").limits.memory_mb == 1136
+    assert held(plan, "build-compare", "save").limits.memory_mb == 1648
 
 
 def test_each_container_holds_the_files_it_copies(
@@ -522,11 +522,11 @@ def test_each_container_holds_the_files_it_copies(
 ) -> None:
     plan = ok(islands(primitives, sizes={"tests/3.ans": 300 * 1024 * 1024}))
 
-    # Exec's 1136 MB, with the compiled diff script, up to 32 MB, the
+    # Exec's 1648 MB, with the compiled diff script, up to 32 MB, the
     # solution's output, up to 64 MB, and the 300 MB answer on top; the
     # samples' runs copy the small answers.
-    assert held(plan, "compare").limits.memory_mb == 1136 + 32 + 64 + 300
-    assert held(plan, "compare", "early").limits.memory_mb == 1136 + 32 + 64 + 1
+    assert held(plan, "compare").limits.memory_mb == 1648 + 32 + 64 + 300
+    assert held(plan, "compare", "early").limits.memory_mb == 1648 + 32 + 64 + 1
 
 
 def test_an_entrant_file_is_copied_at_the_most_its_input_may_hold(
@@ -540,11 +540,12 @@ def test_an_entrant_file_is_copied_at_the_most_its_input_may_hold(
     )
     larger = ok(planned(primitives, task, CARTPOLE, CARTPOLE_FILES, frozenset({"task.yaml"})))
 
-    # The box's 1024 MB and exec's room, with the compiled runner, up to
-    # 32 MB, and the weights, up to 10 MB, or 500 MB, on top.
+    # Exec's 1648 MB, more than the box's 1024 MB and exec's room of 256 MB,
+    # with the compiled runner, up to 32 MB, and the weights, up to 10 MB,
+    # or 500 MB, on top.
     assert plan.entrant["weights"].max_size == DEFAULT_MAX_SIZE
-    assert held(plan, "episode", "early").limits.memory_mb == 1024 + 256 + 32 + 10
-    assert held(larger, "episode", "early").limits.memory_mb == 1024 + 256 + 32 + 500
+    assert held(plan, "episode", "early").limits.memory_mb == 1648 + 32 + 10
+    assert held(larger, "episode", "early").limits.memory_mb == 1648 + 32 + 500
 
 
 def test_linked_programs_need_a_box_each(
@@ -565,10 +566,10 @@ def test_linked_programs_need_a_box_each(
     )
 
     assert plan.steps["game"].boxes == 2
-    # Exec's 1136 MB, more than both programs' 256 MB and the programs
-    # form's room of 512 MB, with both compiled programs, each up to 32 MB,
+    # Exec's 1648 MB, more than both programs' 256 MB and the programs
+    # form's room of 1024 MB, with both compiled programs, each up to 32 MB,
     # on top.
-    assert held(plan, "game").limits.memory_mb == 1136 + 32 + 32
+    assert held(plan, "game").limits.memory_mb == 1648 + 32 + 32
     assert plan.steps["game"].inputs == {
         "programs": {
             "programs": {
@@ -828,7 +829,7 @@ inputs:
   seed: number
 steps:
   - id: generate
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with:
       source: ${{ workflow.gen/ }}
       language: python
@@ -836,7 +837,7 @@ steps:
       time_limit: 1
       memory_limit: 64
   - id: solution
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with:
       source: ${{ inputs.code }}
       language: python
@@ -900,10 +901,10 @@ inputs:
   input: file
 steps:
   - id: selftest
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with: {source: "${{ inputs.code }}", language: python, time_limit: 1, memory_limit: 64}
   - id: warmup
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with:
       source: ${{ inputs.code }}
       language: python
@@ -911,7 +912,7 @@ steps:
       time_limit: 1
       memory_limit: 64
   - id: solution
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with:
       source: ${{ inputs.code }}
       language: python
@@ -1394,7 +1395,7 @@ def test_compiled_from_a_step_done_once_saying_its_compile_error_is_once_is_earl
 def test_compiled_from_a_compile_beside_a_hidden_file_is_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    """Unlike exec@v3, whose compile box sees only the source, a primitive
+    """Unlike exec@v4, whose compile box sees only the source, a primitive
     may compile the entrant's code beside the hidden grader, so its compile
     error could tell of it: `compiled` reads it neither during the contest
     nor after."""
@@ -1540,14 +1541,14 @@ inputs:
   input: file
 steps:
   - id: warm
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with:
       source: ${{ inputs.code }}
       language: python
       time_limit: ${{ inputs.warm_limit }}
       memory_limit: 64
   - id: solution
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with:
       source: ${{ inputs.code }}
       language: python
@@ -1618,7 +1619,7 @@ def test_a_step_over_the_machine_is_refused_at_what_gives_its_largest_file(
 
     assert problems == {
         "repeat[0].inputs[1]": [
-            "The step compare needs 18640 MB of memory, with the files it copies in beside its "
+            "The step compare needs 19152 MB of memory, with the files it copies in beside its "
             "programs, the largest `tests/3.ans` at 17408 MB, but no machine this task may run "
             "on has more than 16384."
         ]
@@ -1639,7 +1640,7 @@ steps:
     use: acme/build@v1
     with: {source: "${{ inputs.code }}", language: python}
   - id: first
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with:
       source: ${{ inputs.code }}
       language: python
@@ -1647,7 +1648,7 @@ steps:
       time_limit: 1
       memory_limit: ${{ inputs.memory }}
   - id: second
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with:
       source: ${{ inputs.code }}
       language: python
@@ -1655,7 +1656,7 @@ steps:
       time_limit: 1
       memory_limit: 3000
   - id: third
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with:
       source: ${{ inputs.code }}
       language: python
@@ -1868,7 +1869,7 @@ def test_a_save_says_what_its_plan_changed(primitives: dict[str, PrimitiveDeclar
         update={"workflow": before.workflow.model_copy(update={"commit": "d" * 40})}
     )
     assert run_plan_changes(_snapshot(before), _snapshot(moved)) == (
-        "The workflow unicon/classic@v5 moved to another commit.",
+        "The workflow unicon/classic@v6 moved to another commit.",
     )
     assert run_plan_changes(Snapshot(plans={}, data={}), _snapshot(before)) == (
         "The way the task grades changed.",
@@ -1976,7 +1977,7 @@ PROGRAM_YAML = "programs/mean/program.yaml"
 
 
 def mean(primitives: Mapping[str, PrimitiveDeclaration], task: str = MEAN) -> RunPlanCheck:
-    workflow, files = deployed("unicon/classic@v5")
+    workflow, files = deployed("unicon/classic@v6")
     return planned(
         primitives, task, workflow, files, MEAN_PATHS, manifests={PROGRAM_YAML: MEAN_MANIFEST}
     )
@@ -1996,7 +1997,7 @@ def test_a_values_program_compiles_at_the_save_and_runs_late_after_its_groups_ru
     built, ran = plan.steps["build-mean"], plan.steps["exec-mean"]
     assert (built.class_, built.primitive, built.folders, built.boxes) == (
         "save_once",
-        "unicon/exec@v3",
+        "unicon/exec@v4",
         ("source",),
         1,
     )
@@ -2008,7 +2009,7 @@ def test_a_values_program_compiles_at_the_save_and_runs_late_after_its_groups_ru
     }
     assert (ran.class_, ran.primitive, ran.boxes, ran.folders) == (
         "grading_once",
-        "unicon/exec@v3",
+        "unicon/exec@v4",
         1,
         ("source",),
     )
@@ -2061,7 +2062,7 @@ def test_a_values_program_under_after_release_runs_early_only_once_released(
 def test_a_workflow_step_named_as_a_values_program_step_is_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    workflow, files = deployed("unicon/classic@v5")
+    workflow, files = deployed("unicon/classic@v6")
     workflow = workflow.replace("id: compare", "id: build-mean").replace(
         "steps.compare.", "steps.build-mean."
     )
@@ -2106,7 +2107,7 @@ CHECKED_PATHS = ISLANDS_PATHS | {
 def checked(
     primitives: Mapping[str, PrimitiveDeclaration], task: str = CHECKED, **kw: Any
 ) -> RunPlanCheck:
-    workflow, files = deployed("unicon/classic@v5")
+    workflow, files = deployed("unicon/classic@v6")
     return planned(primitives, task, workflow, files, CHECKED_PATHS, **kw)
 
 
@@ -2211,7 +2212,7 @@ def _long_keyed(stem: str) -> tuple[str, frozenset[str]]:
 def test_checks_that_could_keep_more_than_their_room_of_the_result_are_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    workflow, files = deployed("unicon/classic@v5")
+    workflow, files = deployed("unicon/classic@v6")
     task, paths = _long_keyed("a" * 1000)
     within = planned(primitives, task, workflow, files, paths)
     task, paths = _long_keyed("/".join(["a" * 200] * 20))
@@ -2327,7 +2328,7 @@ def test_a_check_whose_copy_takes_a_step_s_name_is_refused(
     assert {name for name, step in plan.steps.items() if step.check is not None} == {
         "c1-" + "e" * 38
     }
-    workflow, files = deployed("unicon/classic@v5")
+    workflow, files = deployed("unicon/classic@v6")
     renamed = workflow.replace("id: compare", "id: c1-solution").replace(
         "steps.compare.", "steps.c1-solution."
     )
@@ -2377,9 +2378,9 @@ def test_lifting_execs_one_form_plans_the_same_bytes(
     # The steps the planner adds are built with exec's forms, which lifting
     # one of them to the top leaves out, so they are planned with exec as
     # it is.
-    plain = {**primitives, "unicon/exec@v3": unwrapped("exec")}
+    plain = {**primitives, "unicon/exec@v4": unwrapped("exec")}
     programs = {use: primitives[use] for use in PROGRAM_USES}
-    workflow, files = deployed("unicon/classic@v5")
+    workflow, files = deployed("unicon/classic@v6")
     for task, paths, manifests in (
         (ISLANDS, ISLANDS_PATHS, None),
         (MEAN, MEAN_PATHS, {PROGRAM_YAML: MEAN_MANIFEST}),

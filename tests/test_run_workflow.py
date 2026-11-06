@@ -1,5 +1,5 @@
 """The run workflow (SIMPLER-CORE.md 7): a file with a test block is
-refused, `unicon/classic@v5` and `unicon/interactive@v3` from deploy's checkout parse
+refused, `unicon/classic@v6` and `unicon/interactive@v4` from deploy's checkout parse
 and type against the contract 6 primitives beside this repo, a report of a
 manifest is checked against its `program.yaml` and means what that file
 says, the ports only contract 6 has take their own shapes, each refusal of
@@ -44,8 +44,8 @@ from forge.domain.yaml_models import InvalidDefinition, Problem, load_yaml, one_
 from forge.testing import PLACEHOLDER_DIGEST, RUN_WORKFLOWS
 from tests.conftest import sibling
 
-CLASSIC_V4 = "unicon/classic@v5"
-INTERACTIVE_V2 = "unicon/interactive@v3"
+CLASSIC_V4 = "unicon/classic@v6"
+INTERACTIVE_V2 = "unicon/interactive@v4"
 DIGEST = "sha256:" + "a" * 64
 
 
@@ -75,7 +75,7 @@ outputs:
 def primitives() -> dict[str, PrimitiveDeclaration]:
     """The primitives the two workflows use."""
     return {
-        "unicon/exec@v3": mirrored("exec"),
+        "unicon/exec@v4": mirrored("exec"),
         "acme/pick@v1": PICK,
     }
 
@@ -135,7 +135,7 @@ def step(given: dict[str, Any], step_id: str) -> dict[str, Any]:
 
 
 def test_a_file_with_a_test_block_is_refused() -> None:
-    run = parse_run_workflow("steps:\n  - {id: a, use: unicon/exec@v3}\n")
+    run = parse_run_workflow("steps:\n  - {id: a, use: unicon/exec@v4}\n")
     assert isinstance(run, RunWorkflow)
     assert run.outputs == {}
     given = document(CLASSIC_V4)
@@ -350,7 +350,7 @@ def test_a_program_setting_named_by_a_number_is_refused_beside_unknown_names(
         },
         {
             "path": "steps[0].with.programs.judge.zeta",
-            "message": "unicon/exec@v3 has no input called zeta. Remove it.",
+            "message": "unicon/exec@v4 has no input called zeta. Remove it.",
         },
     ]
 
@@ -479,7 +479,7 @@ def test_a_report_of_the_diff_script_is_checked_against_its_program_yaml(
     assert isinstance(compare.manifest, WorkflowManifest)
     assert compare.manifest.path == "diff/program.yaml"
     assert score.made_by == compare
-    meaning = score.meaning("unicon/exec@v3")
+    meaning = score.meaning("unicon/exec@v4")
     assert meaning is not None
     assert (meaning.made_by, meaning.better, meaning.at_least, meaning.at_most) == (
         "diff/program.yaml",
@@ -487,10 +487,10 @@ def test_a_report_of_the_diff_script_is_checked_against_its_program_yaml(
         0,
         1,
     )
-    meaning = time_ms.meaning("unicon/exec@v3")
+    meaning = time_ms.meaning("unicon/exec@v4")
     assert meaning is not None
     assert (meaning.made_by, meaning.title, meaning.unit, meaning.better, meaning.at_least) == (
-        "unicon/exec@v3",
+        "unicon/exec@v4",
         "Run time",
         "ms",
         Better.LOWER,
@@ -508,7 +508,7 @@ def test_an_output_neither_the_primitive_nor_the_manifest_gives_is_refused_namin
     assert problems(primitives, given) == [
         {
             "path": "outputs.nope",
-            "message": "The step compare has no output called nope: neither unicon/exec@v3 "
+            "message": "The step compare has no output called nope: neither unicon/exec@v4 "
             "gives it nor diff/program.yaml reports it.",
         }
     ]
@@ -570,7 +570,7 @@ def test_a_manifest_from_an_input_leaves_its_reports_to_the_tasks_save(
     assert found.problems == []
     assert found.deferred == [Deferred("outputs.score", "compare", None, "score", None, True)]
     assert found.reports["score"].port is None
-    assert found.reports["score"].meaning("unicon/exec@v3") is None
+    assert found.reports["score"].meaning("unicon/exec@v4") is None
     manifest = found.steps["compare"].program.manifest
     assert isinstance(manifest, InputManifest) and manifest.input == "checker"
     assert "time_ms" in manifest.own_names and "verdict" in manifest.own_names
@@ -703,7 +703,7 @@ def test_a_programs_reports_are_its_outputs_and_may_be_missing(
         },
         {
             "path": "outputs.oops",
-            "message": "The step game has no output called entrant.score: unicon/exec@v3 "
+            "message": "The step game has no output called entrant.score: unicon/exec@v4 "
             "gives no score of a program, and entrant is given no manifest that reports one.",
         },
     ]
@@ -910,8 +910,8 @@ def test_a_named_file_cannot_take_a_pipes_name(
 def test_a_sum_or_a_max_over_the_programs_sizes_the_container(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    formed = primitives["unicon/exec@v3"]
-    several = formed.for_step(("programs",), "unicon/exec@v3")
+    formed = primitives["unicon/exec@v4"]
+    several = formed.for_step(("programs",), "unicon/exec@v4")
     assert isinstance(several, PrimitiveDeclaration)
     exec_ = formed
     programs: dict[str, dict[str, int | Decimal]] = {
@@ -924,7 +924,7 @@ def test_a_sum_or_a_max_over_the_programs_sizes_the_container(
     assert several.item_limits({}, programs) == {
         "time_ms": 16000,
         "cpu_ms": 16000,
-        "memory_mb": 1600,
+        "memory_mb": 2112,
         "pids": 1056,
         "output_mb": 64,
         "gpus": 0,
@@ -932,14 +932,14 @@ def test_a_sum_or_a_max_over_the_programs_sizes_the_container(
     small: dict[str, dict[str, int | Decimal]] = {
         "only": {"time_limit": Decimal("0.0001"), "memory_limit": 256}
     }
-    assert several.item_limits({}, small)["memory_mb"] == 1136
+    assert several.item_limits({}, small)["memory_mb"] == 1648
     assert several.limits is not None
     assert several.item_limits({}) == several.limits.as_mapping()
-    one = exec_.for_step(("source", "language", "time_limit", "memory_limit"), "unicon/exec@v3")
+    one = exec_.for_step(("source", "language", "time_limit", "memory_limit"), "unicon/exec@v4")
     assert isinstance(one, PrimitiveDeclaration)
     sized = one.item_limits({"time_limit": 10, "memory_limit": 2048})
     assert (sized["time_ms"], sized["memory_mb"]) == (23000, 2304)
-    assert one.item_limits({"time_limit": 10, "memory_limit": 256})["memory_mb"] == 1136
+    assert one.item_limits({"time_limit": 10, "memory_limit": 256})["memory_mb"] == 1648
 
 
 TWO = parse_primitive(

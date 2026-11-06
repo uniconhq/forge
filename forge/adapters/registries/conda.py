@@ -7,26 +7,36 @@ from pathlib import Path
 
 import rattler
 from rattler.exceptions import GatewayError, SolverError
+from rattler.networking import RetryMiddleware
 
 from forge.domain.environment import PLATFORMS, CondaPiece
-from forge.domain.environment.tools import TOOLS
+from forge.domain.environment.tools import COMPANIONS, TOOLS
 from forge.domain.errors import Rejected, Unavailable
 
 CHANNEL = "https://conda.anaconda.org/conda-forge"
 ARCH = {"linux-64": "x86_64", "linux-aarch64": "aarch64"}
+# rattler's own client sets no timeout, so a stalled read of the index would
+# hold a preparation until its 15-minute limit rather than retry.
+REQUEST_TIMEOUT_S = 120
 
 
 class CondaRegistry:
     def __init__(self, cache: Path) -> None:
-        self.gateway = rattler.Gateway(cache_dir=cache)
+        self.gateway = rattler.Gateway(
+            cache_dir=cache,
+            client=rattler.Client([RetryMiddleware(3)], timeout=REQUEST_TIMEOUT_S),
+        )
 
     async def solve(
         self, language: str, specs: Sequence[str], newest_before: datetime | None
     ) -> dict[str, list[CondaPiece]]:
-        limit: str | None = None
+        named = [TOOLS[language]]
+        if companion := COMPANIONS.get(language):
+            named.append(TOOLS[companion])
+        limits: dict[str, str] = {}
         while True:
             found: dict[str, list[CondaPiece]] = {}
-            versions: list[rattler.Version] = []
+            versions: dict[str, list[rattler.Version]] = {name: [] for name in named}
             for platform in PLATFORMS:
                 virtual = [
                     rattler.GenericVirtualPackage(
@@ -51,7 +61,7 @@ class CondaRegistry:
                         exclude_newer=newest_before,
                         timeout=timedelta(minutes=5),
                         channel_relations="disabled",
-                        constraints=[f"{TOOLS[language]} <={limit}"] if limit else None,
+                        constraints=[f"{name} <={limit}" for name, limit in limits.items()] or None,
                     )
                 except SolverError as error:
                     raise Rejected(
@@ -79,10 +89,13 @@ class CondaRegistry:
                             record=raw,
                         )
                     )
-                picked = next(piece for piece in pieces if piece.name == TOOLS[language])
-                versions.append(rattler.Version(picked.version))
+                for name in named:
+                    picked = next(piece for piece in pieces if piece.name == name)
+                    versions[name].append(rattler.Version(picked.version))
                 found[platform] = pieces
-            if versions[0] == versions[1]:
+            apart = {name: picks for name, picks in versions.items() if picks[0] != picks[1]}
+            if not apart:
                 return found
-            # Each iteration lowers a pick until the newest compatible version agrees.
-            limit = str(min(versions))
+            # Each iteration lowers a pick until the newest compatible version agrees,
+            # the toolchain's and the one it needs alike.
+            limits.update({name: str(min(picks)) for name, picks in apart.items()})

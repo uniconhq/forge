@@ -252,7 +252,7 @@ def test_cartpole_shows_reward_at_once_and_windy_and_every_run_only_after_the_cl
     ]
 
 
-def test_before_the_reveal_only_nows_entries_are_shown_and_after_it_after_closes_too() -> None:
+def test_before_the_reveal_only_always_entries_are_shown_and_after_it_after_deadline_too() -> None:
     scored = _islands(
         _row({"r1": "accepted", "r2": "accepted"}), _row({"r3": "accepted", "r4": "accepted"})
     )

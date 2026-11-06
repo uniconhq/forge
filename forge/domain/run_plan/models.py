@@ -147,6 +147,12 @@ class RunStep(Model):
     def once(self) -> bool:
         return self.class_ in ONCE
 
+    def gives_once(self, output: str) -> bool:
+        """Whether the step gives its output `output`, a port of its own, once:
+        it is done once, or gives the output the same for every item. A report
+        is given once when its step gives its `output` once."""
+        return self.once or output in (self.once_outputs or ())
+
 
 class PipelineStep(Model):
     """One step of a pipeline: its name inside the plan, the workflow step it

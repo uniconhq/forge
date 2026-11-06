@@ -90,7 +90,7 @@ async def test_withdrawn_pin_keeps_published_task_and_refuses_new_use_then_undoe
         PLATFORM,
         sum_task,
         "task.yaml",
-        old.content.replace(b"unicon/classic@v5", b"acme/tuned@v1"),
+        old.content.replace(b"unicon/classic@v6", b"acme/tuned@v1"),
         expected=old.token,
         message="Choose workflow",
     )
@@ -191,7 +191,7 @@ async def test_a_renamed_withdrawn_workflow_keeps_the_same_publication_pin(
         PLATFORM,
         sum_task,
         "task.yaml",
-        old.content.replace(b"unicon/classic@v5", b"bob/tuned@v1"),
+        old.content.replace(b"unicon/classic@v6", b"bob/tuned@v1"),
         expected=old.token,
         message="Choose workflow",
     )

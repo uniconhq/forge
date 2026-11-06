@@ -18,7 +18,7 @@ class ReportMeaning:
     only, which the report gives, and which way is better and its bounds,
     which only the `primitive.yaml` or `program.yaml` that made the number
     says, and nothing after it restates. `made_by` names that file:
-    `unicon/exec@v3`, or `diff/program.yaml`.
+    `unicon/exec@v4`, or `diff/program.yaml`.
     """
 
     name: str
