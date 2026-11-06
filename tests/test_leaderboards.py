@@ -28,6 +28,8 @@ from forge.domain.blocks.leaderboard_shape_check import (
 )
 from forge.domain.blocks.numbers import Better
 from forge.domain.definitions import (
+    AFTER_DEADLINE,
+    ALWAYS,
     ContestDefinition,
     Hold,
     InvalidDefinition,
@@ -69,6 +71,7 @@ from forge.domain.names import EntrantOwner
 from forge.domain.run_showing import ValueShown
 from forge.domain.yaml_models import one_line
 from tests.test_run_task import ISLANDS as ISLANDS_TASK
+from tests.test_run_task import ISLANDS_ALWAYS
 
 HEAD = """\
 name: Leaderboards
@@ -638,8 +641,8 @@ def test_the_kaggle_private_leaderboard_is_hidden_until_private_is_shown() -> No
     assert public.rows[0].cells[0].number == 80
 
 
-def test_a_value_listed_now_but_not_yet_shown_waits_and_one_not_listed_is_hidden() -> None:
-    # A late run still running or faulted leaves a value listed now out of
+def test_a_value_listed_always_but_not_yet_shown_waits_and_one_not_listed_is_hidden() -> None:
+    # A late run still running or faulted leaves a value listed always out of
     # what its entrant is shown: it waits, so no viewer learns which rows
     # still grade, as `compiled` does while a group is listed.
     shown = [ValueShown("public", Fraction(5), False, False)]
@@ -685,9 +688,7 @@ def test_a_sort_key_hidden_on_a_row_past_a_top_n_still_drops_it() -> None:
     assert [(row.name, row.place) for row in seen.rows] == [("r1", None)]
 
 
-def test_a_value_reading_an_entered_mark_waits_by_show_and_compiled_with_no_group_is_hidden() -> (
-    None
-):
+def test_a_value_reading_an_entered_mark_waits_by_show_and_compiled_not_listed_is_hidden() -> None:
     # Guarantee 6: a submission still grading waits only on what its
     # entrant may be shown, so a waiting count never tells of the rest. A
     # value reading a mark is read by `show` alone: a cell reads it only on
@@ -697,31 +698,32 @@ def test_a_value_reading_an_entered_mark_waits_by_show_and_compiled_with_no_grou
         "    review: {block: entered, at_least: 0, at_most: 10}\n"
         "    reviewed: {block: add, of: [{value: sample_score}, {value: review}]}\n"
         "    total:\n",
-    ).replace("now: [sample_score,", "now: [review, reviewed, sample_score,")
+    ).replace("values: [sample_score,", "values: [review, reviewed, sample_score,")
     scoring = parse_task(text).scoring
     assert scoring is not None
-    values, runs = listed_now(scoring, ("now",))
-    grading = grading_seen(1, {}, scoring.values, values, runs)
-    no_group = grading_seen(1, {}, scoring.values, {"sample_score"}, False)
+    values, compiled = listed_now(scoring, (ALWAYS,))
+    grading = grading_seen(1, {}, scoring.values, values, compiled)
+    listed = grading_seen(1, {}, scoring.values, values, True)
 
-    assert values == {"review", "reviewed", "sample_score", "sample_time"} and runs
-    assert grading.waiting == {"review", "reviewed", "sample_score", "sample_time", "compiled"}
-    assert {"st1", "st2", "total"} <= grading.hidden
-    assert "compiled" in no_group.hidden and "compiled" not in no_group.waiting
+    # A run entry shown always no longer shows `compiled`: outputs lists it.
+    assert values == {"review", "reviewed", "sample_score", "sample_time"} and not compiled
+    assert grading.waiting == {"review", "reviewed", "sample_score", "sample_time"}
+    assert {"st1", "st2", "total", "compiled"} <= grading.hidden
+    assert "compiled" in listed.waiting
     tries = {"block": "count", "over": results("a"), "where": read("a", "compiled")}
-    assert column("p", "c", {"a": [no_group]}, tries).hidden
-    assert column("p", "c", {"a": [grading]}, tries).waiting == {("a", 1)}
+    assert column("p", "c", {"a": [grading]}, tries).hidden
+    assert column("p", "c", {"a": [listed]}, tries).waiting == {("a", 1)}
 
 
 def test_compiled_listed_by_its_name_reads_on_a_leaderboard_with_no_group_shown() -> None:
-    # Item 124: show lists compiled by its name, so a leaderboard reads it, and
-    # it waits while the submission grades, with no group shown.
+    # Item 124: show lists compiled among its outputs, so a leaderboard reads
+    # it, and it waits while the submission grades, with no run entry shown.
     text = ISLANDS_TASK.replace(
-        "now: [sample_score, sample_time, sample_tests, samples/]", "now: [compiled, sample_score]"
+        ISLANDS_ALWAYS, "    always:\n      values: [sample_score]\n      outputs: [compiled]\n"
     )
     scoring = parse_task(text).scoring
     assert scoring is not None
-    values, compiled = listed_now(scoring, ("now",))
+    values, compiled = listed_now(scoring, (ALWAYS,))
     grading = grading_seen(1, {}, scoring.values, values, compiled)
     graded = results_seen(1, {}, [], 0, scoring.values, values, compiled)
 
@@ -1637,11 +1639,11 @@ def test_a_tasks_values_carry_their_bounds_where_every_part_has_one() -> None:
 
 
 def test_anyone_but_staff_knows_a_values_bounds_only_from_what_they_are_shown() -> None:
-    # Item 126: a value listed now that counts the runs of st2_tests, a
-    # group no entry shows until the reveal, would tell its size, 2.
+    # Item 126: a value listed always that counts the runs of st2_tests, a
+    # group no run entry shows until the deadline, would tell its size, 2.
     text = ISLANDS_TASK.replace(
         "    total:\n", "    hard: {block: count, over: {runs: st2_tests}}\n    total:\n"
-    ).replace("now: [sample_score,", "now: [hard, sample_score,")
+    ).replace("values: [sample_score,", "values: [hard, sample_score,")
     scoring = parse_task(text).scoring
     assert scoring is not None
     runs = [
@@ -1657,15 +1659,15 @@ def test_anyone_but_staff_knows_a_values_bounds_only_from_what_they_are_shown() 
     columns = {"score": Column(Better.HIGHER, Fraction(0), Fraction(1))}
 
     staff = value_bounds(scoring.values, groups, columns)
-    during = seen_bounds(scoring, groups, columns, ("now",))
-    after = seen_bounds(scoring, groups, columns, ("now", "after_close"))
+    during = seen_bounds(scoring, groups, columns, (ALWAYS,))
+    after = seen_bounds(scoring, groups, columns, (ALWAYS, AFTER_DEADLINE))
 
     two, hundred = (Fraction(2), Fraction(2)), (Fraction(0), Fraction(100))
     assert (staff["hard"], staff["total"]) == (two, hundred)
     # During the contest: sample_score's bounds read only sample_tests,
-    # shown now; hard's read a hidden group, and total is not listed yet.
+    # shown always; hard's read a hidden group, and total is not listed yet.
     assert during == {"hard": None, "sample_score": (Fraction(0), Fraction(1)), "sample_time": None}
-    # From the reveal `all` shows every run, so every group is known.
+    # From the deadline `all` shows every run, so every group is known.
     assert (after["hard"], after["total"]) == (two, hundred)
 
 

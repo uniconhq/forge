@@ -21,7 +21,7 @@ async def _report(
     ctx: Context, task: TaskId, definition: TaskDefinition, checked: Checked
 ) -> list[str]:
     """The note beside what the save's effect says: the task's reveal in words
-    when it hides anything (something its `show` lists under `after_close`).
+    when it hides anything (something its `show` lists under `after_deadline`).
     The scoring changes, and the leaderboards the save moves, are the effect's.
     """
     contest = await _contest(ctx, task)
@@ -30,7 +30,7 @@ async def _report(
         return []
     entry = contest.entry(name)
     found: list[str] = []
-    hides = checked.run_task is not None and bool(checked.run_task.show.after_close)
+    hides = checked.run_task is not None and not checked.run_task.show.after_deadline.empty
     if entry is not None and hides:
         extensions = await timelines.every_extension(ctx, contest_id_of(task_scope(task)))
         found.append(

@@ -170,6 +170,9 @@ SKIP = "skip"
 """A fold's `missing` that leaves out a run whose report is missing."""
 ALL = "all"
 """The group every task has, every run, built in."""
+FIRST_NOT_PASSED = "first_not_passed"
+"""What a run entry of `show` picks to show, for each submission, the first
+run in the runs file's order whose `passed` is not 1 (SIMPLER-CORE.md 9.4)."""
 MARKED = "marked"
 """The fact a hold hides on another row: a mark may change until the close."""
 ROW_FACTS = ("attempt", "seconds", "seconds_late", MARKED)

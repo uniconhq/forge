@@ -1,19 +1,22 @@
-"""A task's public files, the ones its `show` lists, served one by one by
-their path in the task to whoever may read its statement: a visitor, for a
+"""A task's public files, the ones under `public/`, which need no `show`
+entry, served one by one by their path in the task with its statement, from
+before any submission, to whoever may read it: a visitor, for a
 released task of a contest for everyone; a signed-in person, for a task
 whose page they read; and whoever holds a role reaching the task, whether
 or not it is released. Each is read as the task's latest publication holds
 it, never a draft saved after it, except by whoever holds a role reaching
 the task, who reads it as the task's head holds it, the draft the
-statement's preview draws; an upload by its bytes; a path the task does not
-show, or not there, is no such file, and a file larger than a page is
+statement's preview draws; an upload by its bytes; a path outside
+`public/`, or one not there, is no such file, and a file larger than a page is
 served is refused with a refusal of its own.
 """
 
 import hashlib
 
 import pytest
+from sqlalchemy import func, select
 
+from forge.db.tables import Grading
 from forge.domain.content import Edit, Uploaded
 from forge.domain.errors import NotFound, PublicFileTooLarge
 from forge.domain.identity import PLATFORM
@@ -62,7 +65,7 @@ async def _save(setup: Setup, acme: Acme, task: TaskId, files: dict[str, bytes])
 @pytest.fixture
 async def public(setup: Setup, acme: Acme, sum_task: TaskId) -> TaskId:
     """acme/spring for everyone and running, its task sum published with a
-    figure and notes under `public/`, which its starter shows, and a task
+    figure and notes under `public/`, and a task
     `later` published with a figure of its own and released only later.
     """
     later = await make_task(setup, acme, "later")
@@ -95,11 +98,30 @@ async def test_a_visitor_reads_a_public_file_of_a_released_task_of_a_contest_for
     assert {call.identity for call in acme.fake.calls} == {PLATFORM}
 
 
+async def test_public_is_served_with_the_statement_before_any_submission(
+    setup: Setup, acme: Acme, public: TaskId
+) -> None:
+    # No submission has been made and the deadline is still ahead; what the
+    # task's show lists never names public/, which needs no entry.
+    async with setup.unit_of_work() as ctx:
+        made = select(func.count()).where(Grading.submission_id.is_not(None))
+        assert await ctx.db.scalar(made) == 0
+    task_yaml = acme.fake.state.repos[("acme", "spring.sum.task")].files["task.yaml"]
+    assert b"public" not in task_yaml
+
+    assert (await landing.statement(setup, public)).statement == "Add two numbers.\n"
+    assert (await landing.public_file(setup, public, "public/figure.png")).content == FIGURE
+    bob = await signed_in(setup, acme.fake, 8)
+    assert (await contest_home.public_file(setup, bob, public, "public/a/notes.txt")).content == (
+        NOTES
+    )
+
+
 async def test_a_picture_added_under_public_after_the_starter_published_is_served(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    """The starter shows `public/` while it holds nothing, and a later save
-    adding the statement's first picture there publishes it."""
+    """A later save adding the statement's first picture under `public/`
+    publishes it, with no show entry for it."""
     await write_contest(acme.fake, LATER.format(visibility="everyone"))
     await _save(setup, acme, sum_task, {"statement.md": b"Add two numbers.\n"})
 

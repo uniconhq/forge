@@ -35,11 +35,13 @@ from sqlalchemy import select
 from forge.db.tables import Grading, Release
 from forge.db.tables.gradings import PASSED, SAVE
 from forge.db.tables.releases import RELEASED
+from forge.domain import run_showing
 from forge.domain.blocks.evaluate import Column
 from forge.domain.checks import check_only
 from forge.domain.content import check_path
 from forge.domain.definitions import (
     CONTEST_FILE,
+    PUBLIC_FOLDER,
     STATEMENT_FILE,
     TASK_FILE,
     ContestDefinition,
@@ -56,9 +58,16 @@ from forge.domain.plan_basics import PLAN_PATH
 from forge.domain.publication_record import Publication
 from forge.domain.run_plan import RunPlan
 from forge.domain.run_results import compilers
-from forge.domain.run_task import RUNS_PATH, Run, RunsFile, file_time
+from forge.domain.run_task import RUNS_PATH, Run, RunsFile
 from forge.domain.submissions import Field, run_fields_of
-from forge.domain.workflow_definition import WORKFLOW_FILE, RunOutput, parse_run_workflow
+from forge.domain.types import Type
+from forge.domain.uploads import Door
+from forge.domain.workflow_definition import (
+    WORKFLOW_FILE,
+    RunOutput,
+    RunWorkflow,
+    parse_run_workflow,
+)
 from forge.domain.yaml_models import InvalidDefinition
 from forge.log import get_logger
 from forge.runtime.context import Context
@@ -69,6 +78,7 @@ log = get_logger(__name__)
 NO_SUCH_CONTEST = names.NO_SUCH_CONTEST
 NO_SUCH_TASK = names.NO_SUCH_TASK
 NO_SUCH_FILE = "There is no such file."
+NO_SUCH_INPUT = "There is no such input."
 PUBLIC_MOST = 10 * 1024 * 1024
 """The most bytes of one public file the platform serves a reader."""
 
@@ -214,25 +224,31 @@ changes, so the time only bounds what is held."""
 @dataclass(frozen=True, slots=True)
 class RunsHeld:
     """A task's latest publication as its entrants' results read it:
-    its runs in the task's order, every file it holds, each report's
+    its runs in the task's order, each report's
     column as its plan gives it, each output's title and unit, the columns
     of each axis, the steps whose compile error `compiled` reads
-    (`run_results.compilers`), and the values that read a column the
-    entrant could set, as its save checked them (#504).
+    (`run_results.compilers`), the values that read a column the
+    entrant could set, as its save checked them (#504), the task's
+    settings, the inputs it gives that the entrant does not, but for its
+    `secrets`, which are never shown, each workflow input's type, so
+    `show` tells a file or folder as one, and every output of the workflow.
     """
 
     runs: tuple[Run, ...]
-    files: frozenset[str]
     columns: Mapping[str, Column] = field(default_factory=dict)
     compiling: frozenset[str] = frozenset()
     self_reported: frozenset[str] = frozenset()
     titles: Mapping[str, tuple[str | None, ...]] = field(default_factory=dict)
     axes: tuple[tuple[str, ...], ...] = ()
     meanings: Mapping[str, tuple[str | None, str | None]] = field(default_factory=dict)
+    settings: Mapping[str, object] = field(default_factory=dict)
+    kinds: Mapping[str, Type] = field(default_factory=dict)
+    secrets: frozenset[str] = frozenset()
+    outputs: tuple[str, ...] = ()
 
 
 async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
-    """The runs, files and plan of a task's latest publication, read
+    """The runs and plan of a task's latest publication, read
     once, since a publication never changes. A publication's runs file and
     plan always read, as its save wrote them, so one that does not fails
     loudly.
@@ -242,27 +258,45 @@ async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
     async def read() -> RunsHeld:
         found = await ctx.forge.content.read_file(PLATFORM, published.id, RUNS_PATH, at=version)
         planned = await ctx.forge.content.read_file(PLATFORM, published.id, PLAN_PATH, at=version)
-        listed = await ctx.forge.content.list_files(PLATFORM, published.id, at=version)
         runs = RunsFile.from_bytes(found.content)
         plan = RunPlan.from_bytes(planned.content)
+        workflow = await _workflow(ctx, plan)
+        given = {
+            name: value
+            for name, value in published.definition.inputs.items()
+            if name not in plan.entrant
+        }
+        secrets = frozenset(
+            name
+            for name, value in given.items()
+            if isinstance(value, Mapping) and "secret" in value
+        )
         return RunsHeld(
             runs.runs,
-            frozenset(listed.tokens),
             {name: entry.column() for name, entry in plan.reports.items()},
             compilers(plan),
             runs.self_reported_values,
             {run.id: run.titles for run in plan.runs if run.titles is not None},
             tuple(tuple(axis.inputs) for axis in published.definition.repeat),
-            await _output_words(ctx, plan),
+            {
+                name: (output.title, output.unit)
+                for name, output in workflow.outputs.items()
+                if isinstance(output, RunOutput)
+            },
+            {name: value for name, value in given.items() if name not in secrets},
+            {name: each.type for name, each in workflow.inputs.items()},
+            secrets,
+            tuple(workflow.outputs),
         )
 
     key = f"published.runs.{published.id}.{version}"
     return await ctx.memo.remembered(key, FORM_KEPT, read)
 
 
-async def _output_words(ctx: Context, plan: RunPlan) -> dict[str, tuple[str | None, str | None]]:
-    """Each output's title and unit, from the workflow the plan pinned.
-    A publication's workflow reads, as its save wrote it.
+async def _workflow(ctx: Context, plan: RunPlan) -> RunWorkflow:
+    """The workflow the plan pinned, whose outputs' titles and units and
+    inputs' types a result reads. A publication's workflow reads, as its
+    save wrote it.
     """
     found = await ctx.forge.workflows.read_workflow_at(
         PLATFORM,
@@ -270,12 +304,7 @@ async def _output_words(ctx: Context, plan: RunPlan) -> dict[str, tuple[str | No
         VersionId(plan.workflow.commit),
         WORKFLOW_FILE,
     )
-    definition = parse_run_workflow(found.content)
-    return {
-        name: (output.title, output.unit)
-        for name, output in definition.outputs.items()
-        if isinstance(output, RunOutput)
-    }
+    return parse_run_workflow(found.content)
 
 
 async def plan_at(ctx: Context, task: TaskId, version: VersionId) -> RunPlan:
@@ -337,7 +366,7 @@ async def statement_written_at(ctx: Context, task: TaskId, version: VersionId, k
 async def results_released(ctx: Context, task: TaskId) -> bool:
     """Whether the task's results are released now: its latest action a
     release, never when it has none. Read afresh on every call and never
-    kept, so a take-back hides `on_release` from every reader at once.
+    kept, so a take-back hides `after_release` from every reader at once.
     """
     return await released_since(ctx, task) is not None
 
@@ -381,49 +410,23 @@ def public_path(path: str) -> str:
     return path
 
 
-def shown_now(
-    definition: TaskDefinition,
-    path: str,
-    *,
-    reveal: datetime | None,
-    now: datetime,
-    released: bool = False,
-) -> bool:
-    """Whether the task shows its readers the file at `path` now: one its
-    `show` lists, or a folder it is in, under `now`, under `after_close`
-    once the task's reveal has passed, or under `on_release` while the
-    task's results are `released`. A file no entry lists is never shown,
-    nor one only a check names (`checks.check_only`), whatever `show` lists.
+def shown_now(definition: TaskDefinition, path: str) -> bool:
+    """Whether the task shows the file at `path` with its statement: one
+    under `public/`, which needs no `show` entry, unless only a check names
+    it (`checks.check_only`).
     """
-    if check_only(definition, path):
-        return False
-    time = file_time(definition.scoring, path)
-    return (
-        time == "now"
-        or (time == "after_close" and reveal is not None and reveal <= now)
-        or (time == "on_release" and released)
-    )
+    return path.startswith(PUBLIC_FOLDER) and not check_only(definition, path)
 
 
-async def public_file(
-    ctx: Context, published: PublishedTask, path: str, *, reveal: datetime | None = None
-) -> PublicFile:
+async def public_file(ctx: Context, published: PublishedTask, path: str) -> PublicFile:
     """The file at `path` as the task's latest publication holds it, when
-    the task shows it now (`shown_now`, `reveal` being when the task closes
-    for every row, which `after_close` waits for, and `on_release` waiting
-    on `results_released`), read as the
+    the task shows it with its statement (`shown_now`), read as the
     platform, its large-file object's bytes for an upload. The caller has
-    checked the reader may read the task and the path with `public_path`.
-    `NotFound` for a file not shown or not there, and `PublicFileTooLarge`
-    for one over `PUBLIC_MOST` bytes, read no further.
+    checked the reader may read the task's statement and the path with
+    `public_path`. `NotFound` for a file not shown or not there, and
+    `PublicFileTooLarge` for one over `PUBLIC_MOST` bytes, read no further.
     """
-    scoring = published.definition.scoring
-    # The release is read afresh each time, so a take-back hides the file at
-    # once.
-    released = file_time(scoring, path) == "on_release" and await results_released(
-        ctx, published.id
-    )
-    if not shown_now(published.definition, path, reveal=reveal, now=ctx.now, released=released):
+    if not shown_now(published.definition, path):
         raise NotFound(NO_SUCH_FILE)
     version = published.publication.version
     await ctx.let_go()
@@ -446,9 +449,9 @@ async def public_file(
 async def head_public_file(ctx: Context, task: TaskId, path: str) -> PublicFile:
     """The file at `path` as the task's head holds it, the draft a statement
     being written draws its pictures from, whether or not it was ever
-    published, for whoever organises the task: one its `show` lists at any
-    time. The caller has checked who asks. `NotFound` for a task or a file
-    not there, or one the task never shows.
+    published, for whoever organises the task: one under `public/`. The
+    caller has checked who asks. `NotFound` for a task or a file not there,
+    or one the task never shows.
     """
     await ctx.let_go()
     try:
@@ -466,7 +469,73 @@ async def _shown_at_head(ctx: Context, task: TaskId, path: str, version: Version
         definition = parse_task(found.content)
     except NotFound, InvalidDefinition:
         return False
-    return file_time(definition.scoring, path) is not None
+    return shown_now(definition, path)
+
+
+@dataclass(frozen=True, slots=True)
+class ShownInput:
+    """An input `show` shows that is a file or a folder, as its reader
+    fetches it: the door to a file's bytes (`Door`), served whole whatever
+    its size, with the file's `name`, the last part of its path, to save it
+    under; or a folder's files, by their paths below it, each fetched by its
+    path.
+    """
+
+    door: Door | None = None
+    name: str | None = None
+    files: tuple[str, ...] = ()
+
+
+async def task_inputs(
+    ctx: Context, published: PublishedTask, *, revealed: bool
+) -> run_showing.TaskInputs:
+    """What the task's page shows of its inputs now, its shared inputs and
+    the runs whose inputs are shown (`run_showing.task_inputs`), for a
+    reader who may read its statement: `revealed` is whether the task has
+    closed for every row, and a release is read afresh, so a take-back
+    hides at once.
+    """
+    held = await runs_held(ctx, published)
+    return run_showing.task_inputs(
+        published.definition.scoring,
+        held.runs,
+        revealed=revealed,
+        released=await results_released(ctx, published.id),
+        titles=held.titles,
+        axes=held.axes,
+        settings=held.settings,
+        kinds=held.kinds,
+    )
+
+
+async def shown_input(
+    ctx: Context, published: PublishedTask, shown: tuple[Type, str] | None, path: str | None
+) -> ShownInput:
+    """The input an answer shows as `shown`, a file or a folder by its path
+    in the task (`run_showing.shown_file`), as the task's latest
+    publication holds it: a file's door; a folder's files, or with `path`
+    the door to the one at that path below it. `NotFound` for an input not
+    shown, which tells nothing of one hidden, and for a path the folder
+    does not hold.
+    """
+    if shown is None:
+        raise NotFound(NO_SUCH_INPUT)
+    kind, at = shown
+    task, version = published.id, published.publication.version
+    if kind is Type.FILE:
+        if path is not None:
+            raise NotFound(NO_SUCH_FILE)
+        door = await ctx.forge.content.media_door(PLATFORM, task, at, at=version)
+        return ShownInput(door=door, name=at.rsplit("/", 1)[-1])
+    folder = at if at.endswith("/") else f"{at}/"
+    listing = await ctx.forge.content.list_files(PLATFORM, task, at=version)
+    files = tuple(sorted(each[len(folder) :] for each in listing.tokens if each.startswith(folder)))
+    if path is None:
+        return ShownInput(files=files)
+    if path not in files:
+        raise NotFound(NO_SUCH_FILE)
+    door = await ctx.forge.content.media_door(PLATFORM, task, f"{folder}{path}", at=version)
+    return ShownInput(door=door, name=path.rsplit("/", 1)[-1])
 
 
 async def _public_bytes(ctx: Context, task: TaskId, path: str, version: VersionId) -> PublicFile:

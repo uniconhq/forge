@@ -22,6 +22,7 @@ from forge.domain.run_plan.models import (
 )
 from forge.domain.run_plan.plan import plan_runs
 from forge.domain.run_plan.plan_checks import files_named, order_problems, side_by_side, slot_of
+from forge.domain.run_plan.plan_helpers import once_steps
 from forge.domain.run_plan.records import (
     BOXED,
     COMPILE_ERROR,
@@ -66,6 +67,7 @@ __all__ = [
     "StepClass",
     "ValueStep",
     "files_named",
+    "once_steps",
     "order_problems",
     "pin_moved",
     "plan_runs",

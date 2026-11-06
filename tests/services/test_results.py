@@ -1,13 +1,13 @@
 """Staff releasing a task's results and taking a release back
-(SIMPLER-CORE.md 9.4, stage 5 section 6 items 2 and 10): what `on_release`
-lists is shown to entrants, its values, runs and files, only while the
+(SIMPLER-CORE.md 9.4, stage 5 section 6 items 2 and 10): what `after_release`
+lists is shown to entrants, its values and runs, only while the
 results are released, and an entrant reads the early row alone until the
 reveal but while released; a take-back warns before it hides; each action is a
 row with who and when, added only when it changes the state; gradings
-made while released take the split that runs `on_release` early, and a
+made while released take the split that runs `after_release` early, and a
 grading keeps the split it was made with; an extension, or a later close,
 is refused while released and allowed after a take-back; a save may not drop what a
-release shows while it stands, nor have a name shown during the contest
+release shows while it stands, nor have a value shown during the contest
 read fewer runs; and only a manager or admin of the task acts.
 """
 
@@ -66,12 +66,24 @@ from tests.services.test_pipelines import (
 from tests.services.test_regrades import _held
 from tests.services.test_run_task_saves import TASKS
 from tests.services.test_steps import _batch, _report, _step
+from tests.test_run_task import ISLANDS_AFTER
 
+AFTER_ST1 = """\
+    after_deadline:
+      values: [st1]
+      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]
+"""
 RELEASING = TASKS["islands"][0].replace(
-    "after_close: [st1, st2, total, all]",
-    "after_close: [st1, all]\n    on_release: [st2, st2_tests, tests/4.in]",
+    ISLANDS_AFTER,
+    AFTER_ST1 + "    after_release:\n      values: [st2]\n"
+    "      runs: [{of: st2_tests, fields: [input, verdict, passed, score]}]\n",
 )
-"""islands showing st2, its runs and one of its files on a release."""
+"""islands showing st2, and its runs with their inputs, on a release."""
+DROPPED = RELEASING.replace(
+    "{of: st2_tests, fields: [input, verdict, passed, score]}",
+    "{of: st2_tests, fields: [verdict, passed, score]}",
+)
+"""RELEASING with its released runs' inputs no longer shown."""
 CONTEST = Scope("acme", "spring")
 
 
@@ -90,7 +102,7 @@ async def _file(setup: Setup, task: TaskId, path: str) -> bytes | None:
         return None
 
 
-async def test_what_on_release_lists_is_shown_only_while_the_results_are_released(
+async def test_what_after_release_lists_is_shown_only_while_the_results_are_released(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
@@ -98,18 +110,24 @@ async def test_what_on_release_lists_is_shown_only_while_the_results_are_release
     hidden = {"sample_score": 1, "sample_time": 12}
     samples = [("sample_tests", 1, "accepted"), ("sample_tests", 2, "accepted")]
     shown = [*samples, ("st2_tests", 1, "accepted"), ("st2_tests", 2, "accepted")]
+    inputs = [{"file": "tests/3.in"}, {"file": "tests/4.in"}]
 
-    async def seen() -> tuple[dict[str, Any], list[Any], bytes | None]:
+    async def seen() -> tuple[dict[str, Any], list[Any], list[Any]]:
         grading = await _grading(setup, session, islands)
-        return _values(grading), _runs_seen(grading), await _file(setup, islands.task, "tests/4.in")
+        given = [
+            run["tuples"][0]["key"]["input"] for run in grading.runs if run["group"] == "st2_tests"
+        ]
+        return _values(grading), _runs_seen(grading), given
 
-    assert await seen() == (hidden, samples, None)
+    assert await seen() == (hidden, samples, [])
     await _release(setup, acme, islands.task)
-    assert await seen() == ({**hidden, "st2": 1}, shown, b"4\n")
+    assert await seen() == ({**hidden, "st2": 1}, shown, inputs)
     await _hide(setup, acme, islands.task)
-    assert await seen() == (hidden, samples, None)
+    assert await seen() == (hidden, samples, [])
     await _release(setup, acme, islands.task)
-    assert await seen() == ({**hidden, "st2": 1}, shown, b"4\n")
+    assert await seen() == ({**hidden, "st2": 1}, shown, inputs)
+    # A test file is never served beside the statement, shown or not.
+    assert await _file(setup, islands.task, "tests/4.in") is None
 
 
 async def test_an_entrant_reads_the_early_row_alone_until_the_reveal_or_while_released(
@@ -117,10 +135,10 @@ async def test_an_entrant_reads_the_early_row_alone_until_the_reveal_or_while_re
 ) -> None:
     clock.set(BEFORE_CLOSE)
     islands, session = await _graded_both(setup, acme, RELEASING)
-    # st1 moved to now runs r3 early for new gradings; this one ran it late.
-    sooner = RELEASING.replace("samples/]", "samples/, st1]").replace(
-        "after_close: [st1, all]", "after_close: [all]"
-    )
+    # st1 moved to always runs r3 early for new gradings; this one ran it late.
+    sooner = RELEASING.replace(
+        "values: [sample_score, sample_time]", "values: [sample_score, sample_time, st1]"
+    ).replace("      values: [st1]\n", "")
     assert isinstance(await _try_save(setup, acme, islands.task, sooner), Published)
     await setup.settle()
 
@@ -149,9 +167,9 @@ async def test_each_action_asks_first_and_changes_nothing_unconfirmed(
     assert asked.value.extra == {"action": "release"}
     assert asked.value.detail == (
         "Every entrant of islands will be shown, from now on, what its scoring's show lists "
-        "under on_release: st2, st2_tests, tests/4.in. Gradings from now on run those runs "
-        "early. You can hide the results again later, though entrants may have seen them by "
-        "then."
+        "under after_release: st2, input of st2_tests, verdict of st2_tests, passed of "
+        "st2_tests, score of st2_tests. Gradings from now on run those runs early. You can "
+        "hide the results again later, though entrants may have seen them by then."
     )
     assert (await tasks.state(setup, acme.ada, islands.task)).results == ResultsState(False, ())
 
@@ -328,19 +346,17 @@ async def _warn_save(setup: Setup, acme: Acme, task: TaskId, text: str) -> tuple
     return asked.value.hiding
 
 
-async def test_a_save_warns_about_a_releases_files_even_after_a_take_back(
+async def test_a_save_warns_about_a_releases_inputs_even_after_a_take_back(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
     islands, _ = await _graded_both(setup, acme, RELEASING)
-    dropped = RELEASING.replace("on_release: [st2, st2_tests, tests/4.in]", "on_release: [st2]")
     await _release(setup, acme, islands.task)
     await _hide(setup, acme, islands.task)
-    lines = await _warn_save(setup, acme, islands.task, dropped)
-    assert len(lines) == 2
-    assert all("once results are released" in line and "seen or kept" in line for line in lines)
-    assert "st2_tests" in lines[0]
-    assert "tests/4.in" in lines[1]
+    lines = await _warn_save(setup, acme, islands.task, DROPPED)
+    assert len(lines) == 1
+    assert "input of 2 runs once results are released" in lines[0]
+    assert "seen or kept" in lines[0]
 
 
 async def test_a_group_reading_fewer_shown_runs_warns_then_saves(
@@ -353,11 +369,21 @@ async def test_a_group_reading_fewer_shown_runs_warns_then_saves(
         "sample_tests: {input: [samples/1.in]}",
     )
     lines = await _warn_save(setup, acme, islands.task, fewer)
-    assert len(lines) == 3
-    assert all("read 1 fewer" in line for line in lines)
-    assert any("sample_tests during the contest over 2 runs" in line for line in lines)
-    assert any("sample_score during the contest over 2 runs" in line for line in lines)
-    assert any("sample_time during the contest over 2 runs" in line for line in lines)
+    fewer_lines = [line for line in lines if "read 1 fewer" in line]
+    assert len(fewer_lines) == 2
+    assert any("sample_score during the contest over 2 runs" in line for line in fewer_lines)
+    assert any("sample_time during the contest over 2 runs" in line for line in fewer_lines)
+    # And each field sample_tests showed of the run it no longer holds.
+    hidden = [line for line in lines if line not in fewer_lines]
+    assert [line.split("shown ")[1].split(" of")[0] for line in hidden] == [
+        "input",
+        "answer",
+        "verdict",
+        "passed",
+        "score",
+        "time_ms",
+    ]
+    assert all("of 1 run as soon as a grading ends" in line for line in hidden)
 
 
 async def test_later_close_warns_about_results_even_after_a_take_back(
@@ -386,10 +412,15 @@ async def test_later_close_warns_about_results_even_after_a_take_back(
 
 
 OPEN = RELEASING.replace(
-    "after_close: [st1, all]\n    on_release: [st2, st2_tests, tests/4.in]",
-    "after_close: [st1, all, st2_tests, tests/4.in]\n    on_release: [st2]",
+    "      runs: [{of: st2_tests, fields: [input, verdict, passed, score]}]\n", ""
+).replace(
+    "      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]\n",
+    "      runs:\n"
+    "        - {of: all, fields: [verdict, passed, score, time_ms]}\n"
+    "        - {of: st2_tests, fields: [input, verdict, passed, score]}\n",
 )
-"""RELEASING with st2_tests and its file shown at the reveal instead."""
+"""RELEASING with st2_tests' runs and their inputs shown after the deadline
+instead."""
 
 
 async def test_released_files_moving_between_release_and_reveal_warn_only_when_hidden(
@@ -399,13 +430,16 @@ async def test_released_files_moving_between_release_and_reveal_warn_only_when_h
     islands, _ = await _graded_both(setup, acme, OPEN)
     await _release(setup, acme, islands.task)
     assert isinstance(await _try_save(setup, acme, islands.task, RELEASING), Published)
+    # Each field of st2_tests' two runs moved, its input among them.
     before = await _warn_save(setup, acme, islands.task, OPEN)
-    assert len(before) == 2
-    assert all("once results are released" in line for line in before)
+    assert len(before) == 4
+    assert all("of 2 runs once results are released" in line for line in before)
+    assert any("input of 2 runs" in line for line in before)
     clock.set(AFTER_CLOSE)
+    # After the deadline all shows the rest anyway: only the inputs move.
     after = await _warn_save(setup, acme, islands.task, RELEASING)
-    assert len(after) == 2
-    assert all("at the reveal" in line for line in after)
+    assert len(after) == 1
+    assert "input of 2 runs after the deadline" in after[0]
 
 
 async def test_what_no_release_showed_never_holds_a_save_back(
@@ -413,12 +447,11 @@ async def test_what_no_release_showed_never_holds_a_save_back(
 ) -> None:
     clock.set(BEFORE_CLOSE)
     islands, _ = await _graded_both(setup, acme, RELEASING)
-    dropped = RELEASING.replace("on_release: [st2, st2_tests, tests/4.in]", "on_release: [st2]")
-    assert isinstance(await _try_save(setup, acme, islands.task, dropped), Published)
+    assert isinstance(await _try_save(setup, acme, islands.task, DROPPED), Published)
 
     await _release(setup, acme, islands.task)
 
-    again = dropped.replace("max: 50", "max: 49")
+    again = DROPPED.replace("max: 50", "max: 49")
     assert isinstance(await _try_save(setup, acme, islands.task, again), Published)
 
 
@@ -427,21 +460,22 @@ async def test_a_value_shown_before_what_it_reads_is_refused_and_a_group_shown_s
 ) -> None:
     clock.set(BEFORE_CLOSE)
     islands = await _checked(setup, acme, RELEASING)
-    sooner = RELEASING.replace("after_close: [st1, all]", "after_close: [st1, total, all]")
+    sooner = RELEASING.replace("values: [st1]", "values: [st1, total]")
 
     assert _errors(await _try_save(setup, acme, islands.task, sooner)) == [
         (
-            "scoring.show.after_close[1]",
+            "scoring.show.after_deadline.values[1]",
             f"total reads {name}, which is shown once results are released, so showing total "
-            f"at the reveal would give {name} away sooner. List total no sooner than {name}.",
+            f"after the deadline would give {name} away sooner. List total no sooner than "
+            f"{name}.",
         )
         for name in ("st2", "st2_tests")
     ]
     saved = await _try_save(setup, acme, islands.task, RELEASING.replace("max: 50", "max: 49"))
     assert isinstance(saved, Published)
     assert (
-        "all, shown at the reveal, holds runs st2 reads, so entrants see those runs before a "
-        "release shows st2."
+        "all, shown after the deadline, holds runs st2 reads, so entrants see those runs before "
+        "a release shows st2."
     ) in saved.notes
 
 
@@ -449,8 +483,9 @@ async def test_a_save_that_moves_only_what_a_release_runs_early_regrades_only_wh
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    files_only = RELEASING.replace(
-        "on_release: [st2, st2_tests, tests/4.in]", "on_release: [tests/4.in]"
+    files_only = RELEASING.replace("      values: [st2]\n", "").replace(
+        "{of: st2_tests, fields: [input, verdict, passed, score]}",
+        "{of: st2_tests, fields: [input]}",
     )
     islands, _ = await _graded_both(setup, acme, files_only)
 
@@ -471,7 +506,9 @@ async def test_while_released_a_late_row_tells_its_entrant_only_for_a_grading_ma
 ) -> None:
     clock.set(BEFORE_CLOSE)
     text = TASKS["islands"][0].replace(
-        "after_close: [st1, st2, total, all]", "after_close: [all]\n    on_release: [st1_tests]"
+        ISLANDS_AFTER,
+        "    after_deadline:\n      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]\n"
+        "    after_release:\n      runs: [{of: st1_tests, fields: [verdict, score]}]\n",
     )
     islands = await _checked(setup, acme, text)
     await _submit(setup, acme, islands, user=8)
@@ -509,8 +546,7 @@ async def test_a_new_release_asks_again_when_it_adds_to_a_saves_hiding_lines(
 ) -> None:
     clock.set(BEFORE_CLOSE)
     islands, _ = await _graded_both(setup, acme, RELEASING)
-    content = RELEASING.replace("now: [sample_score, sample_time,", "now: [sample_score,")
-    content = content.replace("on_release: [st2, st2_tests, tests/4.in]", "on_release: [st2]")
+    content = DROPPED.replace("values: [sample_score, sample_time]", "values: [sample_score]")
     head = await acme.fake.content.list_files(PLATFORM, islands.task)
     changes = {"task.yaml": Edit(content.encode(), head.tokens["task.yaml"])}
     with pytest.raises(ConfirmationRequired) as first:
@@ -521,7 +557,7 @@ async def test_a_new_release_asks_again_when_it_adds_to_a_saves_hiding_lines(
         await task_save.save(
             setup, acme.ada, islands.task, changes, confirm=True, asked=first.value.extra["asked"]
         )
-    assert len(second.value.hiding) == 3
+    assert len(second.value.hiding) == 2
     assert second.value.extra["asked"] != first.value.extra["asked"]
     assert (await acme.fake.content.list_files(PLATFORM, islands.task)).version == head.version
     assert isinstance(
@@ -550,8 +586,7 @@ async def test_a_release_during_package_preparation_does_not_publish_unconfirmed
     clock.set(BEFORE_CLOSE)
     islands, _ = await _graded_both(setup, acme, RELEASING)
     before = await acme.fake.workspaces.list_publications(islands.task)
-    content = RELEASING.replace("now: [sample_score, sample_time,", "now: [sample_score,")
-    content = content.replace("on_release: [st2, st2_tests, tests/4.in]", "on_release: [st2]")
+    content = DROPPED.replace("values: [sample_score, sample_time]", "values: [sample_score]")
     content += "\nenvironment:\n  python:\n    packages: [numpy]\n"
     head = await acme.fake.content.list_files(PLATFORM, islands.task)
     changes = {"task.yaml": Edit(content.encode(), head.tokens["task.yaml"])}
@@ -588,7 +623,7 @@ async def test_a_release_during_package_preparation_does_not_publish_unconfirmed
     assert await acme.fake.workspaces.list_publications(islands.task) == before
     with pytest.raises(ConfirmationRequired) as changed:
         await task_save.save(setup, acme.ada, islands.task, {})
-    assert len(changed.value.hiding) == 3
+    assert len(changed.value.hiding) == 2
     final = await task_save.save(
         setup, acme.ada, islands.task, {}, confirm=True, asked=changed.value.extra["asked"]
     )

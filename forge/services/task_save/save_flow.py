@@ -2,7 +2,7 @@ import uuid
 from collections.abc import Mapping
 
 from forge.domain.content import Edit
-from forge.domain.definitions import STATEMENT_FILE
+from forge.domain.definitions import PUBLIC_FOLDER, STATEMENT_FILE
 from forge.domain.environment import Environment, EnvironmentLock
 from forge.domain.environment_plan import languages_of
 from forge.domain.errors import Conflict, Rejected
@@ -12,7 +12,7 @@ from forge.domain.publication_record import Check, Publication, write_note
 from forge.domain.regrades import RegradeCause
 from forge.domain.roles import Role, contest_id_of, holds, task_scope
 from forge.domain.run_plan import RELEASE_MOVED, pin_moved, run_plan_changes, steps_run_again
-from forge.domain.run_task import file_time, self_reported_question
+from forge.domain.run_task import self_reported_question
 from forge.domain.save_effect import ReadChanges
 from forge.domain.yaml_models import Problem
 from forge.log import get_logger
@@ -128,10 +128,9 @@ async def save(
             # again for it (stage 5 section 6 item 44).
             changed = tuple(each for each in changed if each != RELEASE_MOVED)
         rerun = steps_run_again(before, after)
-        scoring = checked.definition.scoring
         read = ReadChanges(
             statement=STATEMENT_FILE in differ,
-            public=any(file_time(scoring, path) is not None for path in differ),
+            public=any(path.startswith(PUBLIC_FOLDER) for path in differ),
         )
         anew = bool(differ) or any(
             before.plans.get(path) != content for path, content in checked.plan_files().items()

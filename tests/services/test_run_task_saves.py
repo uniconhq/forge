@@ -4,9 +4,9 @@ the one commit the workflow's version stood at, every workflow file read
 there; a save again says what its plan changed and grades nothing again; a
 runs file that does not read refuses the save, and so does an empty
 `scoring`; a self-reported report asks once, and the save is refused
-until that question is answered; what was shown is not hidden again; the
-files `show` lists are served from their time on, and no other, the
-reveal's from its instant and a release's not yet; the contest gives a
+until that question is answered; what was shown is not hidden again; only
+the files under `public/` are served beside the statement, whatever `show`
+lists and whenever it shows it; the contest gives a
 task a due and a leaderboard, and a stored worth or late share is ignored;
 and an entrant submits to one in parts, each part's files downloaded and,
 when the submit's answer was lost, its uploads used up.
@@ -14,7 +14,7 @@ when the submit's answer was lost, its uploads used up.
 
 import hashlib
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -45,6 +45,7 @@ from forge.services import (
     files,
     gradings,
     landing,
+    results,
     submissions,
     task_save,
     uploads,
@@ -439,12 +440,15 @@ async def test_what_was_shown_under_a_graded_publication_is_not_hidden_again(
 
     monkeypatch.setattr(task_save.sources, "_graded_under", graded)
     text = TASKS["islands"][0]
-    later = text.replace("now: [sample_score, sample_time,", "now: [sample_score,").replace(
-        "after_close: [st1,", "after_close: [sample_time, st1,"
+    later = text.replace("values: [sample_score, sample_time]", "values: [sample_score]").replace(
+        "values: [st1, st2, total]", "values: [sample_time, st1, st2, total]"
     )
-    dropped = text.replace(", samples/]", "]")
+    dropped = text.replace(
+        "fields: [input, answer, verdict, passed, score, time_ms]",
+        "fields: [input, verdict, passed, score, time_ms]",
+    )
 
-    for text_after, named in ((later, "sample_time"), (dropped, "samples/")):
+    for text_after, named in ((later, "sample_time"), (dropped, "answer of 2 runs")):
         before = await acme.fake.content.list_files(PLATFORM, sum_task)
         with pytest.raises(ConfirmationRequired) as asked:
             await _save(setup, acme, sum_task, {"task.yaml": text_after.encode()})
@@ -463,63 +467,48 @@ async def test_what_was_shown_under_a_graded_publication_is_not_hidden_again(
             ),
             Published,
         )
-    # The same files listed one by one show as much.
-    each = text.replace("samples/]", "samples/1.in, samples/1.ans, samples/2.in, samples/2.ans]")
+    # The same field shown by another run entry shows as much.
+    each = text.replace(
+        "{of: sample_tests, fields: [input, answer, verdict, passed, score, time_ms]}",
+        "{of: sample_tests, fields: [input, verdict, passed, score, time_ms]}, "
+        "{of: all, fields: [answer]}",
+    )
     listed = await _save(setup, acme, sum_task, {"task.yaml": each.encode()}, confirm=True)
     assert isinstance(listed, Published)
 
 
-async def test_the_files_show_lists_are_served_from_their_time_and_no_other(
+async def test_only_public_files_are_served_beside_the_statement_whatever_show_lists(
     setup: Setup, acme: Acme, sum_task: TaskId, clock: FakeClock
 ) -> None:
+    # Every run's input is shown after the deadline, the samples' always.
     text = TASKS["islands"][0].replace(
-        "after_close: [st1, st2, total, all]", "after_close: [st1, st2, total, all, tests/3.in]"
+        "{of: all, fields: [verdict, passed, score, time_ms]}",
+        "{of: all, fields: [input, verdict, passed, score, time_ms]}",
     )
     await _published(setup, acme, sum_task, "islands", RUNNING.format(visibility="everyone"), text)
     await _save(setup, acme, sum_task, {"public/figure.png": b"figure"}, keep_as_draft=True)
     ada, bob = await signed_in(setup, acme.fake, 7), await signed_in(setup, acme.fake, 8)
+    held = ("samples/1.in", "samples/2.ans", "tests/3.in", "task.yaml", "statement.md", RUNS_PATH)
 
-    assert (await landing.public_file(setup, sum_task, "samples/1.in")).content == b"1\n"
-    assert (await contest_home.public_file(setup, bob, sum_task, "samples/2.ans")).content == (
-        b"2\n"
-    )
-    for path in ("tests/3.in", "tests/4.in", "task.yaml", "statement.md", RUNS_PATH):
+    for path in (*held, "public/figure.png"):
         with pytest.raises(NotFound, match="no such file"):
             await landing.public_file(setup, sum_task, path)
-    # The statement's preview draws what show lists, at any time, and
-    # nothing else.
-    assert (await contest_home.public_file(setup, ada, sum_task, "tests/3.in")).content == b"3\n"
-    for path in ("tests/4.in", "public/figure.png"):
+        with pytest.raises(NotFound, match="no such file"):
+            await contest_home.public_file(setup, bob, sum_task, path)
+    # The statement's preview draws the head's public/ files, and nothing else.
+    assert (await contest_home.public_file(setup, ada, sum_task, "public/figure.png")).content == (
+        b"figure"
+    )
+    for path in held:
         with pytest.raises(NotFound, match="no such file"):
             await contest_home.public_file(setup, ada, sum_task, path)
 
+    # Nor after the deadline, or a release, when show shows them.
     clock.advance(timedelta(hours=3, minutes=1))
-
-    assert (await landing.public_file(setup, sum_task, "tests/3.in")).content == b"3\n"
-    with pytest.raises(NotFound, match="no such file"):
-        await landing.public_file(setup, sum_task, "tests/4.in")
-
-
-async def test_after_close_is_served_from_the_reveal_and_on_release_never_yet(
-    setup: Setup, acme: Acme, sum_task: TaskId, clock: FakeClock
-) -> None:
-    text = TASKS["islands"][0].replace(
-        "after_close: [st1, st2, total, all]",
-        "after_close: [st1, st2, total, all, tests/3.in]\n    on_release: [tests/4.in]",
-    )
-    await _published(setup, acme, sum_task, "islands", RUNNING.format(visibility="everyone"), text)
-    reveal = datetime(2026, 9, 26, 15, 0, tzinfo=UTC)
-
-    clock.set(reveal - timedelta(microseconds=1))
-    for path in ("tests/3.in", "tests/4.in"):
+    await results.release(setup, acme.ada, sum_task, confirmed=True)
+    for path in ("samples/1.in", "tests/3.in", "tests/4.in"):
         with pytest.raises(NotFound, match="no such file"):
             await landing.public_file(setup, sum_task, path)
-
-    clock.set(reveal)
-    assert (await landing.public_file(setup, sum_task, "tests/3.in")).content == b"3\n"
-    clock.advance(timedelta(days=365))
-    with pytest.raises(NotFound, match="no such file"):
-        await landing.public_file(setup, sum_task, "tests/4.in")
 
 
 LEADERBOARD = (

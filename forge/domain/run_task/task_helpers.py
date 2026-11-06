@@ -3,7 +3,8 @@ from typing import Any
 
 from forge.domain.content import has_path, path_problem
 from forge.domain.definitions import ENTRANT
-from forge.domain.port_values import scalar_to_text
+from forge.domain.plan_basics import PLANS_FOLDER
+from forge.domain.port_values import is_reserved, scalar_to_text
 from forge.domain.program_manifest import ProgramManifest, parse_program
 from forge.domain.run_task.records import RUN_ID, Part
 from forge.domain.run_workflow import Program
@@ -40,6 +41,13 @@ def _value_problem(wanted: RunInput, given: object, paths: Collection[str]) -> s
             if problem is not None:
                 return problem
             assert isinstance(given, str)
+            if is_reserved(given):
+                # What Unicon writes there, such as the runs file's ids
+                # and keys, is never a run's to read or `show`'s to serve.
+                return (
+                    f"Unicon writes the files in {PLANS_FOLDER} itself, so an input cannot be "
+                    f"given from there. Give another {'folder' if folder else 'file'}."
+                )
             if not has_path(paths, given):
                 return (
                     f"The task has no files in {given}. Add them, or give another folder."

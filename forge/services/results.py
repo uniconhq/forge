@@ -2,10 +2,10 @@
 (SIMPLER-CORE.md 9.4, stage 5 section 6 items 2 and 10).
 
 A release shows every entrant what the task's `show` lists under
-`on_release`, from then on: its values, its groups' runs and its files.
+`after_release`, from then on: its values, inputs, outputs and runs.
 Gradings made while it stands take the plan's released split, which runs
 what a release shows early (`RunPlan.for_split`). A take-back puts the task
-back as if it had never been released: `on_release` is hidden again from
+back as if it had never been released: `after_release` is hidden again from
 every serving path at once, gradings from then on take the other split, and
 an extension is allowed again. A grading already made keeps the split it
 was made with, so neither action grades anything again.
@@ -33,6 +33,7 @@ from forge.domain.errors import ConfirmationRequired, NotFound, PortError
 from forge.domain.ids import ContestId, TaskId
 from forge.domain.live import Nudge, NudgeKind
 from forge.domain.roles import Role, contest_id_of, task_scope
+from forge.domain.run_task import listed_words
 from forge.log import get_logger
 from forge.runtime.actions import action
 from forge.runtime.context import Context
@@ -107,7 +108,7 @@ async def release(
     ctx: Context, organiser: Organiser, task: TaskId, *, confirmed: bool = False
 ) -> bool:
     """Release the task's results: from now on every entrant is shown what
-    its `show` lists under `on_release`. Without `confirmed`, nothing
+    its `show` lists under `after_release`. Without `confirmed`, nothing
     changes and `ConfirmationRequired` says what becomes visible, to whom,
     and that it can be taken back. A task already released stays as it is,
     with no row added. Whether a row was added; `state` reads the outcome.
@@ -174,13 +175,13 @@ async def _visible(ctx: Context, contest: ContestId, task: TaskId) -> bool:
 
 def _release_words(found: PublishedTask) -> str:
     scoring = found.definition.scoring
-    listed = list(scoring.show.on_release)
+    listed = listed_words(scoring.show.after_release)
     if not listed:
-        shows = "Its scoring's show lists nothing under on_release, so nothing more is shown."
+        shows = "Its scoring's show lists nothing under after_release, so nothing more is shown."
     else:
         shows = (
             f"Every entrant of {found.name} will be shown, from now on, what its scoring's show "
-            f"lists under on_release: {', '.join(listed)}."
+            f"lists under after_release: {', '.join(listed)}."
         )
     return (
         f"{shows} Gradings from now on run those runs early. You can hide the results again "

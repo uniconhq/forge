@@ -372,5 +372,5 @@ async def _check_runs(
     )
     locked = await matching(ctx, as_, task, head, written, asked)
     plan = with_environment(planned.plan, locked, found.task.entrant) if locked else planned.plan
-    hiding = await _shown_before_runs(ctx, task, definition, present, found.task)
+    hiding = await _shown_before_runs(ctx, task, definition, found.task)
     return Checked(definition, (), pins, found.task, plan, tuple(hiding))

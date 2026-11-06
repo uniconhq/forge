@@ -72,13 +72,15 @@ from datetime import datetime
 from fractions import Fraction
 
 from forge.domain.blocks.bounds import Bounds, value_bounds
-from forge.domain.blocks.catalogue import ALL, MARKED, SHOWN_FACTS
+from forge.domain.blocks.catalogue import MARKED, SHOWN_FACTS
 from forge.domain.blocks.evaluate import Column, RunResult
 from forge.domain.blocks.leaderboard_evaluate import Cell, Submitted
 from forge.domain.blocks.leaderboard_shape_check import ColumnRef, LeaderboardsCheck
 from forge.domain.definitions import Hold, Leaderboard, LeaderboardAudience, Scoring
 from forge.domain.names import WorkspaceOwner
 from forge.domain.run_showing import ValueShown
+from forge.domain.run_task import listed as listed_at
+from forge.domain.run_task import picks
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,12 +241,12 @@ def listed_now(scoring: Scoring, times: Collection[str]) -> tuple[frozenset[str]
     """What `show` lists of a task at the `times` that have come, as anyone
     but staff may read it on a leaderboard: its values, one reading an entered
     mark among them, since a cell reads a mark only on a submission it
-    counted (item 117), and whether it lists `compiled`, or a group, which
-    shows `compiled` with its runs (items 82 and 124)."""
-    listed = {name for time in times for name in scoring.show.lists()[time]}
-    values = frozenset(name for name in scoring.values if name in listed)
-    return values, any(
-        name == ALL or name in scoring.groups or name in SHOWN_FACTS for name in listed
+    counted (item 117), and whether it lists `compiled` among its outputs
+    (items 82 and 124)."""
+    values = listed_at(scoring.show, "values", times)
+    outputs = listed_at(scoring.show, "outputs", times)
+    return frozenset(name for name in scoring.values if name in values), any(
+        name in SHOWN_FACTS for name in outputs
     )
 
 
@@ -257,14 +259,17 @@ def seen_bounds(
     """Each value of a task `show` lists at the `times` that have come,
     with its bounds as anyone but staff may know them (item 126): worked
     out over the values listed then and the groups, of `groups`, whose
-    runs the groups listed then all show, so a value reading anything else
-    has none, and a header never tells what a hidden group or value
-    holds, such as how many runs a group has. `columns` are each report's
-    column as the plan gives it."""
-    listed = {name for time in times for name in scoring.show.lists()[time]}
-    shown = {run.id for name in listed if name in groups for run in groups[name]}
+    runs the run entries listed then all show, so a value reading anything
+    else has none, and a header never tells what a hidden group or value
+    holds, such as how many runs a group has. `first_not_passed` shows no
+    run here, since which it picks is a submission's. `columns` are each
+    report's column as the plan gives it."""
+    listed_values = listed_at(scoring.show, "values", times)
+    shown = {
+        run.id for name in picks(scoring.show, times) if name in groups for run in groups[name]
+    }
     seen = {name: runs for name, runs in groups.items() if {run.id for run in runs} <= shown}
-    values = {name: tree for name, tree in scoring.values.items() if name in listed}
+    values = {name: tree for name, tree in scoring.values.items() if name in listed_values}
     return value_bounds(values, seen, columns)
 
 

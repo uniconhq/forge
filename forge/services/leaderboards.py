@@ -462,7 +462,6 @@ async def _results(
             shown = run_showing.shown(
                 scoring,
                 scored.held.runs,
-                scored.held.files,
                 scored.whole,
                 scored.early,
                 scored.self_reported,

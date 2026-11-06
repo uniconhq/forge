@@ -1,7 +1,7 @@
 """What staff did to a task's results (SIMPLER-CORE.md 9.4, stage 5 section 6
 item 2): one row each time they released them or took a release back,
 never changed or deleted. The latest row of a task is where its results
-stand: `released` shows what its `show` lists under `on_release`, and
+stand: `released` shows what its `show` lists under `after_release`, and
 `hidden_again` puts the task back as if never released. A task with no row
 was never released.
 

@@ -63,6 +63,7 @@ from forge.domain.ids import ContestId, TaskId, WorkspaceId
 from forge.domain.names import EntrantOwner, WorkspaceOwner
 from forge.domain.registration import Status
 from forge.domain.release import Extension, close_of, due_of, in_words, reached, reveal_of
+from forge.domain.roles import contest_id_of, task_scope
 from forge.domain.yaml_models import Problem
 from forge.runtime.context import Context
 from forge.services import entrant_view, names
@@ -197,6 +198,17 @@ async def reveal(
     if entry is None:
         return None
     return reveal_of(settings, entry, await every_extension(ctx, contest))
+
+
+async def revealed(
+    ctx: Context, settings: ContestDefinition, published: entrant_view.PublishedTask
+) -> bool:
+    """Whether the task has closed for every row of its contest now, so
+    what its `show` lists `after_deadline` is shown; one the contest does
+    not list has not.
+    """
+    when = await reveal(ctx, contest_id_of(task_scope(published.id)), settings, published.name)
+    return when is not None and when <= ctx.now
 
 
 @dataclass(frozen=True, slots=True)

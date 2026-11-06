@@ -10,17 +10,17 @@ can get, a file only a check names never shown.
 
 import json
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from decimal import Decimal
 from fractions import Fraction
 from typing import Any
 
 import pytest
 
-from forge.domain.blocks.catalogue import FACTS, ROW_FACTS, SHOWN_FACTS
+from forge.domain import run_showing
+from forge.domain.blocks.catalogue import FACTS, FIRST_NOT_PASSED, ROW_FACTS, SHOWN_FACTS
 from forge.domain.blocks.numbers import Better
 from forge.domain.checks import check_only
-from forge.domain.definitions import Scoring, parse_task
+from forge.domain.definitions import AFTER_DEADLINE, AFTER_RELEASE, ALWAYS, Scoring, parse_task
 from forge.domain.grading import PLATFORM_MACHINE, Machine
 from forge.domain.primitives import PrimitiveDeclaration, parse_primitive
 from forge.domain.run_task import (
@@ -30,15 +30,14 @@ from forge.domain.run_task import (
     RunsFile,
     RunTask,
     RunTaskCheck,
-    Shown,
+    ShownUnder,
     check_run_task,
     fewer_runs,
-    file_time,
     hidden_again,
     manifest_files,
     most_shown,
+    openness,
     self_reported_question,
-    show_names,
     shown_under,
     unreleased,
 )
@@ -201,10 +200,27 @@ scoring:
         - {block: mul, of: [40, {value: st1}]}
         - {block: mul, of: [60, {value: st2}]}
   show:
-    now: [sample_score, sample_time, sample_tests, samples/]
-    after_close: [st1, st2, total, all]
+    always:
+      values: [sample_score, sample_time]
+      runs: [{of: sample_tests, fields: [input, answer, verdict, passed, score, time_ms]}]
+    after_deadline:
+      values: [st1, st2, total]
+      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]
 submissions: {max: 50, rate: {count: 1, per: 30}}
 """
+ISLANDS_ALWAYS = """\
+    always:
+      values: [sample_score, sample_time]
+      runs: [{of: sample_tests, fields: [input, answer, verdict, passed, score, time_ms]}]
+"""
+"""What islands shows as soon as a grading ends, for a test to replace."""
+ISLANDS_AFTER = """\
+    after_deadline:
+      values: [st1, st2, total]
+      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]
+"""
+"""What islands shows after the deadline, for a test to replace."""
+assert ISLANDS_ALWAYS + ISLANDS_AFTER in ISLANDS
 ISLANDS_PATHS = frozenset(
     {
         "task.yaml",
@@ -246,8 +262,11 @@ scoring:
         - {block: sum, over: {runs: windy_runs}, of: {run: [windy_runs, reward]}}
         - {block: count, over: {runs: windy_runs}}
   show:
-    now: [reward]
-    after_close: [windy, all]
+    always:
+      values: [reward]
+    after_deadline:
+      values: [windy]
+      runs: [{of: all, fields: [env, seed, verdict, passed, reward]}]
 """
 
 TOUR_TASK = """\
@@ -264,7 +283,9 @@ scoring:
   values:
     total: {block: sum, over: {runs: all}, of: {run: [all, score]}}
   show:
-    now: [total, all, parts/]
+    always:
+      values: [total]
+      runs: [{of: all, fields: [input, verdict, passed, length, score]}]
 """
 TOUR_PATHS = frozenset({"task.yaml", "parts/1.in", "parts/2.in"})
 
@@ -411,7 +432,9 @@ scoring:
   values:
     total: {block: sum, over: {runs: all}, of: {run: [all, score]}}
   show:
-    now: [total, all, parts/]
+    always:
+      values: [total]
+      runs: [{of: all, fields: [input, verdict, passed, length, score]}]
 """
 
 
@@ -435,7 +458,7 @@ def test_a_titled_tuple_holding_two_entrant_inputs_sizes_both(
         "      - {input: parts/1.in, route: entrant, title: Small grid}\n"
         "      - {input: parts/2.in, route: entrant, title: Big grid, max_size: 50MB}\n",
         "      - {input: entrant, route: entrant, title: Both, max_size: 50MB}\n",
-    )
+    ).replace("fields: [input, verdict,", "fields: [verdict,")
     task = ok(tour(primitives, text))
     sized = (("Both", 50 * 1024 * 1024),)
     assert task.entrant["input"].part_details == sized
@@ -536,7 +559,9 @@ repeat:
   - inputs: [best_known]
     tuples: [1, 2, 3]
 scoring:
-  show: {now: [all]}
+  show:
+    always:
+      runs: [{of: all, fields: [verdict, passed]}]
 """
 
 
@@ -831,7 +856,9 @@ inputs:
 scoring:
   values:
     moves: {block: max, over: {runs: all}, of: {run: [all, moves]}}
-  show: {now: [moves]}
+  show:
+    always:
+      values: [moves]
 """
 JUDGED_PATHS = frozenset({"task.yaml", "judge/judge.py", "judge/program.yaml"})
 JUDGE_MANIFEST = b"reports:\n  moves: {better: lower, at_least: 0}\n"
@@ -1048,12 +1075,6 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
         ),
         (
             "st1_tests: {input: [tests/3.in]}",
-            "samples: {input: [tests/3.in]}",
-            "scoring.groups.samples",
-            "also a path",
-        ),
-        (
-            "st1_tests: {input: [tests/3.in]}",
             "total: {input: [tests/3.in]}",
             "scoring.values.total",
             "already a group",
@@ -1187,32 +1208,88 @@ def test_the_judge_needs_a_longer_time_limit_than_its_peer(
             "more than 0",
         ),
         (
-            "now: [sample_score",
-            "now: [sample_scor",
-            "scoring.show.now[0]",
-            "names no group, value, output, file or folder",
+            "values: [sample_score",
+            "values: [sample_scor",
+            "scoring.show.always.values[0]",
+            "The task has no value sample_scor. Show one of",
         ),
         (
-            "now: [sample_score",
-            "now: [st1, sample_score",
-            "scoring.show.after_close[0]",
-            "already listed under now",
-        ),
-        ("samples/]", "samples/, samples/]", "scoring.show.now[4]", "already listed above"),
-        ("samples/]", "examples/1.in]", "scoring.show.now[3]", "no file examples/1.in"),
-        ("samples/]", "plans/plan.json]", "scoring.show.now[3]", "serves none"),
-        ("samples/]", "task.yaml]", "scoring.show.now[3]", "task.yaml names the task's hidden"),
-        (
-            "[st1, st2, total, all]",
-            "[st1, st2, total, all, samples/2.ans]",
-            "scoring.show.after_close[4]",
-            "samples/2.ans is in samples/, which is shown as soon as a grading ends",
+            "values: [st1,",
+            "values: [sample_score, st1,",
+            "scoring.show.after_deadline.values[0]",
+            "sample_score is already shown always",
         ),
         (
-            "[st1, st2, total, all]",
-            "[st1, st2, total, all, tests/]\n    on_release: [tests/4.ans]",
-            "scoring.show.on_release[0]",
-            "tests/4.ans is in tests/, which is shown at the reveal",
+            "values: [sample_score, sample_time]",
+            "values: [sample_score, sample_time, sample_time]",
+            "scoring.show.always.values[2]",
+            "sample_time is already listed above",
+        ),
+        (
+            "{of: sample_tests,",
+            "{of: samples,",
+            "scoring.show.always.runs[0].of",
+            "The task has no group samples",
+        ),
+        (
+            "fields: [verdict, passed, score, time_ms]",
+            "fields: [verdict, passed, score, time_ms, colour]",
+            "scoring.show.after_deadline.runs[0].fields[4]",
+            "A run has no field colour. Give one of its repeated inputs, answer and input",
+        ),
+        (
+            "fields: [verdict, passed, score, time_ms]",
+            "fields: [verdict, passed, score, time_ms, code]",
+            "scoring.show.after_deadline.runs[0].fields[4]",
+            "code is the entrant's own input",
+        ),
+        (
+            "fields: [verdict, passed, score, time_ms]",
+            "fields: [verdict, passed, score, time_ms, time_limit]",
+            "scoring.show.after_deadline.runs[0].fields[4]",
+            "time_limit is set once for the whole task, so show it under inputs",
+        ),
+        (
+            "fields: [verdict, passed, score, time_ms]",
+            "fields: [verdict, verdict]",
+            "scoring.show.after_deadline.runs[0].fields[1]",
+            "verdict is already listed above",
+        ),
+        (
+            "runs: [{of: all, fields: [verdict, passed, score, time_ms]}]",
+            "runs: [{of: all, fields: [verdict]}, {of: all, fields: [score]}]",
+            "scoring.show.after_deadline.runs[1].of",
+            "all is already listed above. List its fields once, there.",
+        ),
+        (
+            "runs: [{of: all, fields: [verdict, passed, score, time_ms]}]",
+            "runs: [{of: sample_tests, fields: [score]}]",
+            "scoring.show.after_deadline.runs[0].fields[0]",
+            "score is already shown always",
+        ),
+        (
+            "values: [st1, st2, total]",
+            "values: [st1, st2, total]\n      inputs: [code]",
+            "scoring.show.after_deadline.inputs[0]",
+            "code is the entrant's own input, which they already have",
+        ),
+        (
+            "values: [st1, st2, total]",
+            "values: [st1, st2, total]\n      inputs: [input]",
+            "scoring.show.after_deadline.inputs[0]",
+            "input is repeated, so each run has its own",
+        ),
+        (
+            "values: [st1, st2, total]",
+            "values: [st1, st2, total]\n      inputs: [limit]",
+            "scoring.show.after_deadline.inputs[0]",
+            "The task sets no input limit. Show one of memory_limit and time_limit",
+        ),
+        (
+            "values: [st1, st2, total]",
+            "values: [st1, st2, total]\n      outputs: [memory]",
+            "scoring.show.after_deadline.outputs[0]",
+            "The workflow has no output memory",
         ),
     ],
 )
@@ -1225,11 +1302,21 @@ def test_each_scoring_refusal_names_its_path(
     assert any(words in message for message in at(found, path)), found.problems
 
 
-def test_a_folder_shown_may_hold_no_files_yet(
+def test_a_name_under_both_later_moments_is_shown_at_whichever_comes_first(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    """Such as `public/` before the statement has a picture."""
-    ok(islands(primitives, ISLANDS.replace("samples/]", "samples/, pictures/]", 1)))
+    both = ISLANDS.replace(
+        "      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]\n",
+        "      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]\n"
+        "    after_release:\n"
+        "      values: [st1]\n"
+        "      inputs: [time_limit]\n"
+        "      runs: [{of: all, fields: [score]}]\n",
+    )
+
+    task = ok(islands(primitives, both))
+
+    assert task.show.after_release.values == ["st1"]
 
 
 def test_a_number_is_one_key_however_it_is_written(
@@ -1245,16 +1332,39 @@ def test_a_number_is_one_key_however_it_is_written(
     assert [run.id for run in plain.runs] == [run.id for run in pointed.runs]
 
 
-def test_a_task_file_called_all_is_refused_beside_the_group_of_every_run(
+def test_an_input_given_from_the_plans_folder_is_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    for path in ("all", "all/1.in"):
-        found = islands(primitives, paths=ISLANDS_PATHS | {path})
+    """What Unicon writes there, the runs file's ids and keys among it, is
+    never a run's to read nor `show`'s to serve."""
+    filed = islands(
+        primitives,
+        ISLANDS.replace(
+            "{answer: tests/4.ans, input: tests/4.in}",
+            "{answer: tests/4.ans, input: plans/runs.json}",
+        ),
+        paths=ISLANDS_PATHS | {"plans/runs.json"},
+    )
+    folder = judged(
+        primitives,
+        JUDGED_TASK.replace("judge: judge/", "judge: plans/"),
+    )
 
-        assert at(found, "scoring") == [
-            "all is a path in the task, and the name of the group of every run, so show "
-            "could not tell them apart. Rename it in the task's files."
-        ]
+    assert at(filed, "repeat[0].tuples[3].input") == [
+        "Unicon writes the files in plans/ itself, so an input cannot be given from there. "
+        "Give another file."
+    ]
+    assert at(folder, "inputs.judge") == [
+        "Unicon writes the files in plans/ itself, so an input cannot be given from there. "
+        "Give another folder."
+    ]
+
+
+def test_a_task_file_called_all_is_no_trouble_since_show_names_no_files(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    for path in ("all", "all/1.in", "sample_score"):
+        ok(islands(primitives, paths=ISLANDS_PATHS | {path}))
 
 
 def test_a_value_cannot_read_itself_through_others(
@@ -1273,13 +1383,12 @@ def test_a_value_cannot_read_itself_through_others(
     assert at(found, "scoring.values.total")
 
 
-def test_a_value_shown_now_reading_compiled_makes_the_compile_early(
+def test_a_value_shown_always_reading_compiled_makes_the_compile_early(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    text = ISLANDS.replace(
-        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
-        "    now: [built]\n",
-    ).replace("  values:\n", "  values:\n    built: {fact: compiled}\n")
+    text = ISLANDS.replace(ISLANDS_ALWAYS, "    always:\n      values: [built]\n").replace(
+        "  values:\n", "  values:\n    built: {fact: compiled}\n"
+    )
 
     task = ok(islands(primitives, text))
 
@@ -1293,26 +1402,21 @@ def test_every_result_a_leaderboard_reads_of_a_task_is_listed_in_show_by_its_nam
 ) -> None:
     # A leaderboard reads a task's values and the facts (stage 5 section 6 item
     # 124): each fact goes with the row, known as the submission is made,
-    # or is a grading's, which show lists by its name as it does a value.
+    # or is a grading's, which show lists among its outputs.
     assert set(FACTS) == set(ROW_FACTS) | set(SHOWN_FACTS)
     assert not set(ROW_FACTS) & set(SHOWN_FACTS)
     assert set(SHOWN_FACTS) == {"compiled"}
-    scoring = _scoring(ISLANDS)
-    assert {*scoring.values, *SHOWN_FACTS} <= show_names(scoring)
-    text = ISLANDS.replace(
-        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
-        f"    now: [{', '.join(SHOWN_FACTS)}]\n",
-    )
+    text = ISLANDS.replace(ISLANDS_ALWAYS, "    always:\n      outputs: [compiled]\n")
 
     task = ok(islands(primitives, text))
 
-    # compiled shown now makes the compile early, with no run, and once
+    # compiled shown always makes the compile early, with no run, and once
     # shown it is not hidden again.
     assert task.compile_early()
     assert task.early() == frozenset()
     assert task.runs_file().compile_early
-    before = shown_under(_scoring(text), ISLANDS_PATHS)
-    assert hidden_again(before, _scoring(text.replace("[compiled]", "[]")), ISLANDS_PATHS) == [
+    before = shown_under(_scoring(text), ISLANDS_KEYS)
+    assert hidden_again(before, _scoring(text.replace("[compiled]", "[]")), ISLANDS_KEYS) == [
         {
             "path": "scoring.show",
             "message": "Entrants have been shown compiled as soon as a grading ends, and what they "
@@ -1322,35 +1426,36 @@ def test_every_result_a_leaderboard_reads_of_a_task_is_listed_in_show_by_its_nam
     ]
 
 
-def test_compiled_listed_later_than_a_group_or_than_a_value_reading_it_is_refused(
+def test_compiled_listed_later_than_a_run_entry_or_than_a_value_reading_it_is_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    after_group = ISLANDS.replace("[st1, st2, total, all]", "[st1, st2, total, all, compiled]")
+    after_runs = ISLANDS.replace(
+        "      values: [st1, st2, total]\n",
+        "      values: [st1, st2, total]\n      outputs: [compiled]\n",
+    )
     after_value = (
-        ISLANDS.replace(
-            "    now: [sample_score, sample_time, sample_tests, samples/]\n",
-            "    now: [built, samples/]\n",
-        )
+        ISLANDS.replace(ISLANDS_ALWAYS, "    always:\n      values: [built]\n")
         .replace("  values:\n", "  values:\n    built: {fact: compiled}\n")
-        .replace("[st1, st2, total, all]", "[st1, st2, total, all]\n    on_release: [compiled]")
+        .replace(ISLANDS_AFTER, ISLANDS_AFTER + "    after_release:\n      outputs: [compiled]\n")
     )
 
-    # sample_tests, shown now, tells compiled through its runs' verdicts.
-    assert at(islands(primitives, after_group), "scoring.show.after_close[4]") == [
+    # sample_tests, shown always, tells compiled through its runs' verdicts.
+    assert at(islands(primitives, after_runs), "scoring.show.after_deadline.outputs[0]") == [
         "sample_tests, shown as soon as a grading ends, shows compiled with its runs, since "
-        "their verdicts tell it. Remove compiled here, or list sample_tests later."
+        "their verdicts tell it. Remove compiled here, or show sample_tests later."
     ]
-    assert at(islands(primitives, after_value), "scoring.show.now[0]") == [
+    assert at(islands(primitives, after_value), "scoring.show.always.values[0]") == [
         "built reads compiled, which is shown once results are released, so showing built as "
         "soon as a grading ends would give compiled away sooner. List built no sooner than "
         "compiled."
     ]
 
 
-def test_on_release_is_late_until_a_release(primitives: dict[str, PrimitiveDeclaration]) -> None:
+def test_after_release_is_late_until_a_release(primitives: dict[str, PrimitiveDeclaration]) -> None:
     text = ISLANDS.replace(
-        "    after_close: [st1, st2, total, all]\n",
-        "    after_close: [st2, all]\n    on_release: [st1]\n",
+        ISLANDS_AFTER,
+        "    after_deadline:\n      values: [st2]\n"
+        "    after_release:\n      runs: [{of: st1_tests, fields: [score]}]\n",
     )
 
     task = ok(islands(primitives, text))
@@ -1359,58 +1464,72 @@ def test_on_release_is_late_until_a_release(primitives: dict[str, PrimitiveDecla
     assert task.early(released=True) == {"r1", "r2", "r3"}
 
 
-# show: files and once shown
-
-
-def test_a_file_is_shown_at_the_earliest_time_listing_it_or_its_folder() -> None:
-    show = _scoring(ISLANDS)
-    later = _scoring(
-        ISLANDS.replace("[st1, st2, total, all]", "[st1, st2, total, all, tests/3.in]")
-    )
-
-    assert file_time(show, "samples/1.in") == "now"
-    assert file_time(show, "tests/3.in") is None
-    assert file_time(later, "tests/3.in") == "after_close"
-    assert file_time(later, "tests/3.ans") is None
-    assert file_time(show, "samples") is None
-    # A group's or a value's name is no file, whatever the task holds.
-    assert file_time(show, "all") is None
-    assert file_time(show, "sample_score") is None
-
-
-def test_a_file_shown_sooner_than_its_folder_is_shown_sooner(
+def test_a_run_entry_showing_only_the_runs_inputs_makes_no_run_early(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    text = ISLANDS.replace("samples/]", "samples/, tests/3.in]").replace(
-        "[st1, st2, total, all]", "[st1, st2, total, all, tests/]"
+    text = ISLANDS.replace(
+        ISLANDS_ALWAYS, "    always:\n      runs: [{of: sample_tests, fields: [input, answer]}]\n"
     )
 
-    ok(islands(primitives, text))
+    task = ok(islands(primitives, text))
 
-    assert file_time(_scoring(text), "tests/3.in") == "now"
-    assert file_time(_scoring(text), "tests/4.in") == "after_close"
+    assert task.early() == frozenset()
+    assert task.runs_file().compile_early is False
 
 
-def test_show_lists_a_report_by_its_name_but_not_one_also_a_file_of_the_task(
+def test_first_not_passed_during_the_contest_makes_every_run_early(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    text = ISLANDS.replace("samples/]", "samples/, log]")
+    during = ISLANDS.replace(
+        ISLANDS_ALWAYS, "    always:\n      runs: [{of: first_not_passed, fields: [verdict]}]\n"
+    )
+    later = ISLANDS.replace(ISLANDS_ALWAYS, "").replace(
+        "      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]\n",
+        "      runs: [{of: first_not_passed, fields: [verdict]}]\n",
+    )
 
-    ok(islands(primitives, text))
-    assert at(islands(primitives, text, paths=ISLANDS_PATHS | {"log"}), "scoring.show.now[4]") == [
-        "log names both an output of the workflow and a file of the task, so show cannot tell "
-        "which it lists. Rename the file."
-    ]
-    # A report listed is a name, so taking it out of show is hiding it.
-    before = shown_under(_scoring(text), ISLANDS_PATHS)
-    assert before.names["log"] == "now"
-    assert hidden_again(before, _scoring(ISLANDS), ISLANDS_PATHS) == [
-        {
-            "path": "scoring.show",
-            "message": "Entrants have been shown log as soon as a grading ends, and what they have "
-            "been shown may have been seen or kept; it would now be hidden or shown later.",
-        }
-    ]
+    assert ok(islands(primitives, during)).early() == {"r1", "r2", "r3", "r4"}
+    assert ok(islands(primitives, later)).early() == frozenset()
+
+
+def test_first_not_passed_showing_only_the_runs_input_still_shows_a_result(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    text = ISLANDS.replace(
+        ISLANDS_ALWAYS, "    always:\n      runs: [{of: first_not_passed, fields: [input]}]\n"
+    ).replace(ISLANDS_AFTER, "")
+    task = ok(islands(primitives, text))
+
+    # Which run it picks tells which failed first, so every run is early
+    # and the submission is not told as waiting for the contest's end.
+    assert task.early() == {"r1", "r2", "r3", "r4"}
+    assert run_showing.later(_scoring(text), task.columns, released=False) is False
+
+
+def test_a_group_named_first_not_passed_is_refused(
+    primitives: dict[str, PrimitiveDeclaration],
+) -> None:
+    found = islands(
+        primitives,
+        ISLANDS.replace("    st1_tests: {input: [tests/3.in]}\n", "    first_not_passed: {}\n"),
+    )
+
+    assert at(found, "scoring.groups.first_not_passed")[-1] == (
+        "first_not_passed is the run show picks for each submission, the first that did not "
+        "pass. Choose another name."
+    )
+
+
+# show: what was shown
+
+
+ISLANDS_KEYS: dict[str, Mapping[str, object]] = {
+    "r1": {"input": "samples/1.in", "answer": "samples/1.ans"},
+    "r2": {"input": "samples/2.in", "answer": "samples/2.ans"},
+    "r3": {"input": "tests/3.in", "answer": "tests/3.ans"},
+    "r4": {"input": "tests/4.in", "answer": "tests/4.ans"},
+}
+"""The islands runs by id, with their keys, as its runs file holds them."""
 
 
 def _scoring(text: str) -> Scoring:
@@ -1419,86 +1538,144 @@ def _scoring(text: str) -> Scoring:
     return scoring
 
 
-def test_what_was_shown_cannot_be_hidden_or_shown_later() -> None:
-    scoring = _scoring(
-        ISLANDS.replace("now: [sample_score, sample_time,", "now: [sample_score,").replace(
-            "after_close: [st1,", "after_close: [sample_time, st1,"
-        )
-    )
-    before = Shown(
-        {"sample_time": "now", "st9": "after_close"},
-        {"samples/1.in": ("now", "samples/"), "tests/3.in": ("now", "tests/3.in")},
+def test_a_run_field_is_compared_run_by_run_whichever_entry_shows_it() -> None:
+    before = shown_under(_scoring(ISLANDS), ISLANDS_KEYS)
+    moved = ISLANDS.replace(
+        "{of: sample_tests, fields: [input, answer, verdict, passed, score, time_ms]}",
+        "{of: sample_tests, fields: [input, answer, verdict, passed, time_ms]}, "
+        "{of: all, fields: [score]}",
+    ).replace(
+        "{of: all, fields: [verdict, passed, score, time_ms]}", "{of: all, fields: [verdict]}"
     )
 
-    problems = hidden_again(before, scoring, ISLANDS_PATHS)
+    assert before.shown[("runs", "r1", "score")] == {ALWAYS, AFTER_DEADLINE}
+    assert before.shown[("runs", "r3", "score")] == {AFTER_DEADLINE}
+    assert hidden_again(before, _scoring(moved), ISLANDS_KEYS) == [
+        {
+            "path": "scoring.show",
+            "message": f"Entrants have been shown {name} of 2 runs after the deadline, and what "
+            "they have been shown may have been seen or kept; it would now be hidden or shown "
+            "later.",
+        }
+        for name in ("passed", "time_ms")
+    ]
+
+
+def test_what_was_shown_cannot_be_hidden_or_shown_later() -> None:
+    shown = ISLANDS.replace(
+        "      values: [st1, st2, total]\n",
+        "      values: [st1, st2, total]\n      inputs: [time_limit]\n",
+    )
+    later = shown.replace("values: [sample_score, sample_time]", "values: [sample_score]").replace(
+        "values: [st1, st2, total]", "values: [sample_time, st1, st2]"
+    )
+    later = later.replace(
+        "{of: sample_tests, fields: [input, answer, verdict, passed, score, time_ms]}",
+        "{of: sample_tests, fields: [input, answer, verdict, passed, time_ms]}",
+    ).replace("      inputs: [time_limit]\n", "")
+    before = shown_under(_scoring(shown), ISLANDS_KEYS)
+
+    problems = hidden_again(before, _scoring(later), ISLANDS_KEYS)
 
     assert problems == [
         {
-            "path": "scoring.show.after_close",
-            "message": "Entrants have been shown sample_time as soon as a "
-            "grading ends, and what they "
-            "have been shown may have been seen or kept; it would now be hidden or shown "
+            "path": "scoring.show.after_deadline",
+            "message": "Entrants have been shown sample_time as soon as a grading ends, and what "
+            "they have been shown may have been seen or kept; it would now be hidden or shown "
             "later.",
         },
         {
-            "path": "scoring.show",
-            "message": "Entrants have been shown st9 at the reveal, and what "
-            "they have been shown may "
-            "have been seen or kept; it would now be hidden or shown later.",
+            "path": "scoring.show.after_deadline",
+            "message": "Entrants have been shown score of 2 runs as soon as a grading ends, and "
+            "what they have been shown may have been seen or kept; it would now be hidden or "
+            "shown later.",
         },
         {
             "path": "scoring.show",
-            "message": "Entrants have been shown tests/3.in as soon as a "
-            "grading ends, and what they "
-            "have been shown may have been seen or kept; it would now be hidden or shown "
-            "later.",
+            "message": "Entrants have been shown total after the deadline, and what they have "
+            "been shown may have been seen or kept; it would now be hidden or shown later.",
+        },
+        {
+            "path": "scoring.show",
+            "message": "Entrants have been shown time_limit after the deadline, and what they "
+            "have been shown may have been seen or kept; it would now be hidden or shown later.",
         },
     ]
-    assert hidden_again(before, scoring, ISLANDS_PATHS - {"tests/3.in"})[2:] == []
+    # A run the save no longer has has nothing left to show.
+    assert len(hidden_again(before, _scoring(later), {"r3": ISLANDS_KEYS["r3"]})) == 3
 
 
-def test_a_shown_file_is_compared_by_path_whichever_entry_lists_it() -> None:
-    one = _scoring(ISLANDS.replace("samples/]", "samples/1.in]"))
-    before = shown_under(one, ISLANDS_PATHS)
+def test_the_first_run_not_passed_is_still_shown_where_every_run_is() -> None:
+    picked = ISLANDS.replace(
+        "{of: sample_tests, fields: [input, answer, verdict, passed, score, time_ms]}",
+        "{of: first_not_passed, fields: [verdict]}",
+    )
+    every = picked.replace(
+        "{of: first_not_passed, fields: [verdict]}", "{of: all, fields: [verdict]}"
+    ).replace("{of: all, fields: [verdict, passed, score, time_ms]}", "{of: all, fields: [passed]}")
+    before = shown_under(_scoring(picked), ISLANDS_KEYS)
 
-    assert before.files == {"samples/1.in": ("now", "samples/1.in")}
-    assert hidden_again(before, _scoring(ISLANDS), ISLANDS_PATHS) == []
-    assert hidden_again(
-        shown_under(_scoring(ISLANDS), ISLANDS_PATHS),
-        _scoring(ISLANDS.replace("samples/]", "samples/1.in, samples/1.ans, samples/2.in]")),
-        ISLANDS_PATHS,
-    ) == [
-        {
-            "path": "scoring.show",
-            "message": "Entrants have been shown samples/ as soon as a grading ends, and what they "
-            "have been shown may have been seen or kept; it would now be hidden or shown "
-            "later.",
-        }
-    ]
-
-
-def test_an_empty_folder_shown_is_no_name_and_its_files_once_added_are_shown() -> None:
-    """Such as `public/` before and after the statement's first picture."""
-    text = ISLANDS.replace("samples/]", "samples/, pictures/]")
-    before = shown_under(_scoring(text), ISLANDS_PATHS)
-
-    assert "pictures/" not in before.names
-    assert hidden_again(before, _scoring(text), ISLANDS_PATHS | {"pictures/a.png"}) == []
-    assert hidden_again(before, _scoring(ISLANDS), ISLANDS_PATHS) == []
-    shown = shown_under(_scoring(text), ISLANDS_PATHS | {"pictures/a.png"})
-    assert shown.files["pictures/a.png"] == ("now", "pictures/")
+    assert before.shown[("runs", FIRST_NOT_PASSED, "verdict")] == {ALWAYS}
     assert [
         problem["message"].split(",")[0]
-        for problem in hidden_again(shown, _scoring(ISLANDS), ISLANDS_PATHS | {"pictures/a.png"})
-    ] == ["Entrants have been shown pictures/ as soon as a grading ends"]
+        for problem in hidden_again(before, _scoring(every), ISLANDS_KEYS)
+    ] == [
+        "Entrants have been shown score of 4 runs after the deadline",
+        "Entrants have been shown time_ms of 4 runs after the deadline",
+    ]
+    assert [
+        problem["message"].split(",")[0]
+        for problem in hidden_again(before, _scoring(ISLANDS.replace(ISLANDS_ALWAYS, "")), {})
+    ] == [
+        "Entrants have been shown sample_score as soon as a grading ends",
+        "Entrants have been shown sample_time as soon as a grading ends",
+        "Entrants have been shown verdict of first_not_passed as soon as a grading ends",
+    ]
 
 
-def test_what_was_shown_is_the_soonest_any_publication_showed_it() -> None:
-    first = Shown({"a": "now", "b": "after_close", "c": "on_release"}, {"x": ("now", "x")})
-    second = Shown({"a": "after_close", "c": "after_close"}, {"x": ("on_release", "./")})
+def test_what_was_shown_is_every_moment_any_publication_showed_it_at() -> None:
+    first = ShownUnder(
+        {("values", "a"): frozenset({ALWAYS}), ("values", "b"): frozenset({AFTER_RELEASE})}
+    )
+    second = ShownUnder({("values", "b"): frozenset({AFTER_DEADLINE})})
 
-    assert most_shown([first, second]) == Shown(
-        {"a": "now", "b": "after_close", "c": "after_close"}, {"x": ("now", "x")}
+    assert most_shown([first, second]) == ShownUnder(
+        {
+            ("values", "a"): frozenset({ALWAYS}),
+            ("values", "b"): frozenset({AFTER_DEADLINE, AFTER_RELEASE}),
+        }
+    )
+
+
+def test_a_name_under_both_later_moments_counts_as_shown_at_whichever_came_first() -> None:
+    both = ISLANDS.replace(
+        ISLANDS_AFTER, ISLANDS_AFTER + "    after_release:\n      values: [total]\n"
+    )
+    before = shown_under(_scoring(both), ISLANDS_KEYS)
+    deadline_only = _scoring(ISLANDS)
+
+    assert before.shown[("values", "total")] == {AFTER_DEADLINE, AFTER_RELEASE}
+    # Before the deadline, with results released, the release came first.
+    assert [
+        problem["message"].split(",")[0]
+        for problem in hidden_again(
+            before, deadline_only, ISLANDS_KEYS, openness(released=True, revealed=False)
+        )
+    ] == ["Entrants have been shown total once results are released"]
+    assert hidden_again(before, deadline_only, ISLANDS_KEYS) == []
+
+
+def test_what_after_release_listed_counts_as_not_shown_without_a_release() -> None:
+    shown = ShownUnder(
+        {
+            ("values", "a"): frozenset({ALWAYS}),
+            ("values", "b"): frozenset({AFTER_RELEASE}),
+            ("values", "c"): frozenset({AFTER_DEADLINE, AFTER_RELEASE}),
+        }
+    )
+
+    assert unreleased(shown) == ShownUnder(
+        {("values", "a"): frozenset({ALWAYS}), ("values", "c"): frozenset({AFTER_DEADLINE})}
     )
 
 
@@ -1506,23 +1683,27 @@ def test_what_was_shown_is_the_soonest_any_publication_showed_it() -> None:
 
 
 RELEASING = ISLANDS.replace(
-    "after_close: [st1, st2, total, all]",
-    "after_close: [st1, all]\n    on_release: [st2, st2_tests, tests/4.in]",
+    ISLANDS_AFTER,
+    "    after_deadline:\n"
+    "      values: [st1]\n"
+    "      runs: [{of: all, fields: [verdict, passed, score, time_ms]}]\n"
+    "    after_release:\n"
+    "      values: [st2]\n"
+    "      runs: [{of: st2_tests, fields: [input, verdict, passed, score]}]\n",
 )
 
 
-def test_a_release_makes_what_on_release_reads_early(
+def test_a_release_makes_what_after_release_reads_early(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     task = ok(islands(primitives, RELEASING))
 
-    assert task.shown() == ["sample_score", "sample_time", "sample_tests", "samples/"]
     assert task.early() == {"r1", "r2"}
     assert task.early(released=True) == {"r1", "r2", "r3", "r4"}
     assert [run.early for run in task.runs_file().runs] == [True, True, False, False]
 
 
-def test_the_runs_file_keeps_the_runs_each_name_shown_during_the_contest_reads(
+def test_the_runs_file_keeps_the_runs_each_value_shown_during_the_contest_reads(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     task = ok(islands(primitives, RELEASING))
@@ -1530,12 +1711,9 @@ def test_the_runs_file_keeps_the_runs_each_name_shown_during_the_contest_reads(
     assert task.runs_read() == {
         "sample_score": {"r1", "r2"},
         "sample_time": {"r1", "r2"},
-        "sample_tests": {"r1", "r2"},
         "st2": {"r3", "r4"},
-        "st2_tests": {"r3", "r4"},
     }
     assert task.runs_of("total") == frozenset({"r3", "r4"})
-    assert task.runs_of("samples/") is None
     written = task.runs_file()
     assert RunsFile.from_bytes(written.to_bytes()) == written
     document = json.loads(written.to_bytes())
@@ -1546,34 +1724,20 @@ def test_the_runs_file_keeps_the_runs_each_name_shown_during_the_contest_reads(
 def test_a_value_listed_sooner_than_what_it_reads_is_refused(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
-    found = islands(
-        primitives,
-        ISLANDS.replace(
-            "after_close: [st1, st2, total, all]",
-            "after_close: [st1, total, all]\n    on_release: [st2, st2_tests, tests/4.in]",
-        ),
-    )
+    found = islands(primitives, RELEASING.replace("values: [st1]", "values: [st1, total]"))
 
-    assert at(found, "scoring.show.after_close[1]") == [
-        f"total reads {name}, which is shown once results are released, so showing total at "
-        f"the reveal would give {name} away sooner. List total no sooner than {name}."
+    assert at(found, "scoring.show.after_deadline.values[1]") == [
+        f"total reads {name}, which is shown once results are released, so showing total "
+        f"after the deadline would give {name} away sooner. List total no sooner than {name}."
         for name in ("st2", "st2_tests")
     ]
     # A name show does not list is free to read, and so is one listed as
     # soon or sooner.
     ok(islands(primitives, RELEASING))
-    ok(
-        islands(
-            primitives,
-            ISLANDS.replace(
-                "after_close: [st1, st2, total, all]",
-                "after_close: [st1, all]\n    on_release: [st2, total, st2_tests]",
-            ),
-        )
-    )
+    ok(islands(primitives, RELEASING.replace("values: [st2]", "values: [st1, st2, total]")))
 
 
-def test_an_entered_mark_under_on_release_is_not_given_away_by_a_value_shown_sooner(
+def test_an_entered_mark_under_after_release_is_not_given_away_by_a_value_shown_sooner(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     marked = ISLANDS.replace(
@@ -1585,12 +1749,11 @@ def test_an_entered_mark_under_on_release_is_not_given_away_by_a_value_shown_soo
     found = islands(
         primitives,
         marked.replace(
-            "after_close: [st1, st2, total, all]",
-            "after_close: [st1, st2, total, all]\n    on_release: [review]",
-        ).replace("now: [sample_score,", "now: [reviewed, sample_score,"),
+            ISLANDS_AFTER, ISLANDS_AFTER + "    after_release:\n      values: [review]\n"
+        ).replace("values: [sample_score,", "values: [reviewed, sample_score,"),
     )
 
-    assert at(found, "scoring.show.now[0]") == [
+    assert at(found, "scoring.show.always.values[0]") == [
         "reviewed reads review, which is shown once results are released, so showing "
         "reviewed as soon as a grading ends would give review away sooner. List reviewed no "
         "sooner than review."
@@ -1599,36 +1762,27 @@ def test_an_entered_mark_under_on_release_is_not_given_away_by_a_value_shown_soo
         islands(
             primitives,
             marked.replace(
-                "after_close: [st1, st2, total, all]",
-                "after_close: [st1, st2, total, all]\n    on_release: [review, reviewed]",
+                ISLANDS_AFTER,
+                ISLANDS_AFTER + "    after_release:\n      values: [review, reviewed]\n",
             ),
         )
     )
     assert task.values.through("reviewed").blocks == {"entered"}
 
 
-def test_a_group_shown_sooner_that_holds_runs_a_release_shows_is_noted(
+def test_a_run_entry_shown_sooner_that_holds_runs_a_release_shows_is_noted(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     task = ok(islands(primitives, RELEASING))
 
     assert task.release_notes() == [
-        f"all, shown at the reveal, holds runs {name} reads, so entrants see those runs "
-        f"before a release shows {name}."
-        for name in ("st2", "st2_tests")
+        "all, shown after the deadline, holds runs st2 reads, so entrants see those runs "
+        "before a release shows st2."
     ]
     assert ok(islands(primitives)).release_notes() == []
 
 
-def test_what_on_release_listed_counts_as_not_shown_without_a_release() -> None:
-    shown = Shown(
-        {"a": "now", "b": "on_release"}, {"x": ("on_release", "x"), "y": ("after_close", "./")}
-    )
-
-    assert unreleased(shown) == Shown({"a": "now"}, {"y": ("after_close", "./")})
-
-
-def test_a_name_shown_during_the_contest_may_not_read_fewer_of_the_runs_left(
+def test_a_value_shown_during_the_contest_may_not_read_fewer_of_the_runs_left(
     primitives: dict[str, PrimitiveDeclaration],
 ) -> None:
     fewer = ok(
@@ -1636,28 +1790,33 @@ def test_a_name_shown_during_the_contest_may_not_read_fewer_of_the_runs_left(
             primitives,
             RELEASING.replace(
                 "sample_tests: {input: [samples/1.in, samples/2.in]}",
-                ("sample_tests: {input: [samples/1.in]}"),
+                "sample_tests: {input: [samples/1.in]}",
             ),
         )
     )
-    shown = Shown({"sample_tests": "now", "st2_tests": "on_release", "st1": "after_close"})
+    shown = ShownUnder(
+        {
+            ("values", "sample_score"): frozenset({ALWAYS}),
+            ("values", "st2"): frozenset({AFTER_RELEASE}),
+            ("values", "st1"): frozenset({AFTER_DEADLINE}),
+        }
+    )
     reads = {
-        "sample_tests": frozenset({"r1", "r2"}),
-        "st2_tests": frozenset({"r3", "r4", "r9"}),
+        "sample_score": frozenset({"r1", "r2"}),
+        "st2": frozenset({"r3", "r4", "r9"}),
         "st1": frozenset({"r1"}),
     }
 
     assert fewer_runs([(shown, reads)], fewer) == [
         {
-            "path": "scoring.groups.sample_tests",
-            "message": "Entrants have been shown sample_tests during the "
-            "contest over 2 runs the task "
-            "still has, and it would now read 1 fewer. What they have been shown may have "
+            "path": "scoring.values.sample_score",
+            "message": "Entrants have been shown sample_score during the contest over 2 runs the "
+            "task still has, and it would now read 1 fewer. What they have been shown may have "
             "been seen or kept; those runs would now be hidden.",
         }
     ]
-    # A run the task no longer has is not counted, nor what was shown at
-    # the reveal, nor a release taken back.
+    # A run the task no longer has is not counted, nor what was shown
+    # after the deadline, nor a release taken back.
     assert fewer_runs([(unreleased(shown), reads)], ok(islands(primitives, RELEASING))) == []
 
 
@@ -1667,9 +1826,7 @@ MEAN = ISLANDS.replace(
     "  values:\n",
     "  values:\n"
     "    mean: {block: exec, program: programs/mean/, language: python, over: {runs: all}}\n",
-).replace(
-    "    after_close: [st1, st2, total, all]\n", "    after_close: [st1, st2, total, all, mean]\n"
-)
+).replace("      values: [st1, st2, total]\n", "      values: [st1, st2, total, mean]\n")
 MEAN_PATHS = ISLANDS_PATHS | {"programs/mean/mean.py", "programs/mean/program.yaml"}
 MEAN_MANIFEST = b"reports:\n  mean: {better: higher, at_least: 0, at_most: 1}\n"
 
@@ -1701,12 +1858,13 @@ def test_an_exec_value_names_its_program_and_runs_late_unless_shown_during_the_c
     assert task.early_programs() == frozenset()
 
     shown = MEAN.replace(
-        "    now: [sample_score, sample_time, sample_tests, samples/]\n",
-        "    now: [sample_score, sample_time, sample_tests, samples/, mean, all]\n",
-    ).replace("total, all, mean]", "total]")
+        "values: [sample_score, sample_time]", "values: [sample_score, sample_time, mean]"
+    ).replace("total, mean]", "total]")
     assert ok(mean(primitives, shown)).early_programs() == {"mean"}
 
-    released = MEAN.replace("total, all, mean]", "total, all]\n    on_release: [mean]")
+    released = MEAN.replace(
+        "      values: [st1, st2, total, mean]\n", "      values: [st1, st2, total]\n"
+    ).replace(ISLANDS_AFTER, ISLANDS_AFTER + "    after_release:\n      values: [mean]\n")
     assert ok(mean(primitives, released)).early_programs() == frozenset()
     assert ok(mean(primitives, released)).early_programs(released=True) == {"mean"}
 
@@ -1951,15 +2109,13 @@ def test_a_check_needs_something_to_expect() -> None:
     assert any(problem["path"] == "checks[0].expect" for problem in raised.value.extra["errors"])
 
 
-def test_a_file_only_a_check_names_is_never_shown() -> None:
-    definition = parse_task(
-        (ISLANDS + CHECKS).replace("    now: [sample_score,", "    now: [checks/, sample_score,")
-    )
+def test_a_file_only_a_check_names_is_never_shown_even_in_public() -> None:
+    definition = parse_task((ISLANDS + CHECKS).replace("checks/good", "public/good"))
 
-    assert check_only(definition, "checks/good/main.cpp")
-    now = datetime(2026, 10, 23, tzinfo=UTC)
-    assert not shown_now(definition, "checks/good/main.cpp", reveal=now, now=now)
-    assert shown_now(definition, "samples/1.in", reveal=None, now=now)
+    assert check_only(definition, "public/good/main.cpp")
+    assert not shown_now(definition, "public/good/main.cpp")
+    assert shown_now(definition, "public/figure.png")
+    assert not shown_now(definition, "samples/1.in")
     assert check_only(definition, "checks/slow/a.cpp")
     assert not check_only(definition, "samples/1.in")
     # A file the task gives a setting or a tuple is the task's as well.
@@ -1980,7 +2136,7 @@ def test_a_self_reported_value_newly_shown_asks_again(
         )
     )
     hidden = ok(tour(primitives, text))
-    shown = ok(tour(primitives, text.replace("now: [total,", "now: [claimed, total,")))
+    shown = ok(tour(primitives, text.replace("values: [total]", "values: [claimed, total]")))
 
     assert self_reported_question(hidden, hidden.runs_file()) is None
     assert self_reported_question(shown, shown.runs_file()) is None

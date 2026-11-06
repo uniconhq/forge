@@ -102,8 +102,10 @@ scoring:
     public: {block: max, over: {runs: public_split}, of: {run: [public_split, rmse]}}
     private: {block: max, over: {runs: private_split}, of: {run: [private_split, rmse]}}
   show:
-    now: [public]
-    after_close: [private]
+    always:
+      values: [public]
+    after_deadline:
+      values: [private]
 """
 """TASK-FORMAT.md 3.7's Kaggle task: one axis over the two splits, each
 split's RMSE a value, the public one shown during the contest."""
@@ -194,14 +196,18 @@ def _judged(title: str, values: str, show: str, after: str = "") -> str:
 SOLVED = _judged(
     "Task",
     "    solved: {block: min, over: {runs: all}, of: {run: [all, score]}}\n",
-    "    now: [solved, compiled]\n",
+    "    always:\n      values: [solved]\n      outputs: [compiled]\n",
 )
-"""ICPC's `a` and `b`: shows solved, the min of score, and compiled now."""
+"""ICPC's `a` and `b`: shows solved, the min of score, and compiled always."""
 SCORED = "    score: {block: sum, over: {runs: all}, of: {run: [all, score]}}\n"
-HOMEWORK = _judged("Homework", SCORED, "    now: [score]\n")
-FINAL = _judged("Final", SCORED, "    now: [score]\n", "submissions: {max: 1}\n")
+HOMEWORK = _judged("Homework", SCORED, "    always:\n      values: [score]\n")
+FINAL = _judged("Final", SCORED, "    always:\n      values: [score]\n", "submissions: {max: 1}\n")
 SEARCH = _judged(
-    "Search", "    score: {block: entered, at_least: 0, at_most: 1}\n", "    now: [score, all]\n"
+    "Search",
+    "    score: {block: entered, at_least: 0, at_most: 1}\n",
+    "    always:\n"
+    "      values: [score]\n"
+    "      runs: [{of: all, fields: [verdict, passed, score]}]\n",
 )
 """A search assignment marked by hand: its score a mark from 0 to 1 staff
 enter, its tests shown with it."""

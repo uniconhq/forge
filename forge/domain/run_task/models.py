@@ -3,15 +3,15 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from forge.domain import exact_json
-from forge.domain.blocks.catalogue import EXEC, SHOWN_FACTS
+from forge.domain.blocks.catalogue import ALL, EXEC, FIRST_NOT_PASSED, SHOWN_FACTS
 from forge.domain.blocks.check import ValuesCheck
 from forge.domain.blocks.numbers import Better
 from forge.domain.checks import TaskCheck
-from forge.domain.definitions import Form, ShowTimes
+from forge.domain.definitions import AFTER_RELEASE, ALWAYS, Form, ShowTimes
 from forge.domain.primitives import Port
 from forge.domain.program_manifest import PROGRAM_FILE
-from forge.domain.run_task.records import RUNS_PATH, SHOWN_WORDS
-from forge.domain.run_task.show_rules import canonical, shown_times
+from forge.domain.run_task.records import RUNS_PATH, Part
+from forge.domain.run_task.show_rules import canonical, listed, picks, results, shown_when
 from forge.domain.run_task.task_helpers import (
     _flag,
     _key_read,
@@ -67,11 +67,11 @@ class RunsFile:
     """`plans/runs.json`: the id of every key the task has had, its runs as
     the version saved them, its entrant inputs' types and parts, the
     columns self-reported with the entrant inputs that make them so,
-    whether `compiled`, or a value reading it, is shown `now`, and the
+    whether `compiled`, or a value reading it, is shown `always`, and the
     values that read a self-reported column, directly or through others,
     as the save checked them (`RunTask.self_reported_values`), which a
     result marks;
-    and the runs each group or value listed under `now` or `on_release`
+    and the runs each value listed under `always` or `after_release`
     reads (`RunTask.runs_read`), which a later save may not shrink once
     shown (SIMPLER-CORE.md 16); and of those values, the ones `show`
     lists, which a save that shows another asks about
@@ -194,29 +194,47 @@ class RunTask:
     programs: Mapping[str, ProgramValue] = field(default_factory=dict)
     checks: tuple[TaskCheck, ...] = ()
 
-    def shown(self, *, released: bool = False) -> list[str]:
-        """The entries shown during the contest: `now`'s, and `on_release`'s
-        once the task's results are released.
+    @property
+    def columns(self) -> frozenset[str]:
+        """The repeated inputs the task fills, each a run's own input `show`
+        may show among a run's fields, the entrant's given in parts not
+        among them."""
+        if not self.runs:
+            return frozenset()
+        return frozenset(
+            name for name, value in self.runs[0].key.items() if not isinstance(value, Part)
+        )
+
+    def during(self, *, released: bool = False) -> tuple[str, ...]:
+        """The moments of `show` during the contest: `always`, and
+        `after_release` once the task's results are released.
         """
-        return [*self.show.now, *(self.show.on_release if released else ())]
+        return (ALWAYS, AFTER_RELEASE) if released else (ALWAYS,)
 
     def early(self, *, released: bool = False) -> frozenset[str]:
-        """The ids of the early runs: those a group shown during the contest
-        holds, or a value shown then reads, directly or through others.
+        """The ids of the early runs: those whose results a run entry shows
+        during the contest, every run for `first_not_passed`, which may pick
+        any of them, and those a value shown then reads, directly or through
+        others. A run entry showing only the runs' inputs makes none early.
         """
+        moments = self.during(released=released)
         groups: set[str] = set()
-        for entry in self.shown(released=released):
-            if entry in self.groups:
-                groups.add(entry)
-            elif entry in self.values.reads:
-                groups |= self.values.through(entry).groups
+        for of, fields in picks(self.show, moments).items():
+            if results(of, fields, self.columns):
+                groups.add(ALL if of == FIRST_NOT_PASSED else of)
+        for name in listed(self.show, "values", moments):
+            if name in self.values.reads:
+                groups |= self.values.through(name).groups
         return frozenset(run for group in groups for run in self.groups.get(group, ()))
 
     def compile_early(self, *, released: bool = False) -> bool:
         """Whether `compiled` is shown during the contest, or a value shown
         then reads it, which makes the compile early even when no run is.
         """
-        return any(self.reads_compiled(entry) for entry in self.shown(released=released))
+        moments = self.during(released=released)
+        return any(name in SHOWN_FACTS for name in listed(self.show, "outputs", moments)) or any(
+            self.reads_compiled(name) for name in listed(self.show, "values", moments)
+        )
 
     def reads_compiled(self, entry: str) -> bool:
         """Whether the `show` entry `entry` is `compiled`, or a value that
@@ -232,7 +250,7 @@ class RunTask:
         """
         read = {
             name
-            for entry in self.shown(released=released)
+            for entry in listed(self.show, "values", self.during(released=released))
             if entry in self.values.reads
             for name in self.values.through(entry).values
         }
@@ -261,30 +279,36 @@ class RunTask:
         return None
 
     def release_notes(self) -> list[str]:
-        """For each group listed sooner than `on_release` that holds runs a
-        name under `on_release` reads, that those runs show before a
-        release does.
+        """For each run entry shown at another moment than `after_release`
+        that shows the results of runs a value shown `after_release` reads,
+        that those runs show before a release does.
         """
-        listed = shown_times(self.show)
+        shown = {
+            of: frozenset(moment for each in fields.values() for moment in each)
+            for of, fields in picks(self.show).items()
+            if results(of, fields, self.columns)
+        }
         found: list[str] = []
-        for name in self.show.on_release:
+        for name in self.show.after_release.values:
             read = self.runs_of(name)
             if not read:
                 continue
-            for group, time in listed.items():
-                if time != "on_release" and group in self.groups and read & set(self.groups[group]):
+            for of, moments in shown.items():
+                sooner = moments - {AFTER_RELEASE}
+                runs = self.groups.get(ALL if of == FIRST_NOT_PASSED else of, ())
+                if sooner and read & set(runs):
                     found.append(
-                        f"{group}, shown {SHOWN_WORDS[time]}, holds runs {name} reads, so "
+                        f"{of}, shown {shown_when(sooner)}, holds runs {name} reads, so "
                         f"entrants see those runs before a release shows {name}."
                     )
         return found
 
     def runs_read(self) -> dict[str, frozenset[str]]:
-        """The runs each group or value listed under `now` or `on_release`
-        reads, the names a release may show during the contest.
+        """The runs each value shown `always` or `after_release` reads, the
+        values a release may show during the contest.
         """
         found: dict[str, frozenset[str]] = {}
-        for entry in self.shown(released=True):
+        for entry in listed(self.show, "values", self.during(released=True)):
             runs = self.runs_of(entry)
             if runs is not None:
                 found[entry] = runs
@@ -292,9 +316,9 @@ class RunTask:
 
     def self_reported_shown(self) -> frozenset[str]:
         """The values reading a self-reported column that `show` lists, at
-        any time."""
-        listed = {entry for entries in self.show.lists().values() for entry in entries}
-        return frozenset(name for name in self.self_reported_values() if name in listed)
+        any moment."""
+        shown = listed(self.show, "values")
+        return frozenset(name for name in self.self_reported_values() if name in shown)
 
     def runs_file(self) -> RunsFile:
         early = self.early()

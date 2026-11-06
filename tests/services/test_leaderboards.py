@@ -37,6 +37,7 @@ from tests.services.test_pipelines import (
     _staff,
     _submit,
 )
+from tests.services.test_run_task_saves import TASKS
 from tests.services.test_steps import CODE, Islands
 
 CONTEST = Scope("acme", "spring")
@@ -170,6 +171,30 @@ async def test_everyone_reads_each_row_as_its_own_entrant_is_shown_it(
     assert [cell.number for cell in after.rows[1].cells] == [1, 100, 1]
 
 
+async def test_a_column_shows_a_value_to_no_entrant_whose_show_lists_it_under_no_values(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    # Every run's score is shown after the deadline, but total is listed
+    # under no moment's values, so only staff read it on a leaderboard,
+    # even after the close; sample_score, listed always, reads at once.
+    unlisted = TASKS["islands"][0].replace("values: [st1, st2, total]", "values: [st1, st2]")
+    clock.set(at(13, 0))
+    islands = await _checked(setup, acme, unlisted, contest=OPEN)
+    first = await _entrant(setup, acme, islands, 20)
+    staff = await _staff(setup, acme)
+    clock.set(AFTER_CLOSE)
+
+    for viewer in (None, first):
+        standings = await _standings(setup, viewer)
+        assert [(cell.column, cell.number) for cell in standings.rows[0].cells] == [
+            ("sample", Fraction(1)),
+            ("total", None),
+            ("tries", Fraction(1)),
+        ]
+    staffs = await _standings(setup, staff)
+    assert [cell.number for cell in staffs.rows[0].cells] == [1, 100, 1]
+
+
 async def test_a_withdrawn_tasks_columns_are_listed_to_no_entrant_and_read_nothing(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
@@ -250,7 +275,7 @@ async def test_a_task_not_yet_released_gives_a_header_no_bounds_but_to_staff(
     shown = _judged(
         "Task",
         "    score: {block: max, over: {runs: all}, of: {run: [all, score]}}\n",
-        "    now: [score, all]\n",
+        "    always:\n      values: [score]\n      runs: [{of: all, fields: [verdict, score]}]\n",
     )
     await _task(setup, acme, "a", shown)
     await _task(setup, acme, "b", shown)

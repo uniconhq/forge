@@ -1,5 +1,5 @@
 import builtins
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from forge.domain.content import Edit, FileSet, WrittenEdit, check_path
@@ -12,7 +12,6 @@ from forge.domain.definitions import (
     admin_only_refusal,
 )
 from forge.domain.errors import AdminOnly, InvalidInputs, ReservedPath
-from forge.domain.identity import PLATFORM
 from forge.domain.ids import TaskId
 from forge.domain.leaderboard_task_check import Scored, across, leaderboards_of
 from forge.domain.port_values import is_reserved
@@ -44,11 +43,13 @@ async def _shown_before_runs(
     ctx: Context,
     task: TaskId,
     definition: TaskDefinition,
-    present: Collection[str],
     run_task: RunTask | None,
 ) -> list[str]:
-    """Warnings for T7 and T10: entrant-visible files, groups and values
-    hidden by the save. A take-back does not undo an earlier exposure.
+    """Warnings for T7 and T10: what `show` showed entrants under a
+    publication that graded or was served, values, inputs, outputs and
+    each run's fields, that the save hides again or shows later. The runs
+    are each publication's, from its runs file, and those the save leaves.
+    A take-back does not undo an earlier exposure.
     """
     publications = await ctx.forge.workspaces.list_publications(task)
     counted = await sources._graded_under(ctx, task) | await _served(ctx, task, publications)
@@ -72,16 +73,16 @@ async def _shown_before_runs(
         found = await sources._definition_of(ctx, task, publication)
         if found is None:
             continue
-        held = await ctx.forge.content.list_files(PLATFORM, task, at=publication.version)
-        each = shown_under(found.scoring, held.tokens.keys())
+        runs = await sources._runs_file_of(ctx, task, publication)
+        held = {run.id: run.key for run in runs.runs} if runs is not None else {}
+        each = shown_under(found.scoring, held)
         if publication.id not in shown_by_release:
             each = unreleased(each)
         shown.append(each)
-        if run_task is not None:
-            runs = await sources._runs_file_of(ctx, task, publication)
-            if runs is not None:
-                read.append((each, runs.reads))
-    problems = hidden_again(most_shown(shown, rank), definition.scoring, present, rank)
+        if run_task is not None and runs is not None:
+            read.append((each, runs.reads))
+    keys = {run.id: run.key for run in run_task.runs} if run_task is not None else {}
+    problems = hidden_again(most_shown(shown), definition.scoring, keys, rank)
     if run_task is not None:
         problems += fewer_runs(read, run_task)
     since = min(publication.at for publication in publications if publication.id in counted)
@@ -93,7 +94,7 @@ async def _shown_before_runs(
 
 async def _task_revealed(ctx: Context, task: TaskId) -> bool:
     """Whether the task has closed for every row of its contest, so what
-    `after_close` lists is shown; a contest or task that does not read has
+    `after_deadline` lists is shown; a contest or task that does not read has
     not.
     """
     contest = await _contest(ctx, task)

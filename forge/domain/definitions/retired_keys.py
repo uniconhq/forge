@@ -116,7 +116,7 @@ TASK_RETIRED = (
     Retired(
         ("hidden",),
         "A task is now shown from its release time in the contest. To hide results until "
-        "the reveal, list them under scoring's show after_close. Remove this.",
+        "the deadline, list them under scoring's show after_deadline. Remove this.",
     ),
     Retired(
         ("limits",),
@@ -131,7 +131,7 @@ TASK_RETIRED = (
     Retired(
         ("stages",),
         "This setting is no longer used. To hide results, list them under scoring's show "
-        "after_close; which submission counts is set on each leaderboard. Remove this.",
+        "after_deadline; which submission counts is set on each leaderboard. Remove this.",
     ),
     Retired(
         ("inputs", "contestant"),

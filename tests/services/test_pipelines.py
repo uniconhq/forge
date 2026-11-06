@@ -128,17 +128,25 @@ from tests.services.test_steps import (
     _step,
     _stored,
 )
+from tests.test_run_task import ISLANDS_AFTER, ISLANDS_ALWAYS
 
 LIVE = RUNNING.format(visibility="everyone") + "  - id: islands\n"
 SMALL = "size:small"
 """The slot every pipeline of islands fits in, the smallest of the fake's."""
 ISLANDS = Scope("acme", "spring", "islands")
 NOTHING_EARLY = TASKS["islands"][0].replace(
-    "now: [sample_score, sample_time, sample_tests, samples/]", "now: [samples/]"
+    ISLANDS_ALWAYS, "    always:\n      runs: [{of: sample_tests, fields: [input, answer]}]\n"
 )
-LOG_SHOWN = TASKS["islands"][0].replace("sample_tests, samples/]", "sample_tests, samples/, log]")
+LOG_SHOWN = (
+    TASKS["islands"][0]
+    .replace(
+        "values: [sample_score, sample_time]\n",
+        "values: [sample_score, sample_time]\n      outputs: [log, compiled]\n",
+    )
+    .replace("verdict, passed, score, time_ms]}", "verdict, passed, score, time_ms, message]}")
+)
 """islands showing the compile log, a report solution gives once for its
-batch, with its runs."""
+batch, and `compiled`, with its runs, each with its message."""
 
 
 @pytest.fixture
@@ -349,7 +357,7 @@ async def _graded_both(
     return islands, session
 
 
-async def test_the_entrant_reads_the_runs_of_the_groups_shown_now_and_after_the_reveal(
+async def test_the_entrant_reads_the_runs_shown_always_and_after_the_deadline(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
@@ -370,14 +378,19 @@ async def test_the_entrant_reads_the_runs_of_the_groups_shown_now_and_after_the_
         "passed",
         "reports",
         "texts",
-        "message",
     }
     assert grading.runs[0]["tuples"] == [
-        {"title": None, "key": {"input": "samples/1.in", "answer": "samples/1.ans"}}
+        {
+            "title": None,
+            "key": {"input": {"file": "samples/1.in"}, "answer": {"file": "samples/1.ans"}},
+        }
     ]
-    by_title = {report["title"]: report for report in grading.runs[0]["reports"]}
-    assert by_title["Run time"] == {"title": "Run time", "unit": "ms", "number": 12}
-    assert by_title["Memory used"] == {"title": "Memory used", "unit": "KB", "number": 1500}
+    # Exactly the fields the run entry lists: score and time_ms, not the
+    # memory used nor the log the workflow also gives.
+    assert grading.runs[0]["reports"] == [
+        {"title": "score", "unit": None, "number": 1},
+        {"title": "Run time", "unit": "ms", "number": 12},
+    ]
     # When the page reads it again, its late runs then shown.
     assert grading.reveal_at is not None and BEFORE_CLOSE < grading.reveal_at <= AFTER_CLOSE
 
@@ -405,7 +418,7 @@ async def test_the_entrant_reads_the_runs_of_the_groups_shown_now_and_after_the_
         ("all", 3, "accepted"),
         ("all", 4, "accepted"),
     ]
-    # No entry of show lists tests/, so a run's tuple never names its files.
+    # No run entry lists the input of all, so a run's tuple never names its files.
     assert [run["tuples"] for run in grading.runs[4:]] == [
         [{"title": None, "key": {}}],
         [{"title": None, "key": {}}],
@@ -452,18 +465,20 @@ async def test_a_late_row_that_ends_is_told_to_its_entrant_only_after_the_reveal
 
 VALUES_ONLY = (
     TASKS["islands"][0]
+    .replace(ISLANDS_ALWAYS, "    always:\n      values: [sample_score]\n")
     .replace(
-        "now: [sample_score, sample_time, sample_tests, samples/]", "now: [sample_score, samples/]"
-    )
-    .replace(
-        "after_close: [st1, st2, total, all]",
-        "on_release: [total, st1_tests, st2_tests]",
+        ISLANDS_AFTER,
+        "    after_release:\n"
+        "      values: [total]\n"
+        "      runs:\n"
+        "        - {of: st1_tests, fields: [verdict, score]}\n"
+        "        - {of: st2_tests, fields: [verdict, score]}\n",
     )
 )
 """islands showing values alone, and groups only on a release."""
 
 
-async def test_a_value_shown_shows_no_run_and_a_group_on_release_none_before_a_release(
+async def test_a_value_shown_shows_no_run_and_runs_after_release_none_before_a_release(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
@@ -473,14 +488,15 @@ async def test_a_value_shown_shows_no_run_and_a_group_on_release_none_before_a_r
     assert (await _grading(setup, session, islands)).runs == ()
 
 
-async def test_a_group_moved_to_now_shows_its_runs_where_they_ran_late(
+async def test_a_group_moved_to_always_shows_its_runs_where_they_ran_late(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
     islands, session = await _graded_both(setup, acme)
     text = TASKS["islands"][0].replace(
-        "now: [sample_score, sample_time, sample_tests, samples/]",
-        "now: [sample_score, sample_time, sample_tests, st2_tests, samples/, tests/4.in]",
+        "{of: sample_tests, fields: [input, answer, verdict, passed, score, time_ms]}",
+        "{of: sample_tests, fields: [input, answer, verdict, passed, score, time_ms]}, "
+        "{of: st2_tests, fields: [input, verdict, passed, score, time_ms]}",
     )
     await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
     await setup.settle()
@@ -492,8 +508,11 @@ async def test_a_group_moved_to_now_shows_its_runs_where_they_ran_late(
         ("st2_tests", 1, "accepted"),
         ("st2_tests", 2, "accepted"),
     ]
-    # tests/4.in is shown now and tests/3.in is not, so only one tuple names its file.
-    assert [run["tuples"][0]["key"] for run in grading.runs[2:]] == [{}, {"input": "tests/4.in"}]
+    # The run entry shows the input of each of its runs.
+    assert [run["tuples"][0]["key"] for run in grading.runs[2:]] == [
+        {"input": {"file": "tests/3.in"}},
+        {"input": {"file": "tests/4.in"}},
+    ]
 
 
 TOTALS = LIVE + (
@@ -508,7 +527,7 @@ TOTALS = LIVE + (
 total."""
 
 
-async def test_a_value_moved_to_now_is_missing_until_the_reveal_where_it_read_late_runs(
+async def test_a_value_moved_to_always_is_missing_until_the_reveal_where_it_read_late_runs(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     # Item 134: st1, st2 and total read runs this grading ran late.
@@ -516,8 +535,11 @@ async def test_a_value_moved_to_now_is_missing_until_the_reveal_where_it_read_la
     islands, session = await _graded_both(setup, acme, contest=TOTALS)
     text = (
         TASKS["islands"][0]
-        .replace("samples/]", "samples/, st1, st2, total]")
-        .replace("[st1, st2, total, all]", "[all]")
+        .replace(
+            "values: [sample_score, sample_time]",
+            "values: [sample_score, sample_time, st1, st2, total]",
+        )
+        .replace("      values: [st1, st2, total]\n", "")
     )
     await _save(setup, acme, islands.task, {"task.yaml": text.encode()})
     await setup.settle()
@@ -629,7 +651,7 @@ async def test_organisers_read_every_value_at_once_with_what_it_read_and_the_fac
     }
     total = next(value for value in grading.run_values if value.name == "total")
     assert (total.show, total.runs, total.values) == (
-        "after_close",
+        "after_deadline",
         ("r3", "r4"),
         ("st1", "st2"),
     )
@@ -746,7 +768,8 @@ async def test_a_report_of_a_step_done_once_reaches_an_entrant_only_when_show_li
     log = TextAt(None, None, "texts", "log")
 
     grading = await _grading(setup, session, islands)
-    assert grading.runs and grading.compiled == 1
+    # Nor is compiled shown where show does not list it.
+    assert grading.runs and grading.compiled is None
     assert grading.once == {"reports": {}, "texts": {}}
     with pytest.raises(NotFound, match="no such text"):
         await submissions.read_text(setup, session, islands.task, 1, log)
@@ -1000,7 +1023,7 @@ async def test_a_task_with_nothing_early_makes_its_late_row_at_once(
 
 BUILT_LATE = NOTHING_EARLY.replace(
     "  values:\n", "  values:\n    built: {fact: compiled}\n"
-).replace("after_close: [st1, st2, total, all]", "after_close: [st1, st2, total, all, built]")
+).replace("values: [st1, st2, total]", "values: [st1, st2, total, built]")
 """islands with nothing early and a value reading `compiled` shown after
 the close, so the step that compiles runs in the late row."""
 BUILT_LEADERBOARD = (

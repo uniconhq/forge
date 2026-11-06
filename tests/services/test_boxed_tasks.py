@@ -118,8 +118,11 @@ scoring:
   values:
     fast: {block: max, over: {runs: shown}, of: {run: [shown, time_ms]}}
   show:
-    now: [shown, samples/]
-    after_close: [fast, all]
+    always:
+      runs: [{of: shown, fields: [input, verdict, time_ms]}]
+    after_deadline:
+      values: [fast]
+      runs: [{of: all, fields: [verdict, time_ms]}]
 """
 SLOW = """\
 inputs:
@@ -164,7 +167,8 @@ repeat:
     tuples: [tests/1.in, tests/2.in]
 scoring:
   show:
-    after_close: [all]
+    after_deadline:
+      runs: [{of: all, fields: [verdict]}]
 """
 
 

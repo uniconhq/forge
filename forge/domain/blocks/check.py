@@ -34,6 +34,7 @@ from forge.domain.blocks.catalogue import (
     ENTERED,
     EXEC,
     FACTS,
+    FIRST_NOT_PASSED,
     LANGUAGES,
     LEAVES,
     NUMBERS,
@@ -132,7 +133,8 @@ def same_value(first: object, second: object) -> bool:
 
 def check_names(groups: Iterable[str], values: Iterable[str]) -> Found:
     """Group and value names: each written as a value's name is, none
-    `all`, none named like a fact, none a word a formula reads as an
+    `all` or `first_not_passed`, which `show` picks runs by, none named like
+    a fact, none a word a formula reads as an
     operator or a constant, and none both a group and a value.
     """
     found: Found = []
@@ -150,6 +152,14 @@ def check_names(groups: Iterable[str], values: Iterable[str]) -> Found:
                 )
             elif name == ALL:
                 found.append((at, "all is every run, which every task has. Choose another name."))
+            elif name == FIRST_NOT_PASSED:
+                found.append(
+                    (
+                        at,
+                        f"{FIRST_NOT_PASSED} is the run show picks for each submission, the "
+                        "first that did not pass. Choose another name.",
+                    )
+                )
             elif name in FACTS:
                 found.append(
                     (
@@ -165,7 +175,7 @@ def check_names(groups: Iterable[str], values: Iterable[str]) -> Found:
                     (
                         at,
                         f"{name} is already a group, and groups and values share one set of "
-                        "names, so show can list either. Choose another name.",
+                        "names. Choose another name.",
                     )
                 )
     return found

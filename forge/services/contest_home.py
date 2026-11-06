@@ -32,11 +32,14 @@ organiser anyway, released or not, so a statement shows its images while it
 is being written.
 """
 
-from dataclasses import dataclass, replace
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime
+from typing import Any
 
 from forge.db.tables import Entrant
 from forge.domain import release as rules
+from forge.domain import run_showing
 from forge.domain.definitions import ContestDefinition, ContestVisibility, State, Submissions
 from forge.domain.errors import NotFound
 from forge.domain.ids import ContestId, TaskId
@@ -50,8 +53,16 @@ from forge.domain.sessions import Session
 from forge.domain.submissions import Field
 from forge.runtime.actions import action
 from forge.runtime.context import Context
-from forge.services import entrant_view, entrants, invites, leaderboards, names, release, timelines
-from forge.services.entrant_view import PublicFile, PublishedTask
+from forge.services import (
+    entrant_view,
+    entrants,
+    invites,
+    leaderboards,
+    names,
+    release,
+    timelines,
+)
+from forge.services.entrant_view import PublicFile, PublishedTask, ShownInput
 from forge.services.entrants import Mine
 from forge.services.release import TaskRelease
 
@@ -121,7 +132,11 @@ class TaskPage:
     is built from, when it falls due and closes for the person's row, and
     how many of the row's submissions it may mark, none unless the entry
     gives `marks` or a leaderboard reads the task's `marked`, and the person is
-    an approved contestant.
+    an approved contestant. `runs` are the runs whose inputs `show` shows at
+    a moment that has come, each by its group and place with its titles and
+    those inputs, and `shown_inputs` the shared inputs it shows then: a
+    number or text as it is, a file or folder by its path, which
+    `shown_input` serves (`run_showing.task_inputs`).
     """
 
     task: TaskId
@@ -135,6 +150,8 @@ class TaskPage:
     due: datetime | None
     closes: datetime | None
     marks: int | None = None
+    runs: tuple[Mapping[str, Any], ...] = ()
+    shown_inputs: Mapping[str, Any] = field(default_factory=dict)
 
 
 @action
@@ -228,6 +245,9 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
     extension = release.row_extension(person)
     now = ctx.now
     form = await entrant_view.form(ctx, found)
+    shown = await entrant_view.task_inputs(
+        ctx, found, revealed=await timelines.revealed(ctx, settings, found)
+    )
     return TaskPage(
         task=task,
         name=found.name,
@@ -244,7 +264,35 @@ async def task(ctx: Context, session: Session, task: TaskId) -> TaskPage:
             if found.entry is not None and _approved(person.entrant)
             else None
         ),
+        runs=shown.runs,
+        shown_inputs=shown.inputs,
     )
+
+
+@action
+async def shown_input(
+    ctx: Context,
+    session: Session,
+    task: TaskId,
+    name: str,
+    group: str | None = None,
+    place: int | None = None,
+    path: str | None = None,
+) -> ShownInput:
+    """An input the task's page shows that is a file or a folder
+    (`TaskPage`), for a signed-in person who reads the page: the shared
+    input `name`, or with `group` and `place` that input of the run the page
+    shows there, a folder's files, or with `path` the one below it
+    (`entrant_view.shown_input`). `NotFound` for a task not visible to them
+    and for an input not shown now, the same for one hidden as for one not
+    there.
+    """
+    settings, _, found = await _visible(ctx, session, task)
+    shown = await entrant_view.task_inputs(
+        ctx, found, revealed=await timelines.revealed(ctx, settings, found)
+    )
+    named = run_showing.shown_file(shown.inputs, shown.runs, name, group, place)
+    return await entrant_view.shown_input(ctx, found, named, path)
 
 
 @action
@@ -261,9 +309,8 @@ async def public_file(ctx: Context, session: Session, task: TaskId, path: str) -
     path = entrant_view.public_path(path)
     if await _organises(ctx, session, task):
         return await entrant_view.head_public_file(ctx, task, path)
-    settings, _, found = await _visible(ctx, session, task)
-    reveal = await timelines.reveal(ctx, contest_id_of(task_scope(task)), settings, found.name)
-    return await entrant_view.public_file(ctx, found, path, reveal=reveal)
+    _, _, found = await _visible(ctx, session, task)
+    return await entrant_view.public_file(ctx, found, path)
 
 
 async def _visible(

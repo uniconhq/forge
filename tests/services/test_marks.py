@@ -130,8 +130,9 @@ async def _passed_after_close(setup: Setup, acme: Acme, task: TaskId) -> Publish
         (await _task_yaml(acme, task))
         .replace(b"  values:\n", b"  values:\n" + PASSED)
         .replace(
-            b"    now: [score, all, public/]\n",
-            b"    now: [score, all, public/]\n    after_close: [passed]\n",
+            b"        - {of: all, fields: [verdict, passed]}\n",
+            b"        - {of: all, fields: [verdict, passed]}\n"
+            b"    after_deadline:\n      values: [passed]\n",
         )
     )
     saved = await _save(setup, acme, task, {"task.yaml": current})
@@ -322,7 +323,7 @@ async def test_an_organiser_reads_a_value_its_entrant_is_shown_only_after_the_cl
     seen_values = {value.name: value for value in seen.grading.run_values}
     assert (seen_values["passed"].number, seen_values["passed"].show) == (
         Fraction(0),
-        "after_close",
+        "after_deadline",
     )
     assert [value.name for value in own.grading.run_values] == ["score"]
     assert own.grading.reveal_at == END
