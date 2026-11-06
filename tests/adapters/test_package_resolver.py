@@ -3,7 +3,9 @@
 import asyncio
 import hashlib
 import io
+import shutil
 import tarfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +90,27 @@ async def test_each_platform_is_resolved_and_each_wheel_is_verified_and_retained
     assert all(not path.exists() for path in paths)
 
 
+async def test_the_folder_is_removed_off_the_event_loop(
+    registry: dict[str, bytes], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    removed: list[Path] = []
+    real = asyncio.to_thread
+
+    async def threaded(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        if func is shutil.rmtree:
+            removed.append(Path(args[0]))
+        return await real(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", threaded)
+    asked = Environment.model_validate({"python": {"packages": ["numpy>=2.3"]}})
+    async with EnvironmentResolver(tmp_path, registry=Registry()).prepare(
+        asked, cap=1024 * 1024
+    ) as prepared:
+        folder = next(iter(prepared.files.values())).parent
+
+    assert removed == [folder] and not folder.exists()
+
+
 async def test_the_environment_cap_is_checked_before_downloading(
     registry: dict[str, bytes],
     tmp_path: Path,
@@ -98,19 +121,28 @@ async def test_the_environment_cap_is_checked_before_downloading(
             pytest.fail("an oversized environment cannot be prepared")
 
 
-def archive(script: bool = False, members: tuple[str, ...] = ()) -> bytes:
+def archive(script: bool = False, members: tuple[str, ...] | Mapping[str, bytes] = ()) -> bytes:
+    """A conda package of `members`, each holding `exit` unless given its
+    content."""
+    given = members if isinstance(members, Mapping) else dict.fromkeys(members, b"exit")
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w:bz2") as tar:
-        for name in (*members, *(["bin/.python-post-link.sh"] if script else [])):
+        for name, content in {
+            **given,
+            **({"bin/.python-post-link.sh": b"exit"} if script else {}),
+        }.items():
             item = tarfile.TarInfo(name)
-            item.size = 4
-            tar.addfile(item, io.BytesIO(b"exit"))
+            item.size = len(content)
+            tar.addfile(item, io.BytesIO(content))
     return output.getvalue()
 
 
 class Registry:
     def __init__(
-        self, script: bool = False, tool: str = "python", members: tuple[str, ...] = ()
+        self,
+        script: bool = False,
+        tool: str = "python",
+        members: tuple[str, ...] | Mapping[str, bytes] = (),
     ) -> None:
         self.script = script
         self.tool = tool

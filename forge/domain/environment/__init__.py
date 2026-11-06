@@ -18,6 +18,8 @@ PreparationStatus = Literal["preparing", "ready", "refused", "replaced"]
 """Where a task's background package preparation stands."""
 PIECES = ("conda", "pypi", "maven", "npm")
 """A language lock's lists of pieces, each fetched by its SHA-256."""
+MOST_PACKAGES = 100
+"""The most entries a language's `packages` may name."""
 
 
 def _requirement(value: str) -> str | None:
@@ -147,6 +149,12 @@ class Environment(RootModel[dict[str, LanguageEnvironment]]):
                         f"{NAMES[name]} takes no `packages` yet; use `conda` for conda-forge "
                         "packages",
                     )
+                continue
+            if len(entry.packages) > MOST_PACKAGES:
+                problems.add(
+                    (name, "packages"),
+                    f"{NAMES[name]} takes at most {MOST_PACKAGES} packages. Name fewer.",
+                )
                 continue
             read, refusal = PACKAGES[source]
             for index, each in enumerate(entry.packages):

@@ -7,10 +7,10 @@ import hashlib
 import json
 import os
 import re
-from contextlib import suppress
 from pathlib import Path
 from tempfile import mkdtemp
 
+from forge.adapters.registries.watch import watched
 from forge.domain.environment import MavenJar
 from forge.domain.errors import Rejected, TooLarge, Unavailable
 from forge.domain.yaml_models import size_in_words
@@ -28,8 +28,6 @@ UNREACHED = re.compile(
     r"SSLException|Connection reset"
 )
 """What Coursier says when Maven Central could not be reached."""
-WATCHED = 0.2
-"""How often, in seconds, the size of Coursier's cache is checked while it runs."""
 
 log = get_logger(__name__)
 
@@ -119,18 +117,8 @@ class MavenResolver:
             )
         except OSError as error:
             raise Unavailable("Coursier could not be started to resolve Maven packages.") from error
-        finished = asyncio.ensure_future(process.communicate())
-        try:
-            while not finished.done():
-                await asyncio.wait({finished}, timeout=WATCHED)
-                if not finished.done() and await asyncio.to_thread(_held, cache) > cap:
-                    raise TooLarge(f"The Maven packages come to more than {size_in_words(cap)}.")
-            _, said = finished.result()
-        except BaseException:
-            if process.returncode is None:
-                process.kill()
-            await asyncio.wait({finished})
-            raise
+        too_large = f"The Maven packages come to more than {size_in_words(cap)}."
+        _, said = await watched(process, cache, cap, too_large)
         if process.returncode:
             # Coursier's words name this forge's folders, so only the log
             # holds them; the author is told which packages Central lacks.
@@ -143,16 +131,6 @@ class MavenResolver:
                 "The Maven packages could not be resolved from Maven Central."
                 + (f" Not found: {', '.join(missing)}." if missing else "")
             )
-
-
-def _held(folder: Path) -> int:
-    """The bytes in the files under a folder, as they are being written."""
-    total = 0
-    for parent, _, names in os.walk(folder):
-        for name in names:
-            with suppress(OSError):
-                total += os.lstat(os.path.join(parent, name)).st_size
-    return total
 
 
 def _hashed(path: Path) -> tuple[int, str]:

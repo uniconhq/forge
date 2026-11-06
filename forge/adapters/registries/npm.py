@@ -14,10 +14,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import mkdtemp
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 import httpx
 
+from forge.adapters.registries.watch import watched
 from forge.domain.environment import NPM_ENTRY, NPM_NAME, PLATFORMS, NpmPackage
 from forge.domain.errors import Rejected, TooLarge, Unavailable
 from forge.domain.yaml_models import size_in_words
@@ -45,8 +47,18 @@ FAILURES = {
 words, which may name hosts it tried, are only logged."""
 UNREACHED = {"ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND"}
 """npm's error codes for a registry it could not reach."""
+MOST_LOCKED = 2000
+"""The most packages npm's lock may name."""
 
 log = get_logger(__name__)
+
+
+class Held(NamedTuple):
+    """An npm package the toolchain's conda package `piece` installs, at the
+    `version` its `package.json` gives, or none when it gives none."""
+
+    piece: str
+    version: str | None
 
 
 class NpmResolver:
@@ -61,14 +73,15 @@ class NpmResolver:
         *,
         cap: int,
         proceed: Callable[[], Awaitable[None]] | None = None,
-        held: Mapping[str, Mapping[str, str]] | None = None,
+        held: Mapping[str, Mapping[str, Held]] | None = None,
     ) -> tuple[dict[str, list[NpmPackage]], dict[str, Path]]:
         """Each platform's tree of the npm packages `packages` asks for, and
         their tarballs by SHA-256. `held` names, for each platform, the
         places in the tree the toolchain's conda packages already install,
-        with the conda package that does: a peer placed there is the
-        toolchain's own and left out, and any other package placed there is
-        refused, since it would install over the toolchain's files."""
+        with the conda package that does: a peer placed there at the version
+        the toolchain installs is the toolchain's own and left out, and any
+        other package placed there is refused, since it would install over
+        the toolchain's files."""
         work = Path(mkdtemp(prefix="npm-", dir=root))
         dependencies = {}
         for each in packages:
@@ -80,7 +93,7 @@ class NpmResolver:
         )
         if proceed is not None:
             await proceed()
-        await self._lock(work)
+        await self._lock(work, cap)
         unreadable = Rejected("npm did not write a lock of the packages it resolved.")
         try:
             lock = json.loads((work / "package-lock.json").read_text())
@@ -89,6 +102,11 @@ class NpmResolver:
         listed = lock.get("packages") if isinstance(lock, dict) else None
         if not isinstance(listed, dict) or lock.get("lockfileVersion") != 3:
             raise unreadable
+        if len(listed) > MOST_LOCKED + 1:
+            raise Rejected(
+                f"The npm packages come to more than {MOST_LOCKED} packages with what they "
+                "depend on. Ask for fewer."
+            )
         # Every entry is checked before anything is downloaded, so a lock
         # with one package from elsewhere fetches nothing at all.
         kept: list[tuple[str, str, str, str, str, list[str]]] = []
@@ -102,7 +120,8 @@ class NpmResolver:
                 continue
             name = _placed(path)
             if name is None:
-                raise Rejected(f"npm placed a package at {path}, outside node_modules.")
+                log.warning("npm.placed_outside", path=path[:1000])
+                raise Rejected("npm placed a package outside node_modules.")
             if entry.get("link"):
                 raise Rejected(f"npm linked {name} to a folder, not a package from the registry.")
             version, url, integrity = (
@@ -121,14 +140,22 @@ class NpmResolver:
             ):
                 raise Rejected(f"{name} {version} does not run on both Linux platforms.")
             for platform in list(for_platforms):
-                holder = _holder(path, (held or {}).get(platform, {}))
-                if holder is None:
+                holding = _holder(path, (held or {}).get(platform, {}))
+                if holding is None:
                     continue
+                place, holder = holding
                 if not entry.get("peer"):
                     raise Rejected(
                         f"npm placed {name} {version} at {path}, where the toolchain's "
-                        f"{holder} already installs its own. Leave {name} out of the "
+                        f"{holder.piece} already installs its own. Leave {name} out of the "
                         "packages, or ask for ones that do not need another copy of it."
+                    )
+                if path == place and holder.version != version:
+                    installs = f"{name} {holder.version}" if holder.version else f"its own {name}"
+                    raise Rejected(
+                        f"The packages need {name} {version}, but the toolchain's "
+                        f"{holder.piece} installs {installs}. Ask for packages that work "
+                        f"with the toolchain's {name}, or pick another version of the toolchain."
                     )
                 for_platforms.remove(platform)
             if for_platforms:
@@ -154,7 +181,7 @@ class NpmResolver:
                 trees[platform].append(package)
         return trees, files
 
-    async def _lock(self, work: Path) -> None:
+    async def _lock(self, work: Path, cap: int) -> None:
         # npm reads only the configuration written here, and the environment
         # gives it nothing of the forge's own: no registry, credentials,
         # proxy or secret. It runs no script and fetches no git repository,
@@ -187,6 +214,7 @@ class NpmResolver:
                 f"--userconfig={work / 'user.npmrc'}",
                 f"--globalconfig={work / 'global.npmrc'}",
                 f"--cache={work / 'cache'}",
+                watch=(work / "cache", cap),
             )
         if code:
             log.warning("npm.failed", said=said[-4000:])
@@ -202,9 +230,12 @@ class NpmResolver:
                 f"(npm error {named})."
             )
 
-    async def _run(self, env: dict[str, str], work: Path, *args: str) -> tuple[int, str]:
+    async def _run(
+        self, env: dict[str, str], work: Path, *args: str, watch: tuple[Path, int] | None = None
+    ) -> tuple[int, str]:
         """npm's exit code and what it said, on standard output for its
-        version and on standard error otherwise."""
+        version and on standard error otherwise. With `watch`, npm is stopped
+        once that folder holds more than that many bytes."""
         try:
             process = await asyncio.create_subprocess_exec(
                 self.program,
@@ -216,13 +247,18 @@ class NpmResolver:
             )
         except OSError as error:
             raise Unavailable("npm could not be started to resolve npm packages.") from error
-        try:
-            out, err = await process.communicate()
-        except BaseException:
-            if process.returncode is None:
-                process.kill()
-            await process.wait()
-            raise
+        if watch is not None:
+            folder, cap = watch
+            too_large = f"The npm packages come to more than {size_in_words(cap)}."
+            out, err = await watched(process, folder, cap, too_large)
+        else:
+            try:
+                out, err = await process.communicate()
+            except BaseException:
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()
+                raise
         said = out if args == ("--version",) else err
         return process.returncode or 0, said.decode(errors="replace")
 
@@ -288,12 +324,12 @@ def _placed(path: str) -> str | None:
     return parts[-1]
 
 
-def _holder(path: str, held: Mapping[str, str]) -> str | None:
-    """The conda package that already installs `path`, a place in the tree,
-    or a place it is inside of; None when none does."""
+def _holder(path: str, held: Mapping[str, Held]) -> tuple[str, Held] | None:
+    """The place `path` is at or inside of that a conda package of the
+    toolchain already installs, with what installs it; None when none does."""
     for place, piece in held.items():
         if path == place or path.startswith(f"{place}/"):
-            return piece
+            return place, piece
     return None
 
 
