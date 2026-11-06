@@ -102,6 +102,19 @@ async def test_a_visitor_fetches_a_shown_input_and_a_hidden_one_is_as_one_not_th
         assert str(missing.value) == str(hidden.value)
 
 
+async def test_a_listing_of_a_shown_file_opens_no_door(
+    setup: Setup, acme: Acme, spring: str, clock: FakeClock
+) -> None:
+    clock.set(BEFORE_CLOSE)
+    islands = await _checked(setup, acme, SHOWN)
+    acme.fake.reset_calls()
+
+    found = await landing.shown_input(setup, islands.task, "input", "sample_tests", 1, listing=True)
+
+    assert (found.door, found.name, found.files) == (None, "1.in", ())
+    assert acme.fake.calls_to("media_door") == []
+
+
 async def test_a_shown_folder_serves_the_files_it_holds_and_no_other_path(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:

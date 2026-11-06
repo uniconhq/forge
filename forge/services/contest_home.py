@@ -278,6 +278,8 @@ async def shown_input(
     group: str | None = None,
     place: int | None = None,
     path: str | None = None,
+    *,
+    listing: bool = False,
 ) -> ShownInput:
     """An input the task's page shows that is a file or a folder
     (`TaskPage`), for a signed-in person who reads the page: the shared
@@ -292,7 +294,7 @@ async def shown_input(
         ctx, found, revealed=await timelines.revealed(ctx, settings, found)
     )
     named = run_showing.shown_file(shown.inputs, shown.runs, name, group, place)
-    return await entrant_view.shown_input(ctx, found, named, path)
+    return await entrant_view.shown_input(ctx, found, named, path, listing=listing)
 
 
 @action

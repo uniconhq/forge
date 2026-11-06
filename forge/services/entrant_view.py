@@ -509,14 +509,20 @@ async def task_inputs(
 
 
 async def shown_input(
-    ctx: Context, published: PublishedTask, shown: tuple[Type, str] | None, path: str | None
+    ctx: Context,
+    published: PublishedTask,
+    shown: tuple[Type, str] | None,
+    path: str | None,
+    *,
+    listing: bool = False,
 ) -> ShownInput:
     """The input an answer shows as `shown`, a file or a folder by its path
     in the task (`run_showing.shown_file`), as the task's latest
     publication holds it: a file's door; a folder's files, or with `path`
-    the door to the one at that path below it. `NotFound` for an input not
-    shown, which tells nothing of one hidden, and for a path the folder
-    does not hold.
+    the door to the one at that path below it. A `listing` opens no door,
+    so a file answers only its name. `NotFound` for an input not shown,
+    which tells nothing of one hidden, and for a path the folder does not
+    hold.
     """
     if shown is None:
         raise NotFound(NO_SUCH_INPUT)
@@ -525,15 +531,20 @@ async def shown_input(
     if kind is Type.FILE:
         if path is not None:
             raise NotFound(NO_SUCH_FILE)
+        name = at.rsplit("/", 1)[-1]
+        if listing:
+            return ShownInput(name=name)
         door = await ctx.forge.content.media_door(PLATFORM, task, at, at=version)
-        return ShownInput(door=door, name=at.rsplit("/", 1)[-1])
+        return ShownInput(door=door, name=name)
     folder = at if at.endswith("/") else f"{at}/"
-    listing = await ctx.forge.content.list_files(PLATFORM, task, at=version)
-    files = tuple(sorted(each[len(folder) :] for each in listing.tokens if each.startswith(folder)))
+    held = await ctx.forge.content.list_files(PLATFORM, task, at=version)
+    files = tuple(sorted(each[len(folder) :] for each in held.tokens if each.startswith(folder)))
     if path is None:
         return ShownInput(files=files)
     if path not in files:
         raise NotFound(NO_SUCH_FILE)
+    if listing:
+        return ShownInput(name=path.rsplit("/", 1)[-1])
     door = await ctx.forge.content.media_door(PLATFORM, task, f"{folder}{path}", at=version)
     return ShownInput(door=door, name=path.rsplit("/", 1)[-1])
 

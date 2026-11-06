@@ -125,6 +125,8 @@ async def shown_input(
     group: str | None = None,
     place: int | None = None,
     path: str | None = None,
+    *,
+    listing: bool = False,
 ) -> ShownInput:
     """An input a released task of a public contest shows that is a file
     or a folder, for whoever may read its statement, as
@@ -138,7 +140,7 @@ async def shown_input(
         ctx, found, revealed=await timelines.revealed(ctx, settings, found)
     )
     named = run_showing.shown_file(shown.inputs, shown.runs, name, group, place)
-    return await entrant_view.shown_input(ctx, found, named, path)
+    return await entrant_view.shown_input(ctx, found, named, path, listing=listing)
 
 
 @action
