@@ -98,31 +98,35 @@ async def test_the_environment_cap_is_checked_before_downloading(
             pytest.fail("an oversized environment cannot be prepared")
 
 
-def archive(script: bool = False) -> bytes:
+def archive(script: bool = False, members: tuple[str, ...] = ()) -> bytes:
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w:bz2") as tar:
-        if script:
-            item = tarfile.TarInfo("bin/.python-post-link.sh")
+        for name in (*members, *(["bin/.python-post-link.sh"] if script else [])):
+            item = tarfile.TarInfo(name)
             item.size = 4
             tar.addfile(item, io.BytesIO(b"exit"))
     return output.getvalue()
 
 
 class Registry:
-    def __init__(self, script: bool = False) -> None:
+    def __init__(
+        self, script: bool = False, tool: str = "python", members: tuple[str, ...] = ()
+    ) -> None:
         self.script = script
+        self.tool = tool
+        self.members = members
         self.calls: list[str] = []
 
     async def solve(
         self, language: str, specs: Any, newest_before: Any
     ) -> dict[str, list[CondaPiece]]:
         self.calls.append(language)
-        body = archive(self.script)
+        body = archive(self.script, self.members)
         digest = hashlib.sha256(body).hexdigest()
         return {
             platform: [
                 CondaPiece(
-                    name="python",
+                    name=self.tool,
                     version="3.13",
                     build="test",
                     subdir=platform,
@@ -203,7 +207,7 @@ async def test_a_link_script_is_refused_naming_the_package(
             pytest.fail("link scripts cannot be installed")
 
 
-@pytest.mark.parametrize("version", [None, "3.13"])
+@pytest.mark.parametrize("version", [None, "3.15"])
 async def test_unnamed_tools_age_fourteen_days_but_named_versions_do_not(
     registry: dict[str, bytes], tmp_path: Path, version: str | None
 ) -> None:
@@ -213,7 +217,7 @@ async def test_unnamed_tools_age_fourteen_days_but_named_versions_do_not(
         async def solve(
             self, language: str, specs: Any, newest_before: Any
         ) -> dict[str, list[CondaPiece]]:
-            assert specs == (["python 3.13.*"] if version else ["python"])
+            assert specs == ["python 3.15.*"]
             if version:
                 assert newest_before is None
             else:
@@ -226,6 +230,61 @@ async def test_unnamed_tools_age_fourteen_days_but_named_versions_do_not(
         Environment.model_validate({"python": value}), cap=1024 * 1024
     ) as prepared:
         assert prepared.lock.platforms["linux-64"]["python"].picked == "python 3.13"
+
+
+@pytest.mark.parametrize(
+    ("language", "entry", "specs"),
+    [
+        ("javascript", {}, ["nodejs 26.*|24.*"]),
+        ("javascript", {"version": "24"}, ["nodejs 24.*"]),
+        ("typescript", {}, ["typescript 6.0.*", "nodejs 26.*|24.*"]),
+        ("kotlin", {}, ["kotlin 2.4.*", "openjdk 25.*"]),
+        ("rust", {}, ["rust 1.99.*", "gcc 16.*"]),
+        ("csharp", {}, ["dotnet 10.0.*"]),
+        ("ruby", {"conda": ["libyaml"]}, ["ruby 4.0.*", "libyaml"]),
+        (
+            "r",
+            {"packages": ["testthat", "data.table=1.17"]},
+            ["r-base 4.6.*|4.5.*", "r-testthat", "r-data.table 1.17.*"],
+        ),
+        ("r", {"version": "4.5", "conda": ["r-ggplot2"]}, ["r-base 4.5.*", "r-ggplot2"]),
+        ("cpp", {}, ["gxx 16.*"]),
+        (
+            "cpp",
+            {"conda": ["gtest", "eigen=5.0"]},
+            ["gxx 16.*", "pkg-config", "gtest", "eigen 5.0.*"],
+        ),
+        ("c", {"conda": ["zlib"]}, ["gcc 16.*", "pkg-config", "zlib"]),
+    ],
+)
+async def test_each_language_solves_its_toolchain_its_companion_and_its_conda_libraries(
+    registry: dict[str, bytes],
+    tmp_path: Path,
+    language: str,
+    entry: dict[str, object],
+    specs: list[str],
+) -> None:
+    from forge.domain.environment.tools import TOOLS
+
+    asked: list[list[str]] = []
+
+    class Recording(Registry):
+        async def solve(
+            self, language: str, specs: Any, newest_before: Any
+        ) -> dict[str, list[CondaPiece]]:
+            asked.append(specs)
+            solved = await super().solve(language, specs, newest_before)
+            return {
+                platform: [piece.model_copy(update={"name": TOOLS[language]}) for piece in pieces]
+                for platform, pieces in solved.items()
+            }
+
+    async with EnvironmentResolver(tmp_path, registry=Recording()).prepare(
+        Environment.model_validate({language: entry}), cap=1024 * 1024
+    ) as prepared:
+        assert prepared.lock.version == 3
+        assert prepared.lock.platforms["linux-64"][language].picked == f"{TOOLS[language]} 3.13"
+    assert asked == [specs]
 
 
 async def test_no_wheel_refusal_names_the_solved_python_version(

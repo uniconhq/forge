@@ -16,6 +16,7 @@ from forge.domain.errors import ConfirmationRequired, Rejected, TooLarge
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM, Identity
 from forge.domain.ids import PublicationId, TaskId, VersionId
+from forge.domain.yaml_models import problems_of
 from forge.port.content import ContentPlace
 from forge.port.packages import PreparedEnvironment
 from forge.runtime.setup import Setup
@@ -38,15 +39,18 @@ from tests.services.test_run_task_saves import _published, _save
     ],
 )
 def test_only_public_package_names_and_versions_are_accepted(entry: str) -> None:
-    with pytest.raises(ValidationError, match="not a package and version"):
+    with pytest.raises(ValidationError) as caught:
         Environment.model_validate({"python": {"packages": [entry]}})
+    assert [problem["message"] for problem in problems_of(caught.value)] == [
+        f"{entry} is not a package and version. Name a package from PyPI, such as numpy==2.3.*"
+    ]
 
 
 def test_names_extras_and_pep508_specifiers_are_kept() -> None:
     value = Environment.model_validate(
         {"python": {"packages": ["numpy==2.3.*", "requests[socks]>=2,<3"]}}
     )
-    assert value.python is not None and value.python.packages == [
+    assert value.requirements()["python"]["packages"] == [
         "numpy==2.3.*",
         "requests[socks]<3,>=2",
     ]
@@ -465,7 +469,7 @@ async def test_a_preparation_left_by_a_restart_expires_when_read(
 @pytest.mark.parametrize(
     "asked",
     [
-        {"rust": {}},
+        {"go": {}},
         {"python": {"index-url": "https://elsewhere.test"}},
         {"cpp": {"packages": ["numpy"]}},
     ],

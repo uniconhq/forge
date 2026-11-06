@@ -756,10 +756,7 @@ def _reports(
                 origin(plan, step) != entry.step
                 or not isinstance(got, Found)
                 or entry.output not in got.outputs
-                or (
-                    run is not None
-                    and (entry.output in (plan.steps[step].once_outputs or ())) != once
-                )
+                or (run is not None and plan.steps[step].gives_once(entry.output) != once)
             ):
                 continue
             declared = output_type(plan.steps[step], entry.output)

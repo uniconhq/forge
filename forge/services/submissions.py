@@ -1064,8 +1064,7 @@ def _with_show(
     once = {
         name
         for name, report in plan.reports.items()
-        if (step := plan.steps.get(report.step)) is not None
-        and (step.once or name in (step.once_outputs or ()))
+        if (step := plan.steps.get(report.step)) is not None and step.gives_once(report.output)
     }
     values = check_values(
         scoring.values,

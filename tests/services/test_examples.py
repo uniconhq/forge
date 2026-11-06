@@ -67,7 +67,7 @@ inputs:
   answers: file
 steps:
   - id: score
-    use: unicon/exec@v3
+    use: unicon/exec@v4
     with:
       source: ${{ workflow.scorer/ }}
       language: python

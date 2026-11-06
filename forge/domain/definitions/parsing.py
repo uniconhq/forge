@@ -164,7 +164,7 @@ visibility: signed-in
 
 def starter_task(name: str) -> dict[str, bytes]:
     """The files a new task is created with: a `task.yaml` titled `name`
-    that runs the entrant's Python with `unicon/classic@v5` on one test,
+    that runs the entrant's Python with `unicon/classic@v6` on one test,
     `tests/1.in`, `1 2`, whose answer, `tests/1.ans`, is `3`, scored by the
     share of its tests accepted and shown at once, each run with its
     verdict, and a placeholder statement (`STARTER_STATEMENT`), so the
@@ -174,7 +174,7 @@ def starter_task(name: str) -> dict[str, bytes]:
     task = f"""\
 # The task's settings. The format is SIMPLER-CORE.md, sections 8 and 9.
 name: {_yaml_text(name)}
-workflow: unicon/classic@v5
+workflow: unicon/classic@v6
 inputs:
   code: {{entrant: {{label: Your solution}}}}
   language: {{entrant: {{label: Language, options: [python]}}}}

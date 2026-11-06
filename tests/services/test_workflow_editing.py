@@ -393,7 +393,7 @@ async def test_a_copy_is_the_sources_file_at_a_version_private_and_marked(
 ) -> None:
     bob = await signed_in(setup, acme.fake, 8)
 
-    made = await workflows.copy(setup, bob, "unicon/classic@v5", "bob", "mine")
+    made = await workflows.copy(setup, bob, "unicon/classic@v6", "bob", "mine")
 
     assert made.id == WorkflowId("bob/mine")
     repo = acme.fake.state.repos[("bob", "mine.workflow")]
@@ -454,7 +454,7 @@ async def test_a_person_lists_what_they_may_read_and_what_they_may_edit(
         ("unicon", "classic", False),
     ]
     assert listed[0].visibility is Visibility.SHARED
-    assert listed[2].versions == ("v5",)
+    assert listed[2].versions == ("v6",)
     by_ada = await workflows.listing(setup, ada)
     assert [(item.owner, item.name, item.editable) for item in by_ada] == [
         ("acme", "orgs", True),
@@ -547,7 +547,7 @@ async def test_the_list_leaves_other_peoples_public_workflows_to_the_marketplace
         ("bob", "tuned"),
         ("unicon", "classic"),
     ]
-    assert await workflows.read_version(setup, bob, "unicon/classic@v5")
+    assert await workflows.read_version(setup, bob, "unicon/classic@v6")
 
 
 async def test_a_primitive_version_with_no_declaration_is_listed_with_why(
@@ -556,16 +556,16 @@ async def test_a_primitive_version_with_no_declaration_is_listed_with_why(
     bob = await signed_in(setup, acme.fake, 8)
     repo = acme.fake.state.repos[("unicon", "exec.primitive")]
     acme.fake.state.commit(repo, {"primitive.yaml": None}, "empty", None)
-    acme.fake.state.create_version(PLATFORM, repo, "v4")
+    acme.fake.state.create_version(PLATFORM, repo, "v5")
 
     listed = await primitives.listing(setup, bob)
 
-    empty = next(found for found in listed if found.ref == "unicon/exec@v4")
+    empty = next(found for found in listed if found.ref == "unicon/exec@v5")
     assert (empty.declaration, empty.problem) == (
         None,
-        "Unicon cannot read the settings of unicon/exec@v4.",
+        "Unicon cannot read the settings of unicon/exec@v5.",
     )
-    assert any(found.ref == "unicon/exec@v3" and found.declaration for found in listed)
+    assert any(found.ref == "unicon/exec@v4" and found.declaration for found in listed)
 
 
 async def test_a_retired_primitive_version_is_listed_with_why_and_refused_by_a_check(
@@ -575,7 +575,7 @@ async def test_a_retired_primitive_version_is_listed_with_why_and_refused_by_a_c
     palette lists each with no declaration and the words a step naming it
     is refused with, which a check of a workflow using either gives."""
     bob = await signed_in(setup, acme.fake, 8)
-    exec_v2 = PRIMITIVES["unicon/exec@v3"]
+    exec_v2 = PRIMITIVES["unicon/exec@v4"]
     acme.fake.primitives.add("compile", {"v3": exec_v2})
     acme.fake.primitives.add("exec", {"v1": exec_v2})
 
@@ -585,10 +585,11 @@ async def test_a_retired_primitive_version_is_listed_with_why_and_refused_by_a_c
         found = next(each for each in listed if each.ref == ref)
         assert (found.declaration, found.problem) == (None, RETIRED)
     assert RETIRED == (
-        "unicon/compile and unicon/exec@v1 and unicon/exec@v2 are retired; use unicon/exec@v3."
+        "unicon/compile and unicon/exec@v1, unicon/exec@v2 and unicon/exec@v3 are retired; "
+        "use unicon/exec@v4."
     )
-    for use in ("unicon/compile@v3", "unicon/exec@v1"):
-        retired = WORKFLOW.replace(b"use: unicon/exec@v3", f"use: {use}".encode(), 1)
+    for use in ("unicon/compile@v3", "unicon/exec@v1", "unicon/exec@v3"):
+        retired = WORKFLOW.replace(b"use: unicon/exec@v4", f"use: {use}".encode(), 1)
         assert await workflows.check(setup, bob, retired.decode()) == (
             {"path": "steps[0].use", "message": RETIRED},
         )
@@ -666,7 +667,7 @@ async def test_a_built_in_run_workflow_versions_with_its_own_files(
 async def test_a_manifest_over_the_largest_size_is_refused_unread(setup: Setup, acme: Acme) -> None:
     bob = await _own(setup, acme)
     repo = acme.fake.state.repos[("bob", "tuned.workflow")]
-    held = _held(sibling("deploy", RUN_WORKFLOWS["unicon/classic@v5"]))
+    held = _held(sibling("deploy", RUN_WORKFLOWS["unicon/classic@v6"]))
     held["diff/program.yaml"] = b"#" * (MAX_MANIFEST + 1)
     acme.fake.state.commit(repo, held, "copy", 8)
 
@@ -683,7 +684,7 @@ async def test_a_run_workflows_path_its_commit_lacks_is_refused_by_a_version_alo
     setup: Setup, acme: Acme
 ) -> None:
     bob = await _own(setup, acme)
-    text = (sibling("deploy", RUN_WORKFLOWS["unicon/classic@v5"]) / "workflow.yaml").read_bytes()
+    text = (sibling("deploy", RUN_WORKFLOWS["unicon/classic@v6"]) / "workflow.yaml").read_bytes()
     repo = acme.fake.state.repos[("bob", "tuned.workflow")]
     acme.fake.state.commit(
         repo, {"workflow.yaml": text, "diff/diff.py": None, "diff/program.yaml": None}, "copy", 8
@@ -708,7 +709,7 @@ async def test_a_manifest_listed_but_not_read_as_a_file_is_refused_at_its_port(
     """As a symbolic link the host listed anyway would be."""
     bob = await _own(setup, acme)
     repo = acme.fake.state.repos[("bob", "tuned.workflow")]
-    held = _held(sibling("deploy", RUN_WORKFLOWS["unicon/classic@v5"]))
+    held = _held(sibling("deploy", RUN_WORKFLOWS["unicon/classic@v6"]))
     acme.fake.state.commit(repo, held, "copy", 8)
 
     async def unreadable(*_: object) -> None:

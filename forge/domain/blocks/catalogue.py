@@ -72,6 +72,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from forge.domain.environment.tools import LANGUAGES as TOOLCHAINS
+
 
 class Kind(StrEnum):
     """What an input of a block takes, or what a form gives: a number;
@@ -220,9 +222,9 @@ most (SIMPLER-CORE.md 14.2)."""
 EXEC = "exec"
 """The block a program of the task works out from a group's runs, one in a
 value at most (SIMPLER-CORE.md 14)."""
-LANGUAGES = ("c", "cpp", "java", "python", "ipynb")
+LANGUAGES = (*TOOLCHAINS, "ipynb")
 """The languages an `exec` block's program may be written in: those
-`unicon/exec@v3` takes."""
+`unicon/exec@v4` takes."""
 EXEC_TIME_LIMIT = 2
 """The seconds of CPU an `exec` block's program may use when it gives none,
 `unicon/exec`'s own."""

@@ -179,7 +179,18 @@ async def start(
             current.result = json.loads(json.dumps(asdict(result), default=str))
         except _Replaced:
             return
+        except asyncio.CancelledError:
+            # Nothing else records a preparation cut short, and its row is
+            # left for the readers to call interrupted.
+            log.warning("preparations.cancelled", task=task, preparation=identity)
+            raise
         except (PortError, TooLarge, TimeoutError) as error:
+            log.info(
+                "preparations.refused",
+                task=task,
+                preparation=identity,
+                error=type(error).__name__,
+            )
             await later.db.rollback()
             current = await _current(later, identity)
             if current is not None:

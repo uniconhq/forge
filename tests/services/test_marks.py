@@ -124,7 +124,7 @@ async def _save(
     return await prepared(setup, acme.ada, task, result)
 
 
-async def _passed_after_close(setup: Setup, acme: Acme, task: TaskId) -> Published:
+async def _passed_after_deadline(setup: Setup, acme: Acme, task: TaskId) -> Published:
     """sum with a value `passed` it shows once it closes."""
     current = (
         (await _task_yaml(acme, task))
@@ -175,7 +175,7 @@ async def ranked(setup: Setup, acme: Acme, entered: Entered, clock: FakeClock) -
     at 12:00, fails its run; the second, at 12:01, passes it.
     """
     await write_contest(acme.fake, contest(LEADERBOARDS))
-    await _passed_after_close(setup, acme, entered.task)
+    await _passed_after_deadline(setup, acme, entered.task)
     first = await _submit(setup, acme, entered, "key-0001-aaaa")
     await _graded(setup, first, RESULT)
     clock.advance(timedelta(minutes=1))
