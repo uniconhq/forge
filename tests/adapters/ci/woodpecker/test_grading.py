@@ -556,7 +556,7 @@ async def test_a_pipeline_is_answered_with_its_checkout_and_each_step_a_plugin(
                 "name": "solution",
                 "image": EXEC,
                 "settings": {"data_url": "u2", "data_token": "t2"},
-                "volumes": ["unicon-cache-acme:/cache"],
+                "volumes": ["/var/lib/unicon/cache/acme:/cache"],
                 "depends_on": ["compile"],
             },
             {
@@ -569,6 +569,20 @@ async def test_a_pipeline_is_answered_with_its_checkout_and_each_step_a_plugin(
             },
         ],
     }
+
+
+@pytest.mark.parametrize("org", ["acme", "a.b_c-9"])
+def test_the_cache_is_the_orgs_folder_on_the_machines_cache_disk(org: str) -> None:
+    """Every slot's Docker daemon on a machine mounts the one cache disk, so
+    a step's cache is the org's host folder on it, never a named volume,
+    which would be a cache of one daemon's own."""
+    assert grading.cache_mount(org) == f"/var/lib/unicon/cache/{org}:/cache"
+
+
+@pytest.mark.parametrize("org", ["..", ".", "a/b", "../acme", "", "-acme", "a:b"])
+def test_an_org_that_names_no_cache_folder_is_rejected(org: str) -> None:
+    with pytest.raises(Rejected, match="names no cache folder"):
+        grading.cache_mount(org)
 
 
 async def test_a_save_pipeline_checks_nothing_out(

@@ -44,8 +44,10 @@ and answered with one workflow, `grading`:
   such as a regrade of compares, needs none, so each clones nothing
   (`skip_clone`);
 - under `steps:`, each step with its image by digest and its
-  `settings`, `volumes` with the org's cache, `unicon-cache-<org>:/cache`,
-  for a step that takes it, `backend_options.docker.user` for a step the
+  `settings`, `volumes` with the org's cache, the host folder
+  `/var/lib/unicon/cache/<org>:/cache` on the machine's cache disk, which
+  every slot's Docker daemon on the machine mounts alike, for a step that
+  takes it, `backend_options.docker.user` for a step the
   spec runs as the grading's user, and `depends_on`; the report step's
   `when` lets it run after a step that failed.
 
@@ -115,10 +117,12 @@ COMPUTE_VARIABLE = "UNICON_COMPUTE"
 PIPELINE_VARIABLE = "UNICON_PIPELINE"
 
 WORKFLOW_NAME = "grading"
-VOLUME_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-"""What an org's name may be to name a volume, within Docker's rule for a
-volume name."""
-CACHE_PREFIX = "unicon-cache-"
+FOLDER_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+"""What an org's name may be to name its cache's folder: one path segment,
+never `.` or `..`, and one Docker takes in a mount."""
+CACHE_ROOT = "/var/lib/unicon/cache"
+"""Where a grading machine mounts its cache disk, which holds a folder per
+org."""
 CACHE_PATH = "/cache"
 
 PUBLIC_KEY_PATH = "/api/signature/public-key"
@@ -408,7 +412,7 @@ class WoodpeckerGrading:
                     },
                 }
             ]
-        workflow["steps"] = [_step(step, cache_volume(str(run.org))) for step in spec.steps]
+        workflow["steps"] = [_step(step, cache_mount(str(run.org))) for step in spec.steps]
         return workflow
 
     async def _ci_user(self, username: str) -> int:
@@ -539,14 +543,17 @@ def _labels(compute: str) -> dict[str, str]:
     return {name: value}
 
 
-def cache_volume(org: str) -> str:
+def cache_mount(org: str) -> str:
     """The mount of the machine's cache of task files for the org's tasks,
-    a volume of the org's own. `Rejected` for an org whose name is no
-    volume name, which the org name rule never lets through.
+    a folder of the org's own on the machine's cache disk. It is a host
+    folder rather than a named volume, since a named volume belongs to one
+    Docker daemon and a machine runs one per slot, all of which share the
+    one cache. `Rejected` for an org whose name is no folder name, which
+    the org name rule never lets through.
     """
-    if not VOLUME_PART.fullmatch(org):
-        raise Rejected(f"the org {org!r} names no volume")
-    return f"{CACHE_PREFIX}{org}:{CACHE_PATH}"
+    if not FOLDER_PART.fullmatch(org):
+        raise Rejected(f"the org {org!r} names no cache folder")
+    return f"{CACHE_ROOT}/{org}:{CACHE_PATH}"
 
 
 def _acting_for(as_: AsOrgAccount, org: str) -> AsOrgAccount:
