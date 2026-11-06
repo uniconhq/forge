@@ -427,9 +427,12 @@ async def test_a_staff_cancel_beside_the_retry_by_itself_waits_for_it_and_finds_
     ]
 
 
-async def _asked(setup: Setup, acme: Acme, clock: FakeClock, run: RunId) -> str:
+async def _asked(
+    setup: Setup, acme: Acme, clock: FakeClock, run: RunId, *, restarting: RunId | None = None
+) -> str:
+    """Asked with `run`'s variables, for a restart of `restarting` when given."""
     request = acme.fake.grading.config_request(
-        OrgId("acme"), acme.fake.ci.runs[run].variables, now=clock.now()
+        OrgId("acme"), acme.fake.ci.runs[run].variables, now=clock.now(), run=restarting
     )
     return json.dumps(json.loads((await runs.config(setup, request)).body))
 
@@ -445,7 +448,7 @@ async def test_a_retry_by_itself_restarts_the_failed_run_answered_with_its_own_s
 
     async def asking(*args: Any) -> RunId:
         made = await restart(*args)
-        answered.append(await _asked(setup, acme, clock, made))
+        answered.append(await _asked(setup, acme, clock, made, restarting=args[-1]))
         return made
 
     monkeypatch.setattr(acme.fake.grading, "restart_pipeline", asking)
@@ -527,7 +530,29 @@ async def test_a_restart_is_answered_only_for_the_latest_attempt_that_restarts_a
             )
         if restarts is None:
             with pytest.raises(CiRequestRefused):
-                await _asked(setup, acme, clock, old)
+                await _asked(setup, acme, clock, old, restarting=old)
         else:
-            assert str(new.id) in await _asked(setup, acme, clock, old)
-    assert str(new.id) in await _asked(setup, acme, clock, new_run)
+            assert str(new.id) in await _asked(setup, acme, clock, old, restarting=old)
+    assert str(new.id) in await _asked(setup, acme, clock, new_run, restarting=old)
+
+
+async def test_a_restart_of_another_run_of_the_line_is_not_answered(
+    setup: Setup, acme: Acme, entered: Entered, clock: FakeClock
+) -> None:
+    """So a run restarted by hand while the platform restarts another can't
+    run with the new attempt's steps too."""
+    await _submit(setup, acme, entered)
+    (first,) = await _rows(setup)
+    old = RunId(str(first.run_id))
+    await _fail(setup, acme, first)
+    _, new = await _rows(setup)
+    new_run = RunId(str(new.run_id))
+    async with setup.unit_of_work() as ctx:
+        await ctx.db.execute(
+            update(Grading).where(Grading.id == new.id).values(status=GradingStatus.QUEUED)
+        )
+
+    for restarting in (new_run, None):
+        with pytest.raises(CiRequestRefused):
+            await _asked(setup, acme, clock, new_run, restarting=restarting)
+    assert str(new.id) in await _asked(setup, acme, clock, new_run, restarting=old)

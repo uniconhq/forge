@@ -15,13 +15,15 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 from forge.adapters.ci.woodpecker import WoodpeckerCi
 from forge.domain.errors import Forbidden
 from forge.domain.grading import InboundRequest, PipelineRun, PipelineSpec
-from forge.domain.ids import OrgId
+from forge.domain.ids import OrgId, RunId
 from tests.live.conftest import LIVE, needs_ci
 
 pytestmark = [*LIVE, needs_ci]
 
 
-async def _never_looked_up(grading: str | None, org: OrgId) -> tuple[PipelineRun, PipelineSpec]:
+async def _never_looked_up(
+    grading: str | None, org: OrgId, asked: RunId | None
+) -> tuple[PipelineRun, PipelineSpec]:
     raise AssertionError("a request that does not verify is never looked up")
 
 

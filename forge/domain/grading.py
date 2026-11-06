@@ -78,7 +78,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from forge.domain.errors import InvalidReason
-from forge.domain.ids import AgentId, OrgId, SubmissionId, VersionId
+from forge.domain.ids import AgentId, OrgId, RunId, SubmissionId, VersionId
 
 STEP_INFO = b"unicon-grading-step"
 
@@ -385,10 +385,13 @@ class PipelineSpec:
     clones: bool
 
 
-PipelineLookup = Callable[[str | None, OrgId], Awaitable[tuple[PipelineRun, PipelineSpec]]]
+PipelineLookup = Callable[
+    [str | None, OrgId, RunId | None], Awaitable[tuple[PipelineRun, PipelineSpec]]
+]
 """How an implementation whose CI asks what a pipeline is finds it: by the
-grading id the pipeline names, as it was given, and the org whose dispatch
-repository the CI asks about. It answers only for a grading whose pipeline
+grading id the pipeline names, as it was given, the org whose dispatch
+repository the CI asks about, and the run the CI names, if any: on a
+restart, the run restarted. It answers only for a grading whose pipeline
 is being started, and refuses anything else, so what runs comes from the
 platform's records and never from the request."""
 

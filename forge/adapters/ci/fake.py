@@ -121,6 +121,7 @@ class _Ask:
     grading: str | None
     variables: Mapping[str, str]
     clone_url: str
+    run: RunId | None
 
 
 def pipeline_variables(run: PipelineRun) -> dict[str, str]:
@@ -296,7 +297,7 @@ class FakeGrading:
         if not self.asks:
             raise NotFound("this CI is handed every run whole and never asks")
         ask = self._ask(request, now)
-        pipeline, steps = await lookup(ask.grading, ask.org)
+        pipeline, steps = await lookup(ask.grading, ask.org, ask.run)
         if dict(ask.variables) != pipeline_variables(pipeline):
             raise VariablesDiffer(
                 "the pipeline was not started with the variables its grading starts it with"
@@ -319,11 +320,13 @@ class FakeGrading:
         if not isinstance(document, dict) or not isinstance(document.get("org"), str):
             raise Rejected("the CI's request names no repository")
         variables = document.get("variables") or {}
+        run = document.get("run")
         return _Ask(
             org=OrgId(document["org"]),
             grading=variables.get(GRADING_VARIABLE),
             variables=variables,
             clone_url=document["clone_url"],
+            run=RunId(run) if isinstance(run, str) else None,
         )
 
     def config_request(
@@ -332,18 +335,20 @@ class FakeGrading:
         variables: Mapping[str, str],
         *,
         now: datetime,
+        run: RunId | None = None,
         body: bytes | None = None,
         key: bytes | None = None,
     ) -> InboundRequest:
         """The question the fake CI asks the platform about a pipeline on
         the org's dispatch repository started with `variables`, signed at
         `now`, as the platform's extension receives it; the CI asks it while
-        the start is under way. `body` replaces what is sent after it is
+        the start is under way. `run` is the run a restart restarts, as the
+        CI names the old one. `body` replaces what is sent after it is
         signed, and `key` signs with another key, for a test of a request
         the CI did not make.
         """
         sent = json.dumps(
-            {"org": str(org), "variables": dict(variables), "clone_url": CLONE_URL}
+            {"org": str(org), "variables": dict(variables), "clone_url": CLONE_URL, "run": run}
         ).encode()
         created = str(int(now.timestamp()))
         return InboundRequest(

@@ -161,8 +161,8 @@ def asked(
     start = acme.fake.grading.start_pipeline
     restart = acme.fake.grading.restart_pipeline
 
-    async def ask(org: OrgId, variables: Mapping[str, str]) -> None:
-        request = acme.fake.grading.config_request(org, variables, now=clock.now())
+    async def ask(org: OrgId, variables: Mapping[str, str], old: RunId | None = None) -> None:
+        request = acme.fake.grading.config_request(org, variables, now=clock.now(), run=old)
         answers.append(json.loads((await runs.config(setup, request)).body))
 
     async def asking(as_: AsOrgAccount, run: PipelineRun) -> RunId:
@@ -172,7 +172,7 @@ def asked(
 
     async def asking_again(as_: AsOrgAccount, org: OrgId, run: RunId) -> RunId:
         made = await restart(as_, org, run)
-        await ask(org, acme.fake.ci.runs[made].variables)
+        await ask(org, acme.fake.ci.runs[made].variables, run)
         return made
 
     monkeypatch.setattr(acme.fake.grading, "start_pipeline", asking)

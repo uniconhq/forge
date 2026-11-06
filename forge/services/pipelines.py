@@ -77,7 +77,7 @@ from forge.domain.grading import (
     PipelineSpec,
     PipelineStepSpec,
 )
-from forge.domain.ids import OrgId, PublicationId, SubmissionId, TaskId, VersionId
+from forge.domain.ids import OrgId, PublicationId, RunId, SubmissionId, TaskId, VersionId
 from forge.domain.publication_record import Check, FailedCheck, Publication, failed_checks
 from forge.domain.regrades import RegradeCause
 from forge.domain.run_plan import BOXED, PipelineKind, RunPlan, slot_of
@@ -145,7 +145,9 @@ async def prepare(ctx: Context, row: Grading) -> PipelineRun | None:
     return await _run(ctx, row)
 
 
-async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[PipelineRun, PipelineSpec]:
+async def lookup(
+    ctx: Context, grading: str | None, org: OrgId, asked: RunId | None
+) -> tuple[PipelineRun, PipelineSpec]:
     """The platform's half of what decides a pipeline: the pipeline and its
     steps, for a row of `org` whose pipeline is being started.
     `CiRequestRefused` for any other, and `Unavailable` when the forge does
@@ -153,7 +155,8 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
 
     A restart keeps the old run's variables, so `grading` may name an
     earlier attempt: the latest attempt on its line is answered then, only
-    when it restarts a run (#631).
+    when it restarts a run and `asked`, the run the CI names, is that run
+    (#631).
     """
     named = await _named(ctx, grading)
     row = await gradings.newest_on_line(ctx, named) if named is not None else None
@@ -163,7 +166,7 @@ async def lookup(ctx: Context, grading: str | None, org: OrgId) -> tuple[Pipelin
         or gradings.org_of(row) != org
         or row.status != GradingStatus.QUEUED
         or row.run_user is None
-        or (row.id != named.id and row.restarts is None)
+        or (row.id != named.id and (row.restarts is None or asked != row.restarts))
     ):
         log.warning("pipelines.config_refused", reason="not_starting", grading=grading)
         raise CiRequestRefused(REFUSED)

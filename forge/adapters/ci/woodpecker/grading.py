@@ -146,14 +146,15 @@ PASSWORD_BYTES = 24
 class _Ask:
     """The extension's question once its signature is checked: the org
     whose dispatch repository it is, the grading id the pipeline was started
-    with as it was given, every variable it was started with, and where the
-    CI clones the repository from.
+    with as it was given, every variable it was started with, where the
+    CI clones the repository from, and the run it names, if any.
     """
 
     org: OrgId
     grading: str | None
     variables: Mapping[str, str]
     clone_url: str
+    run: RunId | None
 
 
 def pipeline_variables(run: PipelineRun) -> dict[str, str]:
@@ -359,7 +360,7 @@ class WoodpeckerGrading:
         `pipeline_variables` gives is answered with nothing.
         """
         ask = await self._ask(request, now)
-        pipeline, steps = await lookup(ask.grading, ask.org)
+        pipeline, steps = await lookup(ask.grading, ask.org, ask.run)
         if dict(ask.variables) != pipeline_variables(pipeline):
             raise VariablesDiffer(
                 "the pipeline was not started with the variables its grading starts it with"
@@ -389,11 +390,19 @@ class WoodpeckerGrading:
         clone_url = repo.get("clone_url")
         if not isinstance(clone_url, str) or not clone_url:
             raise Rejected("the CI's request names no clone URL")
+        # Woodpecker asks about a restart with the old pipeline, its number included.
+        repo_id, number = repo.get("id"), pipeline.get("number")
+        run = (
+            RunId(f"{repo_id}/{number}")
+            if isinstance(repo_id, int) and isinstance(number, int) and number > 0
+            else None
+        )
         return _Ask(
             org=OrgId(owner),
             grading=variables.get(GRADING_VARIABLE),
             variables=dict(variables),
             clone_url=clone_url,
+            run=run,
         )
 
     def _pipeline(self, run: PipelineRun, ask: _Ask, spec: PipelineSpec) -> dict[str, Any]:
