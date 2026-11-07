@@ -78,8 +78,8 @@ PRIMITIVE_ROOM_MB = 112
 """What a boxed primitive's container keeps for the step wrapper, the
 primitive itself and isolate beside its boxes' memory limits and the files
 it copies into them: an item needing more of the container than its
-memory, less this, is refused before any program runs (`STEP_MEMORY_KB` in
-`exec`, and its README). The planner gives each
+memory, less this, is refused before any program runs (matches
+`STEP_MEMORY_KB` in exec's `box.py`). The planner gives each
 container at least the three together."""
 BOX_MEMORY = "memory_limit"
 """The input, of a boxed primitive or of each of its programs, that gives a
