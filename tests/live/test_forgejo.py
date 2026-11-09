@@ -29,7 +29,7 @@ from forge.domain.ids import OrgId, ThreadId
 from forge.domain.names import EntrantOwner
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
-from forge.domain.uploads import POINTER_MAX, pointer_text
+from forge.domain.uploads import ATTRIBUTES_FILE, POINTER_MAX, attributes_text, pointer_text
 from forge.domain.workflows import Visibility
 from tests.live.conftest import (
     CI_ADMIN_TOKEN,
@@ -271,6 +271,21 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
             )
             == pointer
         )
+        # The same path again, while the list names it: dropped before the
+        # files are written, the new pointer is kept as itself.
+        again = pointer_text("b" * 64, 8)
+        fourth = await forge.workspaces.record_submission(
+            person, workspace, task, {"files/submission/big.bin": again}, key="live-key-four"
+        )
+        assert (
+            await forge.workspaces.read_submission_blob(
+                person, fourth.id, "files/submission/big.bin", max_size=POINTER_MAX
+            )
+            == again
+        )
+        assert await forge.workspaces.read_submission_file(
+            person, fourth.id, ATTRIBUTES_FILE, max_size=POINTER_MAX
+        ) == attributes_text(["files/submission/big.bin"])
 
         owner = EntrantOwner(uuid.UUID(int=int(contestant["id"]))).segment
         repo = f"/api/v1/repos/{org}/autumn.sum.{owner}.sub"
@@ -280,6 +295,11 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
         assert by_sha[tags["submission/1"]]["commit"]["message"].startswith("Submit")
         assert by_sha[tags["submission/1"]]["author"]["login"] == contestant["login"]
         assert tags["submission/1"] != tags["submission/2"]
+        assert by_sha[tags["submission/4"]]["commit"]["message"].startswith("List the large files")
+        with pytest.raises(NotFound):
+            await forge.workspaces.read_submission_file(
+                person, second.id, ATTRIBUTES_FILE, max_size=POINTER_MAX
+            )
 
         await forge.workspaces.close_workspace(workspace, member)
         assert await forge.workspaces.list_publications(task) == ()
@@ -287,7 +307,12 @@ async def test_a_workspace_takes_submissions_as_the_contestant_at_their_own_comm
             await forge.workspaces.record_submission(
                 person, workspace, task, {"main.py": b"late"}, key="live-key-late"
             )
-        assert await forge.workspaces.list_submissions(workspace, task) == (first, second, third)
+        assert await forge.workspaces.list_submissions(workspace, task) == (
+            first,
+            second,
+            third,
+            fourth,
+        )
     finally:
         delete_user(admin, contestant["login"])
 

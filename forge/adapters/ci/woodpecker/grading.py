@@ -36,10 +36,11 @@ and answered with one workflow, `grading`:
   since a label picks a machine for the whole pipeline, and the size of
   the slot it runs in;
 - under `clone:`, one step, `clone`, the clone image by digest with
-  `remote`, `sha` and `ref` set, `lfs` off, since each upload reaches its
-  step by a link of its own, and no `environment`, so it stays a plugin
-  and is lent the credential when the image is on the CI's trusted-clone
-  list, checking the submission out into `submission/` in the workspace,
+  `remote`, `sha` and `ref` set, `lfs` on, so each upload the submission
+  lists as a large file is checked out whole, and no `environment`, so it
+  stays a plugin and is lent the credential when the image is on the CI's
+  trusted-clone list, checking the submission out into `submission/` in the
+  workspace,
   beside the steps' folders (#646); a save has no
   submission, and a pipeline none of whose steps reads an entrant input,
   such as a regrade of compares, needs none, so each clones nothing
@@ -424,7 +425,7 @@ class WoodpeckerGrading:
                         ),
                         "sha": str(run.submission_version),
                         "ref": f"refs/tags/{SUBMISSION_PREFIX}{number}",
-                        "lfs": False,
+                        "lfs": True,
                         "path": CHECKOUT,
                     },
                 }

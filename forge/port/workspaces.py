@@ -100,7 +100,10 @@ class WorkspacePort(Protocol):
     ) -> Submitted:
         """Write the files as `as_`, the contestant submitting, as one change
         that leaves exactly these files in the place to submit, so the change
-        is theirs, and name that exact change as the next protected version,
+        is theirs, then, when any is a pointer, a `.gitattributes` listing the
+        pointers as a second change, so a checkout gets the real files
+        (`forge.domain.uploads.ATTRIBUTES_FILE`), and name the last change as
+        the next protected version,
         as the platform, with a note carrying `key`. Two submissions at once
         each get their own number over their own files: a number another took
         first is refused by the host, and the next is tried.

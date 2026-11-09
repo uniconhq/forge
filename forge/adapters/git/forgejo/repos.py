@@ -243,8 +243,9 @@ class Repos:
         self, as_: Identity, owner: str, name: str, files: Files, *, message: str
     ) -> VersionId:
         """Write the files in one commit as `as_` and remove every other file
-        on the default branch in the same commit, so the commit holds exactly
-        these files; repeated like `write_files` when the tree moves under it.
+        on the default branch in the same commit, removals first, so the
+        commit holds exactly these files; repeated like `write_files` when the
+        tree moves under it.
         """
         return await self._write_repeatedly(as_, owner, name, files, message, replace=True)
 
@@ -265,7 +266,18 @@ class Repos:
         existing = await self._existing(as_, owner, name)
         first = {"new_branch": DEFAULT_BRANCH} if existing is None else {}
         present = existing or {}
-        operations: list[dict[str, str]] = [
+        # Removals go first: the host applies a `.gitattributes` as it stands
+        # at each file it writes, so a removed one must not reach the rest.
+        operations: list[dict[str, str]] = (
+            [
+                {"operation": "delete", "path": path, "sha": blob}
+                for path, blob in sorted(present.items())
+                if path not in files
+            ]
+            if replace
+            else []
+        )
+        operations.extend(
             {
                 "operation": "update" if path in present else "create",
                 "path": path,
@@ -273,13 +285,7 @@ class Repos:
                 **({"sha": present[path]} if path in present else {}),
             }
             for path, content in sorted(files.items())
-        ]
-        if replace:
-            operations.extend(
-                {"operation": "delete", "path": path, "sha": blob}
-                for path, blob in sorted(present.items())
-                if path not in files
-            )
+        )
         written = await self._http.call(
             as_,
             "POST",
