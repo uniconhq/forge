@@ -26,6 +26,7 @@ from forge.domain.ids import ContestId, OrgId, TaskId, VersionId, WorkflowId, Wo
 from forge.domain.names import EntrantOwner, OrgProfile
 from forge.domain.roles import Role, RoleGrant, Scope
 from forge.domain.threads import ThreadKind
+from forge.domain.uploads import pointer_text
 from forge.domain.workflows import Visibility
 from tests.adapters.conftest import CONFIG, Recorder, ok
 
@@ -914,8 +915,8 @@ async def test_a_submission_is_written_as_the_contestant_and_named_at_that_commi
     assert recorder.headers("POST", f"{repo}/contents") == ["Bearer access"]
     [written] = recorder.sent("POST", f"{repo}/contents")
     assert [(entry["operation"], entry["path"]) for entry in written["files"]] == [
-        ("update", "main.py"),
         ("delete", "files/submission/old.py"),
+        ("update", "main.py"),
     ]
     assert recorder.sent("POST", f"{repo}/tags") == [
         {
@@ -925,6 +926,56 @@ async def test_a_submission_is_written_as_the_contestant_and_named_at_that_commi
         }
     ]
     assert recorder.headers("POST", f"{repo}/tags") == ["token admin"]
+
+
+async def test_a_submissions_uploads_are_listed_in_a_commit_after_its_files(
+    forgejo: ForgejoForge, recorder: Recorder
+) -> None:
+    repo = f"/api/v1/repos/acme/spring.sum.{U8}.sub"
+    listed = {
+        "name": "submission/2",
+        "message": "idempotency_key: key-12345678\n",
+        "commit": {"sha": "c-listed", "created": "2026-09-30T10:00:00Z"},
+    }
+    recorder.on("GET", f"{repo}/branches/main", ok({"commit": {"id": "head-0"}}))
+    before = [
+        {"path": ".gitattributes", "sha": "b-attributes", "type": "blob"},
+        {"path": "files/data/old.bin", "sha": "b-old", "type": "blob"},
+    ]
+    after = [{"path": "files/data/big file.bin", "sha": "b-pointer", "type": "blob"}]
+    recorder.on("GET", f"{repo}/git/trees/main", ok({"tree": before}), ok({"tree": after}))
+    first = {"name": "submission/1", "commit": {"sha": "c-1", "created": "2026-09-29T10:00:00Z"}}
+    recorder.on("GET", f"{repo}/tags", ok([first]), ok([first, listed]))
+    recorder.on(
+        "POST",
+        f"{repo}/contents",
+        ok({"commit": {"sha": "c-files"}}),
+        ok({"commit": {"sha": "c-listed"}}),
+    )
+    pointer = pointer_text("a" * 64, 9)
+
+    submission = await forgejo.workspaces.record_submission(
+        AsUser(8, _credential()),
+        WorkspaceId(f"acme/spring/@{U8}"),
+        TaskId("acme/spring/sum"),
+        {"files/data/big file.bin": pointer, "submission.json": b"{}"},
+        key="key-12345678",
+    )
+
+    assert submission.version == "c-listed"
+    files, listing = recorder.sent("POST", f"{repo}/contents")
+    assert [(entry["operation"], entry["path"]) for entry in files["files"]] == [
+        ("delete", ".gitattributes"),
+        ("delete", "files/data/old.bin"),
+        ("create", "files/data/big file.bin"),
+        ("create", "submission.json"),
+    ]
+    [entry] = listing["files"]
+    assert (entry["operation"], entry["path"]) == ("create", ".gitattributes")
+    assert base64.b64decode(entry["content"]) == (
+        b'"files/data/big file.bin" filter=lfs diff=lfs merge=lfs -text\n'
+    )
+    assert [body["target"] for body in recorder.sent("POST", f"{repo}/tags")] == ["c-listed"]
 
 
 async def test_a_submission_number_another_took_first_is_taken_by_the_next(

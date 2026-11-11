@@ -22,7 +22,9 @@ Then, while the entrant has no submission of the task, its place to
 submit it is made, as the platform, or finished when a try stopped halfway;
 every part of making it is safe to run again. The files go into it as one
 commit, as the contestant, under `files/<input>/<name>` beside
-`submission.json`; the commit is named `submission/<n>` as the platform,
+`submission.json`, then a `.gitattributes` listing the uploads as large
+files, so a checkout gets them whole; the last commit is named
+`submission/<n>` as the platform,
 with the next number on a collision; one `queued` grading row is inserted,
 against the task's current publication, attempt 1, with the member who
 submitted, whose run starts once the submit commits; and the uploads are

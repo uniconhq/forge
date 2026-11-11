@@ -159,8 +159,15 @@ async def test_a_submit_commits_as_the_contestant_names_it_and_queues_one_gradin
     head = repo.history[-1]
     assert head.author_id == 8
     assert repo.versions == {"submission/1": head.version}
-    assert sorted(repo.snapshots[head.version]) == ["files/code/main.py", "submission.json"]
+    assert sorted(repo.snapshots[head.version]) == [
+        ".gitattributes",
+        "files/code/main.py",
+        "submission.json",
+    ]
     assert repo.snapshots[head.version]["files/code/main.py"] == _pointer(SOURCE)
+    assert repo.snapshots[head.version][".gitattributes"] == (
+        b'"files/code/main.py" filter=lfs diff=lfs merge=lfs -text\n'
+    )
     assert json.loads(repo.snapshots[head.version]["submission.json"]) == {
         "schema_version": 6,
         "inputs": {
@@ -231,7 +238,9 @@ async def test_a_second_submission_holds_only_its_own_files(
     )
 
     assert second.number == 2
-    assert sorted(await _snapshot(acme, entered, 2)) == ["files/code/b.py", "submission.json"]
+    snapshot = await _snapshot(acme, entered, 2)
+    assert sorted(snapshot) == [".gitattributes", "files/code/b.py", "submission.json"]
+    assert snapshot[".gitattributes"] == b'"files/code/b.py" filter=lfs diff=lfs merge=lfs -text\n'
     assert [row.submission_number for row in await _gradings(setup)] == [1, 2]
 
 
@@ -733,11 +742,16 @@ async def test_a_folder_input_takes_a_tree_of_files_within_its_size_together(
 
     snapshot = await _snapshot(acme, entered, made.number)
     assert sorted(snapshot) == [
+        ".gitattributes",
         "files/code/lib/add.py",
         "files/code/main.py",
         "submission.json",
     ]
     assert snapshot["files/code/lib/add.py"] == _pointer(b"def add(a, b): ...\n")
+    assert snapshot[".gitattributes"] == (
+        b'"files/code/lib/add.py" filter=lfs diff=lfs merge=lfs -text\n'
+        b'"files/code/main.py" filter=lfs diff=lfs merge=lfs -text\n'
+    )
     assert json.loads(snapshot["submission.json"]) == {
         "schema_version": 6,
         "inputs": {

@@ -28,10 +28,11 @@ save: the runs of the step still to do, each with its inputs placed, every
 file a download by a presigned link that lives `LINK_LIFE` and reads one
 object, or a copy from the submission the clone step checked out under
 `submission/`, and a
-folder with nothing in it made empty. An entrant's upload is a pointer in
-the checkout, since the clone step fetches no large file (`lfs: false`), so
-it is placed by a link into the forge's large-file store instead, and only
-for an upload the submission took (`uploads`). A run is left out when its
+folder with nothing in it made empty. An entrant's upload is in the
+checkout whole, since the submission lists it as a large file and the clone
+step fetches large files (`lfs: true`), and is copied from there checked by
+the SHA-256 and size its pointer names, only for an upload the submission
+took (`uploads`). A run is left out when its
 part was not given, and when an earlier step it reads stopped it, with an
 outcome not accepted or no such output. An earlier step that has given
 nothing at all is a fault of the grading, `Misconfigured`, never nothing to
@@ -972,8 +973,8 @@ class _Reader:
 
     async def _hash(self, path: str, max_size: int | None) -> str:
         """An entrant file's SHA-256: an upload's own, from its pointer,
-        which must be one of the uploads the submission took, so the forge
-        signs a link into its large-file store for nothing else."""
+        which must be one of the uploads the submission took, so a job names
+        no other large file."""
         if path not in self._hashes:
             content = await self.ctx.forge.workspaces.read_submission_blob(
                 PLATFORM,
@@ -1406,28 +1407,18 @@ class _Job:
             path = self._folder()
             upload = self.reader.uploads.get(workspace)
             if upload is not None:
-                self.files.append(self._upload(path, upload))
+                self.files.append(_upload(path, workspace, upload))
             elif files:
                 self.files.append({"path": path, "workspace": f"{CHECKOUT}/{workspace}"})
                 root = self.reader.entrant_root(value)
                 for each in files:
                     if (found := self.reader.uploads.get(each)) is not None:
                         placed = _under(path, each.removeprefix(root))
-                        self.files.append(self._upload(placed, found))
+                        self.files.append(_upload(placed, each, found))
             else:
                 self.files.append({"path": path, "folder": True})
             self.placed[source] = path
         return {kind: self.placed[source]}
-
-    def _upload(self, path: str, upload: UploadInfo) -> dict[str, Any]:
-        """An entrant's upload placed at `path` from the forge's large-file
-        store, over the pointer a folder's copy put there."""
-        return {
-            "path": path,
-            "url": self.ctx.forge.objects.lfs_get_url(upload.digest, expires_in=LINK_LIFE),
-            "sha256": upload.digest,
-            "size": upload.size,
-        }
 
     async def _output(self, value: Mapping[str, Any], run: str | None) -> Any:
         found = await self.reader.output_of(value["step"], run)
@@ -1489,6 +1480,18 @@ class _Job:
         if not any(entry["path"].startswith(f"{folder}/") for entry in self.files):
             self.files.append({"path": folder, "folder": True})
         return {"folder": folder}
+
+
+def _upload(path: str, workspace: str, upload: UploadInfo) -> dict[str, Any]:
+    """An entrant's upload placed at `path` from the checkout, which fetched
+    it whole since the submission lists it as a large file, checked by its
+    SHA-256 and size; for a file of a folder, again over the folder's copy."""
+    return {
+        "path": path,
+        "workspace": f"{CHECKOUT}/{workspace}",
+        "sha256": upload.digest,
+        "size": upload.size,
+    }
 
 
 def _under(folder: str, relative: str) -> str:

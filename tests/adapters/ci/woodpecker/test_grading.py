@@ -545,7 +545,7 @@ async def test_a_pipeline_is_answered_with_its_checkout_and_each_step_a_plugin(
                     "remote": f"http://forgejo:3000/acme/spring.sum.{U8}.sub.git",
                     "sha": SUBMISSION_COMMIT,
                     "ref": "refs/tags/submission/2",
-                    "lfs": False,
+                    "lfs": True,
                     "path": "submission",
                 },
             }

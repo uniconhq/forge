@@ -12,7 +12,8 @@ Making a desk again costs two calls, the repository and who is on it, and
 two a member: their name, and what they may do there. A submission
 repository also gets its task's teams attached. A submission and a
 publication are tags under a reserved prefix that only the platform account
-may create, each pointing at the exact commit the files went in with. A
+may create, each pointing at the exact commit the files went in with, or
+for a submission holding pointers, the commit listing them just after. A
 publication is an annotated tag whose message is its note.
 """
 
@@ -50,11 +51,12 @@ from forge.domain.publication_record import Publication, read_note
 from forge.domain.roles import Scope
 from forge.domain.submissions import Submitted, write_note
 from forge.domain.submissions import read_note as read_submission_note
-from forge.domain.uploads import Door
+from forge.domain.uploads import ATTRIBUTES_FILE, Door, attributes_text, upload_info
 
 WRITE = "write"
 READ = "read"
 SUBMIT_MESSAGE = "Submit"
+ATTRIBUTES_MESSAGE = "List the large files"
 NUMBERING_ATTEMPTS = 3
 
 
@@ -219,7 +221,20 @@ class ForgejoWorkspaces:
         ref = parse_workspace(workspace)
         task_name = parse_task(task).task
         repo = ref.submission_repo(task_name)
-        written = await self._repos.replace_files(as_, ref.org, repo, files, message=SUBMIT_MESSAGE)
+        written: VersionId | None = await self._repos.replace_files(
+            as_, ref.org, repo, files, message=SUBMIT_MESSAGE
+        )
+        pointers = [path for path, content in files.items() if upload_info(content) is not None]
+        if pointers:
+            # A second commit: the host would store a pointer written under
+            # the list as a pointer to it (`ATTRIBUTES_FILE`).
+            written = await self._repos.write_files(
+                as_,
+                ref.org,
+                repo,
+                {ATTRIBUTES_FILE: attributes_text(pointers)},
+                message=ATTRIBUTES_MESSAGE,
+            )
         number = await self._next_version(
             ref.org, repo, SUBMISSION_PREFIX, written, note=write_note(key)
         )

@@ -32,6 +32,7 @@ regrade is summed up by each value and verdict it changed, for a manager
 of the task, a save moving the pin asking first.
 """
 
+import hashlib
 import json
 import uuid
 from collections.abc import Callable, Mapping
@@ -878,7 +879,37 @@ async def test_a_retry_of_a_row_that_ended_done_runs_every_step_again(
     assert await _to_run(setup, retried.id, "grading") == ["solution", "compare"]
 
 
-async def test_a_pointer_to_an_upload_the_submission_did_not_take_is_given_no_link(
+async def test_an_upload_is_copied_from_the_checkout_checked_by_its_sha256_and_size(
+    setup: Setup, acme: Acme, spring: str
+) -> None:
+    islands = await _checked(setup, acme)
+    await _submit(setup, acme, islands)
+    [graded] = await _rows(setup, "grading")
+    access = await _mint(setup, graded.id, "grading", "solution")
+
+    built = await steps.step_job(
+        setup, graded.id, _named(access), _bearer(access), platform="linux-64"
+    )
+
+    assert built is not None
+    copied = [
+        entry
+        for entry in json.loads(built)["files"]
+        if entry.get("workspace", "").startswith("submission/")
+    ]
+    folder = copied[0]["path"]
+    assert copied == [
+        {"path": folder, "workspace": "submission/files/code"},
+        {
+            "path": f"{folder}/main.py",
+            "workspace": "submission/files/code/main.py",
+            "sha256": hashlib.sha256(CODE).hexdigest(),
+            "size": len(CODE),
+        },
+    ]
+
+
+async def test_a_pointer_to_an_upload_the_submission_did_not_take_is_refused(
     setup: Setup, acme: Acme, spring: str
 ) -> None:
     islands = await _checked(setup, acme)

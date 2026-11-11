@@ -24,8 +24,9 @@ A file name is one plain path segment; where a file goes under its input,
 names for a folder input (`forge.domain.submissions.path_problem`).
 
 Content the platform writes from someone's typed text is never a pointer,
-and no place it writes carries its own rules about which of its files are
-large ones (`refuse_pointer`). A pointer names bytes by their hash alone,
+and nobody may write a place's own rules about which of its files are large
+ones (`refuse_pointer`); only the platform lists a submission's pointers
+(`attributes_text`). A pointer names bytes by their hash alone,
 and a grading machine's checkout serves one from the org's shared store
 without asking the forge, so text that happens to parse as a pointer would
 read another run's file. Every pointer in every place is one the platform
@@ -33,6 +34,7 @@ wrote itself, for an object the forge confirmed that place holds.
 """
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
@@ -168,13 +170,31 @@ def upload_info(content: bytes) -> UploadInfo | None:
 
 
 ATTRIBUTES_FILE = ".gitattributes"
-"""The file git reads a place's own rules about its files from. Nothing the
-platform writes may carry one: the forge's file API applies a place's
-attributes to everything written through it, so a pointer committed under an
-`lfs` rule is stored as a second object and the commit points at the pointer,
-which reads back as 130 bytes of text instead of the file. What tells a
-checkout that a pointer is one lives in the image that does the checking out
-(`findings/upload-door-test.md` section 7)."""
+"""The file git reads a place's own rules about its files from. A
+submission's lists its pointers, so its checkout gets the real files. The
+forge's file API applies the rules as they stand at each file it writes, so
+a pointer written under an `lfs` rule is stored as a second object: the list
+is removed before a submission's files are written and written after them."""
+
+
+QUOTED = {
+    **{character: f"\\\\{character}" for character in "*?[]"},
+    "\\": "\\\\\\\\",
+    '"': '\\"',
+}
+"""Each character `attributes_text` writes otherwise: glob characters escaped
+for the pattern, then that and a quote escaped again for git's C quoting."""
+
+
+def attributes_text(paths: Iterable[str]) -> bytes:
+    """The `.gitattributes` naming each path as a large file. Each path is
+    quoted, so a space stays in it, with git's glob characters escaped, so
+    it names that one file."""
+    lines = []
+    for path in sorted(paths):
+        escaped = "".join(QUOTED.get(character, character) for character in path)
+        lines.append(f'"{escaped}" filter=lfs diff=lfs merge=lfs -text\n')
+    return "".join(lines).encode()
 
 
 def refuse_pointer(path: str, content: bytes) -> None:

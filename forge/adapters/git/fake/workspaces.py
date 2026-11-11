@@ -36,10 +36,11 @@ from forge.domain.publication_record import Publication, read_note
 from forge.domain.roles import Scope
 from forge.domain.submissions import Submitted, write_note
 from forge.domain.submissions import read_note as read_submission_note
-from forge.domain.uploads import Door
+from forge.domain.uploads import ATTRIBUTES_FILE, Door, attributes_text, upload_info
 from forge.port.uploads import SubmissionPlace
 
 SUBMIT_MESSAGE = "Submit"
+ATTRIBUTES_MESSAGE = "List the large files"
 NUMBERING_ATTEMPTS = 3
 
 
@@ -179,8 +180,9 @@ class FakeWorkspaces:
     async def record_submission(
         self, as_: Identity, workspace: WorkspaceId, task: TaskId, files: Files, *, key: str
     ) -> Submitted:
-        """Commit the files as `as_` over whatever the place held, then name
-        the change as the next submission as the platform, the way the Forgejo
+        """Commit the files as `as_` over whatever the place held, then a
+        `.gitattributes` listing its pointers when it holds any, and name that
+        change as the next submission as the platform, the way the Forgejo
         implementation does. `racing_submissions` makes that many other
         submissions take the number first, and `lose_submission_answer`
         names the submission and then fails as if the answer were lost.
@@ -194,6 +196,10 @@ class FakeWorkspaces:
         written: dict[str, bytes | None] = {path: None for path in repo.files if path not in files}
         written.update(files)
         version = self._state.commit(repo, written, SUBMIT_MESSAGE, self._state.author(as_))
+        pointers = [path for path, content in files.items() if upload_info(content) is not None]
+        if pointers:
+            listing = {ATTRIBUTES_FILE: attributes_text(pointers)}
+            version = self._state.commit(repo, listing, ATTRIBUTES_MESSAGE, self._state.author(as_))
         for _ in range(NUMBERING_ATTEMPTS):
             numbers = _numbers(repo, SUBMISSION_PREFIX)
             number = (numbers[-1] if numbers else 0) + 1
