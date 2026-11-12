@@ -1,7 +1,7 @@
 from dataclasses import dataclass, replace
 
 from forge.domain.blocks.check import text_values_of
-from forge.domain.definitions import TASK_FILE
+from forge.domain.definitions import DEFAULT_RATE, DEFAULT_SUBMISSIONS, TASK_FILE
 from forge.domain.errors import InvalidName, NotFound
 from forge.domain.ids import TaskId
 from forge.domain.roles import Role, task_scope
@@ -37,6 +37,16 @@ class DeclaredInput:
 
 
 @dataclass(frozen=True, slots=True)
+class DefaultLimits:
+    """The submission limits a task has when its `task.yaml` sets none: at
+    most `max` in all, and at most `count` in any `per` seconds."""
+
+    max: int = DEFAULT_SUBMISSIONS
+    count: int = DEFAULT_RATE.count
+    per: int = DEFAULT_RATE.per
+
+
+@dataclass(frozen=True, slots=True)
 class WorkflowForm:
     """What the task form is built from: the workflow the task's `task.yaml`
     names, as written, and the inputs it declares, in the order the
@@ -47,7 +57,8 @@ class WorkflowForm:
     comes after the one the task names, which the task keeps until someone
     saves it naming another (Task 10.6.5). `text_values` names the values
     that give text, in the file's order, none when the settings cannot be
-    read; a workflow output stays a number.
+    read; a workflow output stays a number. `limits` are what a task
+    allows when its `task.yaml` sets none, for the form to show.
     """
 
     workflow: str | None
@@ -57,6 +68,7 @@ class WorkflowForm:
     newer: str | None = None
     text_values: tuple[str, ...] | None = None
     yanked: Yanked | None = None
+    limits: DefaultLimits = DefaultLimits()
 
 
 @action

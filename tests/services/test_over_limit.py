@@ -43,7 +43,7 @@ GRADED: dict[str, Any] = {
         "runs": [
             {
                 "id": "r1",
-                "key": {"input": "tests/1.in", "answer": "tests/1.ans"},
+                "key": {"input": "1.in", "answer": "1.ans"},
                 "verdict": "accepted",
                 "passed": 1,
                 "reports": {},
@@ -272,7 +272,7 @@ async def test_a_save_that_lowers_the_most_regrades_under_the_most_it_saves(
     head = await acme.fake.content.list_files(PLATFORM, entered.task)
     edits = {
         "task.yaml": Edit(lowered, head.tokens["task.yaml"]),
-        "tests/1.ans": Edit(b"4\n", head.tokens["tests/1.ans"]),
+        "1.ans": Edit(b"4\n", head.tokens["1.ans"]),
     }
 
     with pytest.raises(ConfirmationRequired) as asked:

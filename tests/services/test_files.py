@@ -122,12 +122,10 @@ async def test_an_observer_reads_the_file_the_tree_and_the_history_as_themself(
 
     found = await files.read(setup, bob, sum_task, "task.yaml")
     listed = await files.tree(setup, bob, sum_task)
-    folder = await files.tree(setup, bob, sum_task, "tests")
     changes = await files.history(setup, bob, sum_task, "statement.md")
 
     assert found.content.startswith(b"# The task's settings")
-    assert [entry.path for entry in listed] == ["statement.md", "task.yaml", "tests"]
-    assert [entry.path for entry in folder] == ["tests/1.ans", "tests/1.in"]
+    assert [entry.path for entry in listed] == ["1.ans", "1.in", "statement.md", "task.yaml"]
     assert [change.message for change in changes] == ["Create"]
     assert {
         call.identity
@@ -768,14 +766,13 @@ async def test_a_contest_that_was_never_published_moves_its_passed_dates_freely(
 async def test_a_listing_gives_each_small_text_files_start_in_one_read_of_them_all(
     setup: Setup, acme: Acme, sum_task: TaskId
 ) -> None:
-    head = await acme.fake.content.list_files(PLATFORM, sum_task)
     saved = await task_save.save(
         setup,
         acme.ada,
         sum_task,
         {
-            "tests/1.in": Edit(b"1 2\n" + b"9 " * 600, head.tokens["tests/1.in"]),
-            "tests/1.ans": Edit(b"", head.tokens["tests/1.ans"]),
+            "tests/1.in": Edit(b"1 2\n" + b"9 " * 600, None),
+            "tests/1.ans": Edit(b"", None),
             "tests/picture.bin": Edit(b"\x89PNG\x00\x01", None),
             "tests/latin.txt": Edit("café".encode("latin-1"), None),
             "tests/long.txt": Edit("ü".encode() * 100, None),

@@ -1,6 +1,6 @@
 """Making a task is a request a manager of its contest makes, done before it
 answers: the place with the starter `task.yaml`, `statement.md` and one
-test, `tests/1.in` and `tests/1.ans`, then the roles of the contest and the
+test, `1.in` and `1.ans`, then the roles of the contest and the
 task with its protection and its publications reserved, then its entry at
 the end of the `tasks` list in `contest.yaml`, written as the platform: `{id}` in a draft
 contest, and in a published one with `release_at` and `closes` at the
@@ -81,8 +81,8 @@ async def test_a_contest_manager_makes_the_task_with_its_files(
         "write_file",
     ]
     repo = acme.fake.state.repos[("acme", "spring.sum.task")]
-    assert sorted(repo.files) == ["statement.md", "task.yaml", "tests/1.ans", "tests/1.in"]
-    assert (repo.files["tests/1.in"], repo.files["tests/1.ans"]) == (b"1 2\n", b"3\n")
+    assert sorted(repo.files) == ["1.ans", "1.in", "statement.md", "task.yaml"]
+    assert (repo.files["1.in"], repo.files["1.ans"]) == (b"1 2\n", b"3\n")
     starter = parse_task(repo.files["task.yaml"])
     assert (starter.name, str(starter.workflow)) == ("Sum of Two", "unicon/classic@v6")
     assert repo.teams == {Scope("acme", "spring"), Scope("acme", "spring", "sum")}

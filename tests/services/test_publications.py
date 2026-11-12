@@ -67,7 +67,7 @@ tasks:
 
 WORKFLOW = CLASSIC[WORKFLOW_FILE]
 """The built-in workflow's `workflow.yaml`."""
-ONE_RUN = b"      - [tests/1.in, tests/1.ans]\n"
+ONE_RUN = b"      - [1.in, 1.ans]\n"
 """The starter's one run, as its `repeat` lists it."""
 SECOND_RUN = ONE_RUN + b"      - [tests/2.in, tests/2.ans]\n"
 
@@ -212,7 +212,7 @@ async def test_the_starters_first_save_publishes_its_plan_and_the_plan_keeps_the
     assert document["schema_version"] == 6
     assert plan.workflow.ref == "unicon/classic@v6"
     assert [run.id for run in plan.runs] == ["r1"]
-    assert sorted(plan.task_files) == ["tests/1.ans", "tests/1.in"]
+    assert sorted(plan.task_files) == ["1.ans", "1.in"]
     reads = acme.fake.calls_to("read_declaration")
     assert {call.arguments["primitive"] for call in reads} == {"exec"}
     assert {call.identity for call in reads} == {acme.ada.identity, PLATFORM}
@@ -462,13 +462,13 @@ async def test_removing_a_file_a_run_names_is_a_draft_naming_it(
 ) -> None:
     await _published(setup, acme, sum_task)
 
-    draft = await _save(setup, acme, sum_task, {"tests/1.ans": None})
+    draft = await _save(setup, acme, sum_task, {"1.ans": None})
 
     assert isinstance(draft, Draft)
     assert [(path_text(error["path"]), error["message"]) for error in draft.errors] == [
         (
             "repeat[0].tuples[0][1]",
-            "The task has no file tests/1.ans. Add it, or give another file.",
+            "The task has no file 1.ans. Add it, or give another file.",
         )
     ]
     assert acme.fake.calls_to("publish") == []
@@ -515,11 +515,11 @@ async def test_a_removal_without_its_token_is_refused_naming_it(
             setup,
             acme.ada,
             sum_task,
-            {"tests/1.in": Edit(None), "statement.md": Edit(b"x\n")},
+            {"1.in": Edit(None), "statement.md": Edit(b"x\n")},
         )
 
     assert refused.value.extra["errors"] == [
-        {"input": "tests/1.in", "message": "Reload the files, then remove this one again."}
+        {"input": "1.in", "message": "Reload the files, then remove this one again."}
     ]
     assert _written(acme) == []
 
@@ -774,8 +774,8 @@ async def test_scoring_changes_never_change_grading_and_a_test_or_a_limit_does(
     )
     public = await _save(setup, acme, sum_task, {"notes/hint.txt": b"Add.\n"})
     limit = await _save(setup, acme, sum_task, _with(acme, b"time_limit: 2", b"time_limit: 3"))
-    edited = await _save(setup, acme, sum_task, {"tests/1.in": b"2 3\n"})
-    same = await _save(setup, acme, sum_task, {"tests/1.in": b"2 3\n"})
+    edited = await _save(setup, acme, sum_task, {"1.in": b"2 3\n"})
+    same = await _save(setup, acme, sum_task, {"1.in": b"2 3\n"})
     added = await _save(setup, acme, sum_task, {**SECOND_TEST, **_with(acme, ONE_RUN, SECOND_RUN)})
 
     results = [
@@ -794,7 +794,7 @@ async def test_scoring_changes_never_change_grading_and_a_test_or_a_limit_does(
         (False, ()),
         (False, ()),
         (True, ("The inputs of the step solution changed.",)),
-        (True, ("The file tests/1.in changed.",)),
+        (True, ("The file 1.in changed.",)),
         (False, ()),
         (True, added_run),
     ]
@@ -825,7 +825,7 @@ async def running(setup: Setup, acme: Acme, sum_task: TaskId) -> TaskId:
     ("change", "listed"),
     [
         ((b"time_limit: 2", b"time_limit: 1"), ["The inputs of the step solution changed."]),
-        (None, ["The file tests/1.in changed."]),
+        (None, ["The file 1.in changed."]),
     ],
     ids=["limit", "test"],
 )
@@ -836,7 +836,7 @@ async def test_a_grading_change_once_the_contest_has_started_asks_first_and_writ
     change: tuple[bytes, bytes] | None,
     listed: list[str],
 ) -> None:
-    files = _with(acme, *change) if change else {"tests/1.in": b"5 5\n"}
+    files = _with(acme, *change) if change else {"1.in": b"5 5\n"}
 
     with pytest.raises(ConfirmationRequired) as asked:
         await _save(setup, acme, running, files)
@@ -868,13 +868,13 @@ async def test_a_confirmation_stands_only_for_the_files_and_publication_it_was_a
     files = {"statement.md": b"Typo fixed.\n"}
     with pytest.raises(ConfirmationRequired) as first:
         await _save(setup, acme, running, files)
-    await _save(setup, acme, running, {"tests/1.in": b"5 5\n"}, keep_as_draft=True)
+    await _save(setup, acme, running, {"1.in": b"5 5\n"}, keep_as_draft=True)
     acme.fake.reset_calls()
 
     with pytest.raises(ConfirmationRequired) as again:
         await _save(setup, acme, running, files, confirm=True, asked=first.value.extra["asked"])
 
-    assert again.value.extra["changes"] == ["The file tests/1.in changed."]
+    assert again.value.extra["changes"] == ["The file 1.in changed."]
     assert again.value.extra["asked"] != first.value.extra["asked"]
     assert _written(acme) == []
     confirmed = await _save(

@@ -35,7 +35,7 @@ from tests.services.conftest import SPRING, Acme, Entered, checked, organiser, u
 
 SOURCE = b"print(sum(map(int, input().split())))\n"
 SUM = Scope("acme", "spring", "sum")
-ONE_RUN = b"      - [tests/1.in, tests/1.ans]\n"
+ONE_RUN = b"      - [1.in, 1.ans]\n"
 SECOND_RUN = b"      - [tests/2.in, tests/2.ans]\n"
 TOTAL = b"  values:\n    total: {block: count, over: {runs: all}}\n"
 
@@ -46,7 +46,7 @@ def _result(verdict: str) -> dict[str, Any]:
         "runs": [
             {
                 "id": "r1",
-                "key": {"input": "tests/1.in", "answer": "tests/1.ans"},
+                "key": {"input": "1.in", "answer": "1.ans"},
                 "verdict": verdict,
                 "passed": 1 if verdict == "accepted" else 0,
                 "reports": {},
@@ -270,7 +270,7 @@ async def test_each_side_of_a_saves_regrade_is_an_attempt_and_its_verdicts_are_c
     # again either way, its verdict told as changed once it is not accepted.
     await _submit(setup, acme, entered, clock, 1)
     await _stands(setup, 1, **ACCEPTED)
-    await _save(setup, acme, entered.task, {"tests/1.ans": b"4\n"})
+    await _save(setup, acme, entered.task, {"1.ans": b"4\n"})
     manager = await organiser(setup, acme.fake, 7, SUM, Role.MANAGER)
 
     await _stands(setup, 1, **ACCEPTED)

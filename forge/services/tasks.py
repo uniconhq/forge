@@ -1,6 +1,6 @@
 """Making a task, listing a contest's tasks, and where its files stand
 against its publications. A task is one place at the forge holding
-`task.yaml`, `statement.md` and one test, `tests/1.in` and `tests/1.ans`,
+`task.yaml`, `statement.md` and one test, `1.in` and `1.ans`,
 with three roles of its own. `create` makes it before it answers: the place
 with its starter files; its roles and protection, which `content.secure`
 attaches, reserving the task's publications for the platform in the same

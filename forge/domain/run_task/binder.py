@@ -313,8 +313,7 @@ class _Binder:
             if not picks:
                 self.refuse(
                     at,
-                    "Pick the group's runs by at least one repeated input, such as "
-                    "input: [tests/1.in].",
+                    "Pick the group's runs by at least one repeated input, such as input: [1.in].",
                 )
                 continue
             wanted: dict[str, list[object]] = {}

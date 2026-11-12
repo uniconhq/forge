@@ -818,7 +818,7 @@ def test_the_starter_task_is_the_formats() -> None:
         "memory_limit": 256,
     }
     assert files["statement.md"] == b"Write the statement entrants read here.\n"
-    assert [axis.rows for axis in task.repeat] == [[("tests/1.in", "tests/1.ans")]]
+    assert [axis.rows for axis in task.repeat] == [[("1.in", "1.ans")]]
     assert list(task.scoring.values) == ["score"]
     assert task.scoring.show.always == Shown(
         values=["score"], runs=[ShownRuns(of="all", fields=["verdict", "passed"])]
@@ -827,9 +827,9 @@ def test_the_starter_task_is_the_formats() -> None:
         True,
         True,
     )
-    assert set(files) == {"task.yaml", "statement.md", "tests/1.in", "tests/1.ans"}
-    assert files["tests/1.in"] == b"1 2\n"
-    assert files["tests/1.ans"] == b"3\n"
+    assert set(files) == {"task.yaml", "statement.md", "1.in", "1.ans"}
+    assert files["1.in"] == b"1 2\n"
+    assert files["1.ans"] == b"3\n"
 
 
 def test_a_title_is_the_one_asked_for_or_the_name() -> None:

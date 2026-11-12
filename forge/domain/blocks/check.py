@@ -652,7 +652,7 @@ class _Checker:
             self.refuse(
                 at,
                 "Give the weights by one repeated input's values, such as "
-                "{input: {tests/7.in: 3}}; a run they do not name weighs 1.",
+                "{input: {7.in: 3}}; a run they do not name weighs 1.",
             )
             return
         [(name, weights)] = node.items()
@@ -665,7 +665,7 @@ class _Checker:
             )
             return
         if not isinstance(weights, dict) or not weights:
-            self.refuse((*at, name), "Give each value's weight, such as {tests/7.in: 3}.")
+            self.refuse((*at, name), "Give each value's weight, such as {7.in: 3}.")
             return
         for value, weight in weights.items():
             where = (*at, name, str(value))

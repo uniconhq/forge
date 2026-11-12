@@ -245,7 +245,7 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
     manager = people["manager"]
     as_manager: AsUser = as_person(admin, manager)
     head = await forge.content.list_files(as_manager, task)
-    assert head.has("tests/") and "task.yaml" in head.tokens
+    assert "1.in" in head.tokens and "task.yaml" in head.tokens
 
     version = await forge.content.save_files(
         PLATFORM,
@@ -253,12 +253,12 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
         {
             "task.yaml": b"name: Sum\n",
             "plans/plan.json": b"{}\n",
-            "tests/1.ans": None,
+            "1.ans": None,
             "tests/2.in": b"1 2\n",
         },
         expected={
             "task.yaml": head.tokens["task.yaml"],
-            "tests/1.ans": head.tokens["tests/1.ans"],
+            "1.ans": head.tokens["1.ans"],
         },
         message="Save",
         author=int(manager["id"]),
@@ -270,12 +270,12 @@ async def test_a_save_is_one_commit_of_the_persons_and_a_publication_tags_it(
     assert sorted(entry["filename"] for entry in commit["files"]) == [
         "plans/plan.json",
         "task.yaml",
-        "tests/1.ans",
+        "1.ans",
         "tests/2.in",
     ]
     saved = await forge.content.list_files(as_manager, task)
     assert saved.version == version
-    assert "tests/1.ans" not in saved.tokens
+    assert "1.ans" not in saved.tokens
     read = forge.content.read_media
     assert await read(as_manager, task, "tests/2.in", at=version, max_size=4) == b"1 2\n"
     with pytest.raises(Rejected):
