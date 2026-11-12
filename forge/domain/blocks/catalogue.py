@@ -295,23 +295,23 @@ def _pick(name: str, words: str, *, by: bool, task: bool = False) -> Block:
 CATALOGUE: Mapping[str, Block] = {
     block.name: block
     for block in (
-        _number("add", "the sum of its inputs", _SOME),
-        _number("sub", "the first input less the second", _PAIR),
-        _number("mul", "the product of its inputs", _SOME),
-        _number("div", "the first input over the second, missing when it is 0", _PAIR),
-        _number("lt", "1 when the first input is less than the second, else 0", _PAIR),
-        _number("le", "1 when the first input is at most the second, else 0", _PAIR),
-        _number("gt", "1 when the first input is more than the second, else 0", _PAIR),
-        _number("ge", "1 when the first input is at least the second, else 0", _PAIR),
-        _number("eq", "1 when its two inputs are equal, else 0, numbers or text", _VALUE_PAIR),
-        _number("ne", "1 when its two inputs differ, else 0, numbers or text", _VALUE_PAIR),
-        _number("and", "1 when no input is 0, else 0", _SOME),
-        _number("or", "1 when some input is not 0, else 0", _SOME),
-        _number("not", "1 when its input is 0, else 0", _ONE),
+        _number("add", "the sum of `of`", _SOME),
+        _number("sub", "the first of `of` less the second", _PAIR),
+        _number("mul", "the product of `of`", _SOME),
+        _number("div", "the first of `of` over the second, missing when the second is 0", _PAIR),
+        _number("lt", "1 when the first of `of` is less than the second, else 0", _PAIR),
+        _number("le", "1 when the first of `of` is at most the second, else 0", _PAIR),
+        _number("gt", "1 when the first of `of` is more than the second, else 0", _PAIR),
+        _number("ge", "1 when the first of `of` is at least the second, else 0", _PAIR),
+        _number("eq", "1 when the two of `of` are equal, else 0, numbers or text", _VALUE_PAIR),
+        _number("ne", "1 when the two of `of` differ, else 0, numbers or text", _VALUE_PAIR),
+        _number("and", "1 when nothing in `of` is 0, else 0", _SOME),
+        _number("or", "1 when something in `of` is not 0, else 0", _SOME),
+        _number("not", "1 when `of` is 0, else 0", _ONE),
         Block(
             "if",
-            "then when test is not 0, else else, reading only the branch it takes; on a "
-            "leaderboard, a test that is a submission's results is true when there is one",
+            "`then` when `test` is not 0, else `else`, reading only the one it gives; on a "
+            "leaderboard, a `test` that is a submission's results is true when there is one",
             (
                 Form(
                     NUMBERS,
@@ -322,59 +322,69 @@ CATALOGUE: Mapping[str, Block] = {
         ),
         Block(
             "min",
-            "the least of its inputs, of a column over a group's runs, or of a value over a "
-            "task's results",
+            "the least of `of`; or, given a group's runs or a task's results in `over`, the "
+            "least `of` of those `where` keeps, `missing` saying what a missing one counts as",
             (_numbers(_SOME), _fold(of=True, weights=False), _over_results(of=True)),
         ),
         Block(
             "max",
-            "the most of its inputs, of a column over a group's runs, or of a value over a "
-            "task's results",
+            "the most of `of`; or, given a group's runs or a task's results in `over`, the "
+            "most `of` of those `where` keeps, `missing` saying what a missing one counts as",
             (_numbers(_SOME), _fold(of=True, weights=False), _over_results(of=True)),
         ),
-        _number("floor", "its input rounded down to a whole number", _ONE),
-        _number("ceil", "its input rounded up to a whole number", _ONE),
+        _number("floor", "`of` rounded down to a whole number", _ONE),
+        _number("ceil", "`of` rounded up to a whole number", _ONE),
         Block(
             "sum",
-            "a column summed over a group's runs, or a value over a task's results",
+            "`of` summed over the runs or results in `over` that `where` keeps, a run "
+            "times its `weights`, `missing` saying what a missing one counts as",
             (_fold(of=True, weights=True), _over_results(of=True)),
         ),
         Block(
             "count",
-            "how many of a group's runs there are, their weights summed when weighed, or how "
-            "many of a task's results there are, 0 over none",
+            "how many of the runs or results in `over` `where` keeps, 0 over none, a run "
+            "counting its `weights`, `missing` saying what a missing one counts as",
             (_fold(of=False, weights=True), _over_results(of=False)),
         ),
         _pick(
             "first",
-            "the oldest of a task's results that where keeps, or the first of a group's runs",
+            "the first of `from` that `where` keeps: the oldest result, or the first run; "
+            "`missing` says what a missing `where` counts as",
             by=False,
             task=True,
         ),
-        _pick("latest", "the newest of a task's results that where keeps, or none", by=False),
+        _pick(
+            "latest",
+            "the newest of the results in `from` that `where` keeps, or none; `missing` says "
+            "what a missing `where` counts as",
+            by=False,
+        ),
         _pick(
             "highest",
-            "the one of a task's results with the highest by, the oldest on a tie, or the "
-            "run of a group with the highest by, the earlier on a tie",
+            "the one of `from` with the highest `by`, of those `where` keeps: on a tie the "
+            "oldest result, or the earlier run; `missing` says what a missing `by` or "
+            "`where` counts as",
             by=True,
             task=True,
         ),
         _pick(
             "lowest",
-            "the one of a task's results with the lowest by, the oldest on a tie, or the "
-            "run of a group with the lowest by, the earlier on a tie",
+            "the one of `from` with the lowest `by`, of those `where` keeps: on a tie the "
+            "oldest result, or the earlier run; `missing` says what a missing `by` or "
+            "`where` counts as",
             by=True,
             task=True,
         ),
         Block(
             "last",
-            "the last in run order of a group's runs that where keeps, or none",
+            "the last in run order of the runs in `from` that `where` keeps, or none",
             (_task_pick(by=False),),
         ),
         Block(
             "best_each",
-            "the task's value worked out again from the best of each value it reads "
-            "directly over the task's results, each in the direction given",
+            "the task's value `value` worked out again from the best of each value it reads "
+            "directly over the results in `from`, each in its direction in `directions`; "
+            "`missing` says what a missing value counts as",
             (
                 Form(
                     RESULTS,
@@ -390,7 +400,7 @@ CATALOGUE: Mapping[str, Block] = {
         ),
         Block(
             "otherwise",
-            "the first input, or the second when the first is missing or none",
+            "the first of `of`, or the second when the first is missing or none",
             (
                 Form(
                     "numbers or text",
@@ -408,7 +418,7 @@ CATALOGUE: Mapping[str, Block] = {
         ),
         Block(
             "sum_best",
-            "the sum of the k largest of its inputs, keeping the best k",
+            "the sum of the `k` largest of `of`",
             (
                 Form(
                     NUMBERS,
@@ -422,8 +432,9 @@ CATALOGUE: Mapping[str, Block] = {
         ),
         Block(
             EXEC,
-            "the one number a program in a folder of the task reports from a group's runs, "
-            "which it reads as runs.json",
+            "the one number the program in the task's folder `program`, written in "
+            "`language`, reports from the runs in `over`, which it reads as runs.json, within "
+            "`time_limit` seconds and `memory_limit` megabytes",
             (
                 Form(
                     RUNS,
@@ -440,8 +451,8 @@ CATALOGUE: Mapping[str, Block] = {
         ),
         Block(
             ENTERED,
-            "the mark a manager of the task enters for the submission, between at_least "
-            "and at_most, missing until one is entered",
+            "the mark a manager of the task enters for the submission, between `at_least` "
+            "and `at_most`, missing until one is entered",
             (Form(NUMBERS, {"at_least": _BOUND, "at_most": _BOUND}, Scope.TASK),),
         ),
     )

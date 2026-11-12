@@ -7,6 +7,7 @@ written; one name per block, its form told from what it is given; and a
 tree is kept small at the save and walked without recursion.
 """
 
+import re
 import time
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
@@ -937,3 +938,10 @@ def test_a_value_gives_text_from_a_text_a_text_column_or_another_value_not_an_ou
     # A workflow output stays a number, so reading time_ms does not give text.
     assert text_values_of(document, {}) == ("first_failed", "medal", "badge")
     assert text_values_of({}, {}) == ()
+
+
+def test_a_blocks_words_name_each_of_its_inputs_in_backticks() -> None:
+    for block in CATALOGUE.values():
+        named = set(re.findall(r"`([^`]*)`", block.words))
+        inputs = {name for form in block.forms for name in form.inputs}
+        assert named == inputs, block.name
