@@ -9,7 +9,7 @@ types they take and come back as.
 """
 
 from forge.domain.grading import GradingStatus
-from forge.domain.run_showing import Placeholders, TextAt, ValueShown
+from forge.domain.run_showing import TextAt, ValueShown
 from forge.domain.submission_state import SubmissionState
 from forge.domain.submissions import SubmittedInput
 from forge.services.entrant_view import ShownInput
@@ -36,7 +36,6 @@ from forge.services.submissions import (
 __all__ = [
     "PREVIEW_MOMENTS",
     "GradingStatus",
-    "Placeholders",
     "Result",
     "ShowPreview",
     "ShownInput",

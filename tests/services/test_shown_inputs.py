@@ -5,9 +5,9 @@ file served through the download door by the run's group and place, to a
 visitor of a public contest as to an entrant, and anything not shown now
 not found as one not there; a folder serves only the files it holds;
 the owner of a submission fetches the input of the first run it did not
-pass; and the preview answers what an entrant would read at a moment
-under the draft, checked alone against the publication, with the count
-of runs it hides, to an observer of the task alone.
+pass; and the preview answers what an entrant would read at a moment of
+a made-up graded submission under the draft, with nothing published,
+with the count of runs it hides, to an observer of the task alone.
 """
 
 import pytest
@@ -15,7 +15,6 @@ import pytest
 from forge.domain.errors import Forbidden, NotFound
 from forge.domain.grading import GradingStatus
 from forge.domain.identity import PLATFORM
-from forge.domain.ids import TaskId, WorkspaceId
 from forge.domain.roles import Scope
 from forge.domain.types import Type
 from forge.domain.workflows import Visibility
@@ -26,10 +25,8 @@ from forge.testing import FakeClock
 from tests.services.conftest import SPRING, Acme, make_task
 from tests.services.test_marks import _observer_of
 from tests.services.test_pipelines import (
-    AFTER_CLOSE,
     BEFORE_CLOSE,
     _checked,
-    _graded_submission,
     _rows,
     _submit,
 )
@@ -171,15 +168,11 @@ async def test_the_owner_fetches_the_input_of_the_first_run_their_submission_did
     assert (await contest_home.task(setup, session, islands.task)).runs == ()
 
 
-async def test_the_preview_answers_the_entrants_page_at_a_moment_under_the_draft(
+async def test_the_preview_answers_the_entrants_page_of_a_made_up_submission_at_a_moment(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
-    islands, _ = await _graded_submission(setup, acme)
-    clock.set(AFTER_CLOSE)
-    [early] = await _rows(setup, "grading")
-    async with setup.unit_of_work() as ctx:
-        owner = ctx.forge.workspaces.owner_of(WorkspaceId(early.workspace_id))
+    islands = await _checked(setup, acme)
     draft = {
         "always": {"values": ["sample_score"]},
         "after_deadline": {"values": ["st1"]},
@@ -189,27 +182,23 @@ async def test_the_preview_answers_the_entrants_page_at_a_moment_under_the_draft
         },
     }
 
-    before = await submissions.preview(setup, acme.ada, islands.task, draft, "always", owner, 1)
-    released = await submissions.preview(
-        setup, acme.ada, islands.task, draft, "after_release", owner, 1
-    )
-    empty = await submissions.preview(setup, acme.ada, islands.task, draft, "after_release")
+    before = await submissions.preview(setup, acme.ada, islands.task, draft, "always")
+    released = await submissions.preview(setup, acme.ada, islands.task, draft, "after_release")
 
     # Each moment is read alone: a release shows st2 and its runs, not
-    # what the deadline shows, though the clock is past it.
-    assert before.result is not None and released.result is not None
+    # what the deadline shows.
     assert [value.name for value in before.result.run_values] == ["sample_score"]
-    assert (before.result.runs, before.hidden) == ((), 4)
+    assert all(value.number is not None for value in before.result.run_values)
+    assert (before.result.runs, before.hidden) == ((), len(before.sample))
     assert [value.name for value in released.result.run_values] == ["sample_score", "st2"]
     assert [(run["group"], run["place"]) for run in released.result.runs] == [
         ("st2_tests", 1),
         ("st2_tests", 2),
     ]
-    assert released.hidden == 2
-    # With no submission, what an entrant would be shown before one.
-    assert empty.result is None and empty.placeholders is not None
-    assert empty.placeholders.values == ("sample_score", "st2")
-    assert len(empty.placeholders.runs) == 2 and empty.hidden == 2
+    assert released.hidden == len(released.sample) - 2
+    # The runs take turns to pass, the same in every answer.
+    assert [row["verdict"] for row in before.sample[:2]] == ["accepted", "wrong_answer"]
+    assert before.sample == released.sample
 
 
 async def test_the_preview_is_refused_to_one_who_does_not_observe_the_task(
@@ -223,7 +212,7 @@ async def test_the_preview_is_refused_to_one_who_does_not_observe_the_task(
         await submissions.preview(setup, elsewhere, islands.task, {}, "always")
 
 
-async def test_the_preview_checks_the_draft_alone_and_needs_a_publication(
+async def test_the_preview_checks_the_draft_alone(
     setup: Setup, acme: Acme, spring: str, clock: FakeClock
 ) -> None:
     clock.set(BEFORE_CLOSE)
@@ -250,8 +239,6 @@ async def test_the_preview_checks_the_draft_alone_and_needs_a_publication(
         await submissions.preview(setup, acme.ada, islands.task, {"now": ["total"]}, "always")
     with pytest.raises(InvalidDefinition):
         await submissions.preview(setup, acme.ada, islands.task, {}, "now")
-    with pytest.raises(NotFound, match=r"Publish the task to preview it\."):
-        await submissions.preview(setup, acme.ada, TaskId("acme/spring/later"), {}, "always")
 
 
 GAME = """\
@@ -304,16 +291,15 @@ async def test_the_preview_takes_an_output_given_once_under_its_ports_name(
         },
     )
 
+    # Nothing is published yet: the preview reads the saved draft.
+    assert (await submissions.preview(setup, acme.ada, task, {}, "always")).result.runs == ()
     [save] = await _rows(setup, "save")
     for step in ("build-game-judge", "build-decide"):
         await _step(setup, acme, save.id, "save", step, _built())
     assert await _report(setup, save.id, "save") is GradingStatus.DONE
     await setup.settle()
 
-    shown = await submissions.preview(
-        setup, acme.ada, task, {"always": {"outputs": ["log"]}}, "always"
-    )
-    assert shown.placeholders is not None
+    await submissions.preview(setup, acme.ada, task, {"always": {"outputs": ["log"]}}, "always")
     with pytest.raises(InvalidDefinition) as refused:
         await submissions.preview(
             setup,

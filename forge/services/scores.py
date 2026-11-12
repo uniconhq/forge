@@ -20,15 +20,17 @@ from fractions import Fraction
 from typing import Any
 
 from forge.db.tables import Grading
-from forge.domain.definitions import ContestDefinition
+from forge.domain.definitions import ContestDefinition, Scoring
 from forge.domain.grading import GradingStatus
 from forge.domain.release import Extension, due_of
+from forge.domain.run_plan import RunPlan
 from forge.domain.run_results import (
     Worked,
     facts_of,
     run_grading,
     worked_out,
 )
+from forge.domain.sample import SECONDS, sample_marks, sample_result
 from forge.domain.step_data import unreported
 from forge.log import get_logger
 from forge.runtime.context import Context
@@ -165,6 +167,32 @@ async def run_scored(
         return kept[0]
 
     return RunScored(held, whole, alone, held.self_reported, hidden)
+
+
+def sample_scored(
+    scoring: Scoring, held: RunsHeld, plan: RunPlan, programs: Collection[str]
+) -> RunScored:
+    """A made-up graded submission's values (`forge.domain.sample`), worked
+    out as a real one's are, for the staff preview."""
+    result = sample_result(held.runs, plan, programs)
+    shown = frozenset(run.id for run in held.runs if run.early)
+    marks = sample_marks(scoring.values)
+
+    def work(given: Mapping[str, Any] | None) -> Worked:
+        grading = run_grading(held.runs, given, early=shown, waiting=(), compiling=held.compiling)
+        assert grading.compiled is not None, "nothing of a sample waits"
+        facts = {
+            "seconds_late": Fraction(0),
+            "seconds": SECONDS,
+            "compiled": Fraction(grading.compiled),
+        }
+        return Worked(
+            grading, worked_out(scoring, held.runs, grading, facts, held.columns, marks), facts
+        )
+
+    whole, alone = work(result), work(_only(result, shown))
+    hidden = frozenset(run.id for run in held.runs if not run.early)
+    return RunScored(held, whole, lambda: alone, held.self_reported, hidden)
 
 
 def _only(result: Mapping[str, Any] | None, runs: Collection[str]) -> Mapping[str, Any] | None:

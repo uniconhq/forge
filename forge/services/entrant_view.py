@@ -258,42 +258,47 @@ async def runs_held(ctx: Context, published: PublishedTask) -> RunsHeld:
     async def read() -> RunsHeld:
         found = await ctx.forge.content.read_file(PLATFORM, published.id, RUNS_PATH, at=version)
         planned = await ctx.forge.content.read_file(PLATFORM, published.id, PLAN_PATH, at=version)
-        runs = RunsFile.from_bytes(found.content)
         plan = RunPlan.from_bytes(planned.content)
-        workflow = await _workflow(ctx, plan)
-        given = {
-            name: value
-            for name, value in published.definition.inputs.items()
-            if name not in plan.entrant
-        }
-        secrets = frozenset(
-            name
-            for name, value in given.items()
-            if isinstance(value, Mapping) and "secret" in value
-        )
-        return RunsHeld(
-            runs.runs,
-            {name: entry.column() for name, entry in plan.reports.items()},
-            compilers(plan),
-            runs.self_reported_values,
-            {run.id: run.titles for run in plan.runs if run.titles is not None},
-            tuple(tuple(axis.inputs) for axis in published.definition.repeat),
-            {
-                name: (output.title, output.unit)
-                for name, output in workflow.outputs.items()
-                if isinstance(output, RunOutput)
-            },
-            {name: value for name, value in given.items() if name not in secrets},
-            {name: each.type for name, each in workflow.inputs.items()},
-            secrets,
-            tuple(workflow.outputs),
+        return held(
+            published.definition,
+            RunsFile.from_bytes(found.content),
+            plan,
+            await workflow_of(ctx, plan),
         )
 
     key = f"published.runs.{published.id}.{version}"
     return await ctx.memo.remembered(key, FORM_KEPT, read)
 
 
-async def _workflow(ctx: Context, plan: RunPlan) -> RunWorkflow:
+def held(
+    definition: TaskDefinition, runs: RunsFile, plan: RunPlan, workflow: RunWorkflow
+) -> RunsHeld:
+    """A task's runs as its results read them, from its definition, runs
+    file, plan and the workflow the plan pinned."""
+    given = {name: value for name, value in definition.inputs.items() if name not in plan.entrant}
+    secrets = frozenset(
+        name for name, value in given.items() if isinstance(value, Mapping) and "secret" in value
+    )
+    return RunsHeld(
+        runs.runs,
+        {name: entry.column() for name, entry in plan.reports.items()},
+        compilers(plan),
+        runs.self_reported_values,
+        {run.id: run.titles for run in plan.runs if run.titles is not None},
+        tuple(tuple(axis.inputs) for axis in definition.repeat),
+        {
+            name: (output.title, output.unit)
+            for name, output in workflow.outputs.items()
+            if isinstance(output, RunOutput)
+        },
+        {name: value for name, value in given.items() if name not in secrets},
+        {name: each.type for name, each in workflow.inputs.items()},
+        secrets,
+        tuple(workflow.outputs),
+    )
+
+
+async def workflow_of(ctx: Context, plan: RunPlan) -> RunWorkflow:
     """The workflow the plan pinned, whose outputs' titles and units and
     inputs' types a result reads. A publication's workflow reads, as its
     save wrote it.

@@ -166,24 +166,6 @@ class TaskInputs:
     runs: tuple[Mapping[str, Any], ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class Placeholders:
-    """What an entrant would be shown of a submission at a moment, before
-    there is one, as the staff preview draws it: the values and the outputs
-    given once by name, the shared inputs, and each run shown, by group and
-    place, with its tuples' shown inputs and the names of the fields its
-    result would fill (`fields`); `first_not_passed` as one row with no
-    tuples, since which run it picks is not known. `ids` are the runs
-    shown, by id, never sent.
-    """
-
-    values: tuple[str, ...]
-    outputs: tuple[str, ...]
-    inputs: Mapping[str, Any]
-    runs: tuple[Mapping[str, Any], ...]
-    ids: frozenset[str] = frozenset()
-
-
 def times_of(*, revealed: bool, released: bool) -> tuple[str, ...]:
     """The moments of `show` that have come for an entrant."""
     return (
@@ -337,55 +319,6 @@ def task_inputs(
                 {"group": of, "place": place, "tuples": _tuples(key, named.get(run), columns)}
             )
     return TaskInputs(_settings(scoring.show, settings or {}, types, moments), tuple(found))
-
-
-def placeholders(
-    scoring: Scoring,
-    runs: Sequence[Run],
-    *,
-    revealed: bool,
-    released: bool = False,
-    titles: Mapping[str, tuple[str | None, ...]] | None = None,
-    axes: Sequence[Sequence[str]] = (),
-    settings: Mapping[str, object] | None = None,
-    kinds: Mapping[str, Type] | None = None,
-) -> Placeholders:
-    """What an entrant would be shown of a submission now, with no
-    submission yet (`Placeholders`), as `shown` reads `show`."""
-    moments = times_of(revealed=revealed, released=released)
-    columns = tuple(tuple(axis) for axis in axes)
-    inputs = {name for axis in columns for name in axis}
-    named = titles or {}
-    types = kinds or {}
-    keys = {run.id: run.key for run in runs}
-    by_id = {run.id: run for run in runs}
-    show = scoring.show
-    rows: list[Mapping[str, Any]] = []
-    ids: set[str] = set()
-    for of, fields in picks(show, moments).items():
-        filled = [name for name in fields if name not in inputs]
-        if of == FIRST_NOT_PASSED:
-            rows.append({"group": of, "place": 1, "tuples": [], "fields": filled})
-            continue
-        wanted = [name for name in fields if name in inputs]
-        for place, run in enumerate(members(of, scoring, keys), start=1):
-            key = _inputs_of(by_id[run], wanted, types)
-            rows.append(
-                {
-                    "group": of,
-                    "place": place,
-                    "tuples": _tuples(key, named.get(run), columns),
-                    "fields": filled,
-                }
-            )
-            ids.add(run)
-    return Placeholders(
-        tuple(listed(show, "values", moments)),
-        tuple(listed(show, "outputs", moments)),
-        _settings(show, settings or {}, types, moments),
-        tuple(rows),
-        frozenset(ids),
-    )
 
 
 def shown_file(
@@ -748,7 +681,6 @@ def _once(once: Mapping[str, Any], listed: Collection[str] | None = None) -> dic
 
 
 __all__ = [
-    "Placeholders",
     "Shown",
     "TaskInputs",
     "TextAt",
@@ -756,7 +688,6 @@ __all__ = [
     "addresses",
     "bare",
     "later",
-    "placeholders",
     "shown",
     "shown_file",
     "task_inputs",
